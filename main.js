@@ -1074,19 +1074,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.assetBaseUrl = adapter.getResourcePath(ooRelToVault).replace(/\?.*$/, "");
     dlog("assetBaseUrl:", this.assetBaseUrl);
 
-    // Sanity-check assets
-    const missing = [];
-    if (!fs.existsSync(this.onlyOfficeDir)) missing.push("assets/onlyoffice/");
-    if (!fs.existsSync(this.x2tDir))        missing.push("assets/x2t/");
-    if (!fs.existsSync(path.join(this.x2tDir, "x2t.js")))   missing.push("assets/x2t/x2t.js");
-    if (!fs.existsSync(path.join(this.x2tDir, "x2t.wasm"))) missing.push("assets/x2t/x2t.wasm");
-    if (!fs.existsSync(this.shimAbs))       missing.push("assets/docx-viewer/transport-shim.js");
-    if (!fs.existsSync(this.mockSocketAbs)) missing.push("assets/docx-viewer/mock-socket.js");
-    if (missing.length) {
-      const msg = "OnlyObsidian Test: missing assets — " + missing.join(", ") +
-                  ". See README.md.";
-      new obsidian.Notice(msg, 15000);
-      elog(msg);
+    // Check assets — download if missing
+    const assetsNeeded = !fs.existsSync(this.onlyOfficeDir) || !fs.existsSync(this.x2tDir) ||
+      !fs.existsSync(path.join(this.x2tDir, "x2t.js")) || !fs.existsSync(path.join(this.x2tDir, "x2t.wasm"));
+
+    if (assetsNeeded) {
+      dlog("assets missing — starting download");
+      const ok = await this._downloadAssets(pluginAbs);
+      if (!ok) {
+        new obsidian.Notice("Obsidi-Office: asset download failed. See console for details.", 15000);
+        return;
+      }
     }
 
     // Patch the tree (idempotent)
@@ -1151,6 +1149,58 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const r = patcher.run();
     dlog("patcher result:", r);
     return r;
+  }
+
+  async _downloadAssets(pluginAbs) {
+    const ASSET_URL = "https://github.com/GrandPa-source/Obsidi-Office/releases/download/v0.1.0-assets/onlyobsidian-assets-v9.3.1.tar.gz";
+    const assetsDir = path.join(pluginAbs, "assets");
+    const notice = new obsidian.Notice("Obsidi-Office: Downloading OnlyOffice assets (213 MB)...", 0);
+
+    try {
+      // Download the archive
+      dlog("downloading assets from:", ASSET_URL);
+      notice.setMessage("Obsidi-Office: Downloading assets (213 MB)... this may take a few minutes.");
+
+      const response = await obsidian.requestUrl({ url: ASSET_URL });
+      const tarGzBytes = response.arrayBuffer;
+      dlog("downloaded", tarGzBytes.byteLength, "bytes");
+      notice.setMessage("Obsidi-Office: Download complete. Extracting...");
+
+      // Write tar.gz to temp location
+      const tarGzPath = path.join(pluginAbs, "_assets-download.tar.gz");
+      fs.writeFileSync(tarGzPath, Buffer.from(tarGzBytes));
+
+      // Extract using tar (available in Git Bash on Windows, native on Mac/Linux)
+      const { execSync } = require("child_process");
+      execSync('tar -xzf "' + tarGzPath + '" -C "' + assetsDir + '"', {
+        timeout: 120000,
+        windowsHide: true,
+      });
+      dlog("extraction complete");
+
+      // Clean up temp file
+      try { fs.unlinkSync(tarGzPath); } catch (e) {}
+
+      // Verify extraction
+      const x2tOk = fs.existsSync(path.join(assetsDir, "x2t", "x2t.js"));
+      const ooOk = fs.existsSync(path.join(assetsDir, "onlyoffice", "web-apps"));
+      if (!x2tOk || !ooOk) {
+        elog("extraction verification failed — x2t:", x2tOk, "onlyoffice:", ooOk);
+        notice.setMessage("Obsidi-Office: Extraction failed. Check console.");
+        setTimeout(() => notice.hide(), 8000);
+        return false;
+      }
+
+      notice.setMessage("Obsidi-Office: Assets installed. Reload to activate.");
+      setTimeout(() => notice.hide(), 5000);
+      dlog("assets installed successfully");
+      return true;
+    } catch (err) {
+      elog("asset download/extract failed:", err);
+      notice.setMessage("Obsidi-Office: Download failed — " + (err.message || err));
+      setTimeout(() => notice.hide(), 10000);
+      return false;
+    }
   }
 
   async _openInView(file) {
