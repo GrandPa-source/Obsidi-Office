@@ -153,5 +153,4 @@ See architecture memo `DOCX-VIEWER/02` for full reasoning.
 
 ## License
 
-OnlyOffice components remain under AGPL-3.0. This wrapper code is
-provided to Baycrest SecOps for evaluation.
+OnlyOffice components remain under AGPL-3.0.
