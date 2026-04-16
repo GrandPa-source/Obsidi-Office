@@ -10,7 +10,9 @@ Most OnlyOffice integrations — including the official [Document Server](https:
 
 ## Status
 
-This plugin is under active development. Current working features:
+This plugin is under active development. Only `.docx` files are supported in the current phase. Other OnlyOffice-supported formats (spreadsheets, presentations, Visio) may be reviewed for future development.
+
+Current working features:
 
 - Document viewing and editing (Word-accurate rendering via OnlyOffice v9.3.1)
 - Save — Ctrl+S, toolbar button, 10-second auto-save
@@ -20,7 +22,10 @@ This plugin is under active development. Current working features:
 - Font fallback (Arial substitution for missing fonts)
 - Save status indicator (blue spinner → green checkmark)
 - Fit-to-width zoom
-- Print (Ctrl+P)
+
+Known limitations:
+
+- Print/PDF export is not yet functional (Electron prints the full window, not the document content)
 
 ## Installation
 
