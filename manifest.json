@@ -1,0 +1,11 @@
+{
+  "id": "onlyobsidian-test",
+  "name": "OnlyObsidian Test",
+  "version": "0.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Localhost-free OnlyOffice DOCX viewer test build. Uses an in-iframe transport shim + postMessage RPC instead of binding 127.0.0.1.",
+  "author": "Baycrest SecOps",
+  "authorUrl": "",
+  "fundingUrl": "",
+  "isDesktopOnly": true
+}

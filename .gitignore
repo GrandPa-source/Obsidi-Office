@@ -1,0 +1,13 @@
+# Large OnlyOffice assets — downloaded at runtime, not committed
+assets/onlyoffice/
+assets/x2t/
+
+# Backup files created by AssetPatcher
+*.original
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
