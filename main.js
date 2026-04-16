@@ -137,7 +137,7 @@ class X2tConverter {
       return;
     }
     let loaded = 0;
-    const limit = 50;
+    const limit = 150; // System font dirs have ~130 .ttf/.ttc files on Windows
     const walk = (real, vfs) => {
       if (loaded >= limit) return;
       let entries;
@@ -150,7 +150,7 @@ class X2tConverter {
         if (entry.isDirectory()) {
           this._mkdir(FS, v);
           walk(r, v);
-        } else if (/\.ttf$/i.test(entry.name)) {
+        } else if (/\.tt[fc]$/i.test(entry.name)) {
           try {
             const data = fs.readFileSync(r);
             FS.writeFile(v, new Uint8Array(data));
@@ -1062,9 +1062,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const pluginAbs = path.join(basePath, pluginDirRel);
     this.onlyOfficeDir = path.join(pluginAbs, "assets", "onlyoffice");
     this.x2tDir        = path.join(pluginAbs, "assets", "x2t");
-    this.fontsDir      = path.join(pluginAbs, "assets", "onlyoffice", "fonts");
     this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
     this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
+
+    // x2t converter uses system fonts for accurate text metrics during conversion.
+    // The numbered files in assets/onlyoffice/fonts/ are for editor canvas rendering
+    // (proprietary binary format, not .ttf) — x2t can't use those.
+    if (process.platform === "win32") {
+      this.fontsDir = "C:\\Windows\\Fonts";
+    } else if (process.platform === "darwin") {
+      this.fontsDir = "/Library/Fonts";
+    } else {
+      this.fontsDir = "/usr/share/fonts";
+    }
+    dlog("x2t fontsDir (system fonts):", this.fontsDir);
 
     // Use Obsidian's app:// protocol for assets. Obsidian serves vault files
     // via app://hash/path URLs. file:// is blocked by Chromium from app:// origin.
