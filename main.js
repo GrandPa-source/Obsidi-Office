@@ -46,10 +46,16 @@ const EDITOR_ENTRY_FILES = [
 // The mock socket replaces this exact file
 const SOCKET_IO_RELATIVE = "web-apps/vendor/socketio/socket.io.min.js";
 
+const DOCX_EXTENSIONS = ["docx"];
+
+// Minimal blank .docx (Arial 12pt, Letter, 1" margins)
+const BLANK_DOCX_BASE64 = 'UEsDBBQAAAAIACF7ilzXeYTq8QAAALgBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QzU7DMBCE730Ky9cqccoBIZSkB36OwKE8wMreJFb9J69b2rdn00KREOVozXwz62nXB+/EHjPZGDq5qhspMOhobBg7+b55ru6koALBgIsBO3lEkut+0W6OCUkwHKiTUynpXinSE3qgOiYMrAwxeyj8zKNKoLcworppmlulYygYSlXmDNkvhGgfcYCdK+LpwMr5loyOpHg4e+e6TkJKzmoorKt9ML+Kqq+SmsmThyabaMkGqa6VzOL1jh/0lSfK1qB4g1xewLNRfcRslIl65xmu/0/649o4DFbjhZ/TUo4aiXh77+qL4sGG71+06jR8/wlQSwMEFAAAAAgAIXuKXCAbhuqyAAAALgEAAAsAAABfcmVscy8ucmVsc43Puw6CMBQG4J2naM4uBQdjDIXFmLAafICmPZRGeklbL7y9HRzEODie23fyN93TzOSOIWpnGdRlBQStcFJbxeAynDZ7IDFxK/nsLDJYMELXFs0ZZ57yTZy0jyQjNjKYUvIHSqOY0PBYOo82T0YXDE+5DIp6Lq5cId1W1Y6GTwPagpAVS3rJIPSyBjIsHv/h3ThqgUcnbgZt+vHlayPLPChMDB4uSCrf7TKzQHNKuorZvgBQSwMEFAAAAAgAIXuKXATyCbj8AAAAmgEAABEAAAB3b3JkL2RvY3VtZW50LnhtbEVQQW7DIBC85xWIe4NjuVVkBUe55FapUtsHEExsJGARS+Omr+8SO8mFnZldZlh2+1/v2MUktBAk36wrzkzQ0NswSP79dXzZcoZZhV45CEbyq0G+71a7qe1B/3gTMiOHgO0k+ZhzbIVAPRqvcA3RBOqdIXmViaZBTJD6mEAbRArwTtRV9Sa8soF3K8bI9QT9tcAbiV05PlIpaSlHCBnZ1CrU1kp+SFY5Tnw8BHxwUUbxj+SLcpLXTVHEYiIWz1IfUWh0nhPi8Fku0j6bum6qmzfh1y1hMQ+8q0Rqhkh6M48kO4z5SU+QM/gnd+Z8784vWfLK0uK+dUH3X+3+AVBLAwQUAAAACAAhe4pc1eog13kAAACOAAAAHAAAAHdvcmQvX3JlbHMvZG9jdW1lbnQueG1sLnJlbHNNjEEOwiAQAO99Bdm7BT0YY0p76wOMPmBDV2iEhbDE6O/l6HEymZmWT4rqTVX2zBaOowFF7PK2s7fwuK+HCyhpyBvGzGThSwLLPEw3ith6I2EvovqExUJorVy1FhcooYy5EHfzzDVh61i9Luhe6EmfjDnr+v8APQ8/UEsBAhQDFAAAAAgAIXuKXNd5hOrxAAAAuAEAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAACAAhe4pcIBuG6rIAAAAuAQAACwAAAAAAAAAAAAAAgAEiAQAAX3JlbHMvLnJlbHNQSwECFAMUAAAACAAhe4pcBPIJuPwAAACaAQAAEQAAAAAAAAAAAAAAgAH9AQAAd29yZC9kb2N1bWVudC54bWxQSwECFAMUAAAACAAhe4pc1eog13kAAACOAAAAHAAAAAAAAAAAAAAAgAEoAwAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1BLBQYAAAAABAAEAAMBAADbAwAAAAA=';
+
 const DEFAULT_SETTINGS = {
   defaultMode: "edit",
   debugLogging: true,
   autoSaveDelayMs: 1500,
+  templateDir: "_docx-templates",
 };
 
 // ===========================================================================
@@ -605,11 +611,117 @@ class DocxView extends obsidian.FileView {
   async onOpen() {
     this.containerEl.empty();
     this.containerEl.style.padding = "0";
+    if (!this.file) {
+      this._renderLandingPage();
+    }
   }
 
   async onClose() {
     if (this._autoSaveTimer) clearTimeout(this._autoSaveTimer);
     if (this.plugin.bridge) this.plugin.bridge.removeDocument(this.docKey);
+  }
+
+  _renderLandingPage() {
+    const container = this.containerEl;
+    container.empty();
+    const wrapper = container.createEl("div", { cls: "docx-landing" });
+
+    const style = wrapper.createEl("style");
+    style.textContent =
+      ".docx-landing { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
+      ".docx-landing h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
+      ".docx-landing .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }" +
+      ".docx-landing .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
+      ".docx-landing .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
+      ".docx-landing .template-card .icon { font-size: 32px; margin-bottom: 8px; }" +
+      ".docx-landing .template-card .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" +
+      ".docx-landing .recent-table { width: 100%; border-collapse: collapse; }" +
+      ".docx-landing .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
+      ".docx-landing .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
+      ".docx-landing .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
+      ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
+
+    // --- NEW section ---
+    wrapper.createEl("h2", { text: "New" });
+    const grid = wrapper.createEl("div", { cls: "template-grid" });
+
+    const templateDir = this.plugin.settings.templateDir || "_docx-templates";
+    const templates = [];
+    const files = this.app.vault.getFiles();
+    for (const f of files) {
+      if (f.path.startsWith(templateDir + "/") && f.extension === "docx") {
+        templates.push({ name: f.basename, path: f.path });
+      }
+    }
+    templates.sort((a, b) => {
+      if (a.name === "Blank Document") return -1;
+      if (b.name === "Blank Document") return 1;
+      return a.name.localeCompare(b.name);
+    });
+    if (templates.length === 0) {
+      templates.push({ name: "Blank Document", path: "" });
+    }
+
+    for (const tmpl of templates) {
+      const card = grid.createEl("div", { cls: "template-card" });
+      card.createEl("div", { cls: "icon", text: tmpl.name === "Blank Document" ? "\u{1F4C4}" : "\u{1F4DD}" });
+      card.createEl("div", { cls: "label", text: tmpl.name });
+      card.addEventListener("click", () => this._createFromTemplate(tmpl.path, tmpl.name));
+    }
+
+    // --- RECENT section ---
+    wrapper.createEl("h2", { text: "Recent" });
+    const recentFiles = this.app.vault.getFiles()
+      .filter((f) => DOCX_EXTENSIONS.includes(f.extension) && !f.path.startsWith(templateDir + "/"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 20);
+
+    if (recentFiles.length === 0) {
+      wrapper.createEl("p", { text: "No recent .docx files found." });
+    } else {
+      const table = wrapper.createEl("table", { cls: "recent-table" });
+      const thead = table.createEl("thead");
+      const headerRow = thead.createEl("tr");
+      headerRow.createEl("th", { text: "Document" });
+      headerRow.createEl("th", { text: "Modified", cls: "date" });
+      const tbody = table.createEl("tbody");
+      for (const f of recentFiles) {
+        const row = tbody.createEl("tr");
+        row.createEl("td", { text: f.basename });
+        const date = new Date(f.stat.mtime);
+        row.createEl("td", {
+          text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+          cls: "date",
+        });
+        row.addEventListener("click", () => this._openDocxFile(f));
+      }
+    }
+  }
+
+  async _createFromTemplate(templatePath, templateName) {
+    const modal = new FileNameModal(this.app, templateName, async (filename) => {
+      if (!filename) return;
+      if (!filename.endsWith(".docx")) filename += ".docx";
+      if (await this.app.vault.adapter.exists(filename)) {
+        new obsidian.Notice('File "' + filename + '" already exists.');
+        return;
+      }
+      if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
+        await this.app.vault.adapter.copy(templatePath, filename);
+      } else {
+        const bytes = Uint8Array.from(atob(BLANK_DOCX_BASE64), (c) => c.charCodeAt(0));
+        await this.app.vault.adapter.writeBinary(filename, bytes);
+      }
+      new obsidian.Notice("Created: " + filename);
+      const f = this.app.vault.getAbstractFileByPath(filename);
+      if (f && f instanceof obsidian.TFile) this._openDocxFile(f);
+    });
+    modal.open();
+  }
+
+  _openDocxFile(file) {
+    this.file = file;
+    this.onLoadFile(file);
   }
 
   async onLoadFile(file) {
@@ -1011,6 +1123,17 @@ class SettingsTab extends obsidian.PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
+    new obsidian.Setting(containerEl)
+      .setName("Template directory")
+      .setDesc("Folder for .docx templates (hidden from file explorer).")
+      .addText(t => t
+        .setValue(this.plugin.settings.templateDir || "_docx-templates")
+        .onChange(async v => {
+          this.plugin.settings.templateDir = v;
+          await this.plugin.saveSettings();
+          this.plugin._injectTemplateDirCSS();
+        }));
+
     containerEl.createEl("h3", { text: "Asset paths" });
     const code = (label, value) => {
       const wrap = containerEl.createEl("div", { attr: { style: "margin: 6px 0; font-size: 12px;" } });
@@ -1138,7 +1261,18 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       }
     });
 
-    new obsidian.Notice("OnlyObsidian Test loaded.");
+    // Ribbon icon — opens landing page
+    this.addRibbonIcon("file-text", "Obsidi-Office", () => {
+      const leaf = this.app.workspace.getLeaf(true);
+      leaf.setViewState({ type: VIEW_TYPE, active: true });
+      this.app.workspace.setActiveLeaf(leaf, { focus: true });
+    });
+
+    // Template directory setup
+    await this._initTemplateDir();
+    this._injectTemplateDirCSS();
+
+    new obsidian.Notice("Obsidi-Office loaded.");
   }
 
   async onunload() {
@@ -1241,12 +1375,74 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  async _initTemplateDir() {
+    const dir = this.settings.templateDir || "_docx-templates";
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(dir))) {
+      await adapter.mkdir(dir);
+    }
+    const blankPath = dir + "/Blank Document.docx";
+    if (!(await adapter.exists(blankPath))) {
+      const bytes = Uint8Array.from(atob(BLANK_DOCX_BASE64), (c) => c.charCodeAt(0));
+      await adapter.writeBinary(blankPath, bytes);
+    }
+  }
+
+  _injectTemplateDirCSS() {
+    const styleId = "obsidi-office-hide-templates";
+    let style = document.getElementById(styleId);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = styleId;
+      document.head.appendChild(style);
+    }
+    const dir = this.settings.templateDir || "_docx-templates";
+    style.textContent = '.nav-folder-title[data-path="' + dir + '"], .nav-folder-title[data-path="' + dir + '"] + .nav-folder-children { display: none !important; }';
+  }
+
   async _openInView(file) {
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: VIEW_TYPE, active: true });
     const view = leaf.view;
     if (view && view.onLoadFile) await view.onLoadFile(file);
   }
+}
+
+// ===========================================================================
+// FileNameModal — prompt for new document name
+// ===========================================================================
+
+class FileNameModal extends obsidian.Modal {
+  constructor(app, defaultName, onSubmit) {
+    super(app);
+    this.defaultName = defaultName === "Blank Document" ? "" : defaultName;
+    this.onSubmit = onSubmit;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "New Document" });
+    contentEl.createEl("p", { text: "Enter a name for the new document:" });
+    const input = contentEl.createEl("input", { type: "text" });
+    input.style.width = "100%";
+    input.style.padding = "8px";
+    input.style.marginBottom = "12px";
+    input.placeholder = "Document name";
+    input.value = this.defaultName;
+    input.focus();
+    const btnRow = contentEl.createEl("div", { attr: { style: "display:flex;gap:8px;justify-content:flex-end;" } });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+    const okBtn = btnRow.createEl("button", { text: "Create", cls: "mod-cta" });
+    okBtn.addEventListener("click", () => {
+      const name = input.value.trim();
+      if (name) { this.onSubmit(name); this.close(); }
+    });
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { const name = input.value.trim(); if (name) { this.onSubmit(name); this.close(); } }
+      if (e.key === "Escape") this.close();
+    });
+  }
+  onClose() { this.contentEl.empty(); }
 }
 
 module.exports = OnlyObsidianTestPlugin;
