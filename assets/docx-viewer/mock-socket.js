@@ -416,25 +416,99 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       triggerSaveToVault();
     }
     if (e.data.type === "docx-viewer-print") {
-      window.print();
+      captureAndPrint();
     }
   });
 
-  // --- Ctrl+P print interceptor ---
+  // --- Print via canvas capture ---
+  function captureAndPrint() {
+    if (!window.Asc || !window.Asc.editor) return;
+    var editor = window.Asc.editor;
+    var pageCount = 1;
+    try {
+      pageCount = editor.asc_getCountPages ? editor.asc_getCountPages() :
+        editor.getCountPages ? editor.getCountPages() : 1;
+      if (!pageCount || pageCount < 1) pageCount = 1;
+    } catch(e) { pageCount = 1; }
+    _slog("print: capturing", pageCount, "pages");
+
+    // Find all canvases and log them for debugging
+    var allCanvases = document.querySelectorAll("canvas");
+    _slog("print: found", allCanvases.length, "canvases");
+    for (var ci = 0; ci < allCanvases.length; ci++) {
+      _slog("print: canvas[" + ci + "] id=" + allCanvases[ci].id + " size=" + allCanvases[ci].width + "x" + allCanvases[ci].height);
+    }
+
+    // The main editor canvas — try multiple selectors
+    var canvas = document.getElementById("id_viewer") ||
+      document.getElementById("id_target_cursor") ||
+      document.querySelector("canvas");
+    if (!canvas) { _slog("print: no canvas found"); return; }
+    _slog("print: using canvas", canvas.id, canvas.width + "x" + canvas.height);
+
+    var images = [];
+    var currentPage = 0;
+
+    function capturePage() {
+      if (currentPage >= pageCount) {
+        openPrintWindow(images);
+        return;
+      }
+      if (editor.goToPage) editor.goToPage(currentPage);
+      else if (editor.asc_GotoPage) editor.asc_GotoPage(currentPage);
+
+      setTimeout(function () {
+        try {
+          // Try the main viewer canvas first, fall back to largest canvas
+          var targetCanvas = document.getElementById("id_viewer") || canvas;
+          var dataUrl = targetCanvas.toDataURL("image/png");
+          _slog("print: page", currentPage, "captured, dataUrl length:", dataUrl.length);
+          if (dataUrl.length > 100) { // not just "data:image/png;base64,"
+            images.push(dataUrl);
+          } else {
+            _slog("print: page", currentPage, "produced empty image");
+          }
+        } catch (e) {
+          _slog("print: canvas capture FAILED for page", currentPage, ":", e.message);
+          // If SecurityError (tainted canvas), try cloning the canvas content
+          try {
+            var clone = document.createElement("canvas");
+            var targetCanvas = document.getElementById("id_viewer") || canvas;
+            clone.width = targetCanvas.width;
+            clone.height = targetCanvas.height;
+            var ctx = clone.getContext("2d");
+            ctx.drawImage(targetCanvas, 0, 0);
+            images.push(clone.toDataURL("image/png"));
+            _slog("print: page", currentPage, "captured via clone");
+          } catch (e2) {
+            _slog("print: clone also failed:", e2.message);
+          }
+        }
+        currentPage++;
+        capturePage();
+      }, 300);
+    }
+
+    function openPrintWindow(imgs) {
+      _slog("print: captured", imgs.length, "pages, sending to parent for print tab");
+      // Send captured images to parent — parent opens an Obsidian tab for printing
+      window.parent.postMessage({
+        type: "obsidi-office-print",
+        images: imgs
+      }, "*");
+    }
+
+    capturePage();
+  }
+
+  // --- Ctrl+P interceptor ---
   window.addEventListener("keydown", function (e) {
     if ((e.ctrlKey || e.metaKey) && e.key === "p") {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-      _slog("Ctrl+P intercepted — printing editor frame");
-      var style = document.createElement("style");
-      style.id = "docx-print-style";
-      style.textContent = "@media print { @page { size: auto; margin: 10mm; } " +
-        "body { overflow: visible !important; } " +
-        "#id_viewer_overlay, #id_main_view { height: auto !important; overflow: visible !important; } }";
-      document.head.appendChild(style);
-      window.print();
-      setTimeout(function () { var s = document.getElementById("docx-print-style"); if (s) s.remove(); }, 1000);
+      _slog("Ctrl+P intercepted — canvas capture print");
+      captureAndPrint();
     }
   }, true);
 
@@ -468,8 +542,8 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     var btn = document.createElement("button");
     btn.id = "obsidi-metadata-btn";
     btn.textContent = "Obsidian Metadata";
-    btn.style.cssText = "margin: 8px 16px; padding: 6px 14px; border-radius: 4px; cursor: pointer; " +
-      "background: #7b6cd9; color: white; border: none; font-size: 12px;";
+    btn.style.cssText = "margin: 12px 0 -21px -10px; padding: 6px 14px; border-radius: 4px; cursor: pointer; " +
+      "background: #7b6cd9; color: white; border: none; font-size: 12px; display: block;";
     btn.addEventListener("click", function () {
       window.parent.postMessage({
         type: "obsidi-office-metadata",

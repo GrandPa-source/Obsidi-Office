@@ -746,6 +746,14 @@ class DocxView extends obsidian.FileView {
     }
 
     this.file = file;
+
+    // Collapse left sidebar to maximize editor space (delayed to run after
+    // Obsidian's file explorer finishes its reveal-active-file action)
+    setTimeout(() => {
+      const leftSplit = this.app.workspace.leftSplit;
+      if (leftSplit && !leftSplit.collapsed) leftSplit.collapse();
+    }, 300);
+
     this.containerEl.empty();
     this.containerEl.createEl("div", {
       text: "Loading " + file.basename + " ...",
@@ -1433,12 +1441,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     // Listen for metadata button postMessage from editor iframe
     this._metadataHandler = (ev) => {
-      if (ev.data && ev.data.type === "obsidi-office-metadata") {
+      if (!ev.data || !ev.data.type) return;
+      if (ev.data.type === "obsidi-office-metadata") {
         const filePath = ev.data.filePath;
         if (filePath) {
           const modal = new MetadataModal(this.app, filePath);
           modal.open();
         }
+      }
+      if (ev.data.type === "obsidi-office-print" && ev.data.images) {
+        this._openPrintTab(ev.data.images);
       }
     };
     window.addEventListener("message", this._metadataHandler);
@@ -1570,6 +1582,30 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
     const dir = this.settings.templateDir || "_docx-templates";
     style.textContent = '.nav-folder-title[data-path="' + dir + '"], .nav-folder-title[data-path="' + dir + '"] + .nav-folder-children { display: none !important; }';
+  }
+
+  _openPrintTab(images) {
+    // Write captured pages to a temp HTML file and open in system browser.
+    // Electron's window.print() always prints the full BrowserWindow —
+    // the system browser's print dialog works correctly for just the content.
+    const os = require("os");
+    const tempPath = path.join(os.tmpdir(), "obsidi-office-print.html");
+    let html = '<!DOCTYPE html><html><head><title>Print — Obsidi-Office</title><style>' +
+      '@media print { @page { margin: 0; } } ' +
+      'body { margin: 0; background: white; } ' +
+      'img { display: block; width: 100%; height: auto; page-break-after: always; } ' +
+      'img:last-child { page-break-after: avoid; }' +
+      '</style></head><body>';
+    for (const src of images) {
+      html += '<img src="' + src + '">';
+    }
+    html += '<script>window.onload=function(){setTimeout(function(){window.print();},500);};<\/script>';
+    html += '</body></html>';
+
+    fs.writeFileSync(tempPath, html, "utf-8");
+    dlog("print: wrote", images.length, "pages to", tempPath);
+    require("electron").shell.openPath(tempPath);
+    new obsidian.Notice("Opening print preview in browser...");
   }
 
   _injectSidecarCSS() {
