@@ -1168,6 +1168,113 @@ class SettingsTab extends obsidian.PluginSettingTab {
 // Plugin
 // ===========================================================================
 
+// ===========================================================================
+// Standalone landing page — rendered without a FileView
+// ===========================================================================
+
+function renderStandaloneLandingPage(containerEl, plugin) {
+  containerEl.empty();
+  const wrapper = containerEl.createEl("div", { cls: "docx-landing" });
+
+  const style = wrapper.createEl("style");
+  style.textContent =
+    ".docx-landing { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
+    ".docx-landing h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
+    ".docx-landing .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }" +
+    ".docx-landing .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
+    ".docx-landing .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
+    ".docx-landing .template-card .icon { font-size: 32px; margin-bottom: 8px; }" +
+    ".docx-landing .template-card .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" +
+    ".docx-landing .recent-table { width: 100%; border-collapse: collapse; }" +
+    ".docx-landing .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
+    ".docx-landing .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
+    ".docx-landing .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
+    ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
+
+  const app = plugin.app;
+  const templateDir = plugin.settings.templateDir || "_docx-templates";
+
+  // --- NEW section ---
+  wrapper.createEl("h2", { text: "New" });
+  const grid = wrapper.createEl("div", { cls: "template-grid" });
+  const templates = [];
+  for (const f of app.vault.getFiles()) {
+    if (f.path.startsWith(templateDir + "/") && f.extension === "docx") {
+      templates.push({ name: f.basename, path: f.path });
+    }
+  }
+  templates.sort((a, b) => {
+    if (a.name === "Blank Document") return -1;
+    if (b.name === "Blank Document") return 1;
+    return a.name.localeCompare(b.name);
+  });
+  if (templates.length === 0) templates.push({ name: "Blank Document", path: "" });
+
+  for (const tmpl of templates) {
+    const card = grid.createEl("div", { cls: "template-card" });
+    card.createEl("div", { cls: "icon", text: tmpl.name === "Blank Document" ? "\u{1F4C4}" : "\u{1F4DD}" });
+    card.createEl("div", { cls: "label", text: tmpl.name });
+    card.addEventListener("click", () => {
+      const modal = new FileNameModal(app, tmpl.name, async (filename) => {
+        if (!filename) return;
+        if (!filename.endsWith(".docx")) filename += ".docx";
+        if (await app.vault.adapter.exists(filename)) {
+          new obsidian.Notice('File "' + filename + '" already exists.');
+          return;
+        }
+        if (tmpl.path && await app.vault.adapter.exists(tmpl.path)) {
+          await app.vault.adapter.copy(tmpl.path, filename);
+        } else {
+          const bytes = Uint8Array.from(atob(BLANK_DOCX_BASE64), (c) => c.charCodeAt(0));
+          await app.vault.adapter.writeBinary(filename, bytes);
+        }
+        new obsidian.Notice("Created: " + filename);
+        const f = app.vault.getAbstractFileByPath(filename);
+        if (f && f instanceof obsidian.TFile) {
+          const leaf = app.workspace.getLeaf(true);
+          await leaf.openFile(f);
+        }
+      });
+      modal.open();
+    });
+  }
+
+  // --- RECENT section ---
+  wrapper.createEl("h2", { text: "Recent" });
+  const recentFiles = app.vault.getFiles()
+    .filter((f) => DOCX_EXTENSIONS.includes(f.extension) && !f.path.startsWith(templateDir + "/"))
+    .sort((a, b) => b.stat.mtime - a.stat.mtime)
+    .slice(0, 20);
+
+  if (recentFiles.length === 0) {
+    wrapper.createEl("p", { text: "No recent .docx files found." });
+  } else {
+    const table = wrapper.createEl("table", { cls: "recent-table" });
+    const thead = table.createEl("thead");
+    const headerRow = thead.createEl("tr");
+    headerRow.createEl("th", { text: "Document" });
+    headerRow.createEl("th", { text: "Modified", cls: "date" });
+    const tbody = table.createEl("tbody");
+    for (const f of recentFiles) {
+      const row = tbody.createEl("tr");
+      row.createEl("td", { text: f.basename });
+      const date = new Date(f.stat.mtime);
+      row.createEl("td", {
+        text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        cls: "date",
+      });
+      row.addEventListener("click", async () => {
+        const leaf = app.workspace.getLeaf(true);
+        await leaf.openFile(f);
+      });
+    }
+  }
+}
+
+// ===========================================================================
+// Plugin
+// ===========================================================================
+
 class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async onload() {
     await this.loadSettings();
@@ -1261,11 +1368,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       }
     });
 
-    // Ribbon icon — opens landing page
+    // Ribbon icon — opens landing page.
+    // Can't use setViewState because FileView requires a file.
+    // Instead, render the landing page directly using a standalone function.
+    const plugin = this;
     this.addRibbonIcon("file-text", "Obsidi-Office", () => {
       const leaf = this.app.workspace.getLeaf(true);
-      leaf.setViewState({ type: VIEW_TYPE, active: true });
       this.app.workspace.setActiveLeaf(leaf, { focus: true });
+      renderStandaloneLandingPage(leaf.view.containerEl, plugin);
     });
 
     // Template directory setup
