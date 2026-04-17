@@ -724,7 +724,30 @@ class DocxView extends obsidian.FileView {
     this.onLoadFile(file);
   }
 
+  _findExistingLeaf(file) {
+    let found = null;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view && leaf.view.getViewType() === VIEW_TYPE &&
+          leaf.view !== this && leaf.view.file &&
+          leaf.view.file.path === file.path) {
+        found = leaf;
+      }
+    });
+    return found;
+  }
+
   async onLoadFile(file) {
+    // Check if another leaf already has this file open
+    const existingLeaf = this._findExistingLeaf(file);
+    if (existingLeaf && existingLeaf !== this.leaf) {
+      this.app.workspace.revealLeaf(existingLeaf);
+      // Only detach if this is a fresh view with no document loaded
+      if (!this.file || this.file.path !== file.path) {
+        setTimeout(() => { this.leaf.detach(); }, 0);
+      }
+      return;
+    }
+
     this.file = file;
     this.containerEl.empty();
     this.containerEl.createEl("div", {
