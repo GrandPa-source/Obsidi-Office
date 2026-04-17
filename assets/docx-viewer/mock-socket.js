@@ -465,8 +465,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function injectMetadataBtn() {
     var panel = document.getElementById("panel-info");
     if (!panel || panel.querySelector("#obsidi-metadata-btn")) return;
-    // Find the title/header element (first child with text) and insert after it
-    var header = panel.querySelector(".header, .title, table, .flex-settings");
     var btn = document.createElement("button");
     btn.id = "obsidi-metadata-btn";
     btn.textContent = "Obsidian Metadata";
@@ -478,10 +476,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         filePath: (window.__oo_params && window.__oo_params.docFilePath) || ""
       }, "*");
     });
-    if (header && header.nextSibling) {
-      header.parentNode.insertBefore(btn, header.nextSibling);
-    } else if (panel.firstChild) {
-      panel.insertBefore(btn, panel.firstChild.nextSibling || null);
+    // Insert as first child so it appears at the top of the info panel
+    if (panel.firstChild) {
+      panel.insertBefore(btn, panel.firstChild);
     } else {
       panel.appendChild(btn);
     }

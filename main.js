@@ -1620,8 +1620,8 @@ class MetadataModal extends obsidian.Modal {
     });
 
     // --- Tags section ---
-    contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin-top: 4px;" } });
-    this._tagContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; min-height: 24px;" } });
+    contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin: 4px 0 2px;" } });
+    this._tagContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 2px;" } });
     this._renderChips(this._tagContainer, this.tags, "tag");
 
     const tagInput = contentEl.createEl("input", { type: "text" });
@@ -1666,8 +1666,8 @@ class MetadataModal extends obsidian.Modal {
     });
 
     // --- Links section ---
-    contentEl.createEl("label", { text: "Links", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin-top: 8px;" } });
-    this._linkContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; min-height: 24px;" } });
+    contentEl.createEl("label", { text: "Links", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin: 6px 0 2px;" } });
+    this._linkContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin-bottom: 2px;" } });
     this._renderChips(this._linkContainer, this.links, "link");
 
     const linkInput = contentEl.createEl("input", { type: "text" });
