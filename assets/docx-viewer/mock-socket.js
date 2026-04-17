@@ -465,18 +465,26 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   function injectMetadataBtn() {
     var panel = document.getElementById("panel-info");
     if (!panel || panel.querySelector("#obsidi-metadata-btn")) return;
+    // Find the title/header element (first child with text) and insert after it
+    var header = panel.querySelector(".header, .title, table, .flex-settings");
     var btn = document.createElement("button");
     btn.id = "obsidi-metadata-btn";
     btn.textContent = "Obsidian Metadata";
-    btn.style.cssText = "margin: 16px; padding: 8px 16px; border-radius: 4px; cursor: pointer; " +
-      "background: #7b6cd9; color: white; border: none; font-size: 13px; width: calc(100% - 32px);";
+    btn.style.cssText = "margin: 8px 16px; padding: 6px 14px; border-radius: 4px; cursor: pointer; " +
+      "background: #7b6cd9; color: white; border: none; font-size: 12px;";
     btn.addEventListener("click", function () {
       window.parent.postMessage({
         type: "obsidi-office-metadata",
         filePath: (window.__oo_params && window.__oo_params.docFilePath) || ""
       }, "*");
     });
-    panel.appendChild(btn);
+    if (header && header.nextSibling) {
+      header.parentNode.insertBefore(btn, header.nextSibling);
+    } else if (panel.firstChild) {
+      panel.insertBefore(btn, panel.firstChild.nextSibling || null);
+    } else {
+      panel.appendChild(btn);
+    }
   }
   // Try immediately and also watch for DOM changes (panel is populated lazily)
   new MutationObserver(function () { injectMetadataBtn(); })

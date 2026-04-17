@@ -1611,24 +1611,24 @@ class MetadataModal extends obsidian.Modal {
 
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h3", { text: "Obsidian Metadata" });
-    contentEl.createEl("p", {
+    contentEl.style.padding = "12px 16px";
+    const titleRow = contentEl.createEl("div", { attr: { style: "display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;" } });
+    titleRow.createEl("h3", { text: "Obsidian Metadata", attr: { style: "margin: 0;" } });
+    titleRow.createEl("span", {
       text: this.docxPath.split("/").pop(),
-      attr: { style: "color: var(--text-muted); font-size: 13px; margin-top: -8px;" }
+      attr: { style: "color: var(--text-muted); font-size: 12px;" }
     });
 
     // --- Tags section ---
-    contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; display: block; margin-top: 12px;" } });
-    this._tagContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; min-height: 28px;" } });
+    contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin-top: 4px;" } });
+    this._tagContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; min-height: 24px;" } });
     this._renderChips(this._tagContainer, this.tags, "tag");
 
     const tagInput = contentEl.createEl("input", { type: "text" });
-    tagInput.style.width = "100%";
-    tagInput.style.padding = "6px 8px";
-    tagInput.style.marginBottom = "4px";
+    tagInput.style.cssText = "width: 100%; padding: 4px 8px; margin-bottom: 2px; font-size: 12px;";
     tagInput.placeholder = "Type to search tags...";
 
-    const tagSuggest = contentEl.createEl("div", { attr: { style: "max-height: 120px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none;" } });
+    const tagSuggest = contentEl.createEl("div", { attr: { style: "max-height: 100px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none; font-size: 12px;" } });
 
     tagInput.addEventListener("input", () => {
       const q = tagInput.value.replace(/^#/, "").toLowerCase();
@@ -1666,17 +1666,15 @@ class MetadataModal extends obsidian.Modal {
     });
 
     // --- Links section ---
-    contentEl.createEl("label", { text: "Links", attr: { style: "font-weight: 600; display: block; margin-top: 16px;" } });
-    this._linkContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; min-height: 28px;" } });
+    contentEl.createEl("label", { text: "Links", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin-top: 8px;" } });
+    this._linkContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 3px; margin: 4px 0; min-height: 24px;" } });
     this._renderChips(this._linkContainer, this.links, "link");
 
     const linkInput = contentEl.createEl("input", { type: "text" });
-    linkInput.style.width = "100%";
-    linkInput.style.padding = "6px 8px";
-    linkInput.style.marginBottom = "4px";
+    linkInput.style.cssText = "width: 100%; padding: 4px 8px; margin-bottom: 2px; font-size: 12px;";
     linkInput.placeholder = "Type to search notes...";
 
-    const linkSuggest = contentEl.createEl("div", { attr: { style: "max-height: 120px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none;" } });
+    const linkSuggest = contentEl.createEl("div", { attr: { style: "max-height: 100px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none; font-size: 12px;" } });
 
     linkInput.addEventListener("input", () => {
       const q = linkInput.value.toLowerCase();
@@ -1716,7 +1714,7 @@ class MetadataModal extends obsidian.Modal {
     });
 
     // --- Buttons ---
-    const btnRow = contentEl.createEl("div", { attr: { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;" } });
+    const btnRow = contentEl.createEl("div", { attr: { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px;" } });
     const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
     cancelBtn.addEventListener("click", () => this.close());
     const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
@@ -1728,9 +1726,9 @@ class MetadataModal extends obsidian.Modal {
     for (let i = 0; i < items.length; i++) {
       const chip = container.createEl("span", {
         text: type === "tag" ? "#" + items[i] : items[i],
-        attr: { style: "display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 12px; background: var(--background-modifier-hover); border: 1px solid var(--background-modifier-border);" }
+        attr: { style: "display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 10px; font-size: 11px; background: var(--background-modifier-hover); border: 1px solid var(--background-modifier-border);" }
       });
-      const x = chip.createEl("span", { text: "\u00D7", attr: { style: "cursor: pointer; font-size: 14px; line-height: 1; color: var(--text-muted);" } });
+      const x = chip.createEl("span", { text: "\u00D7", attr: { style: "cursor: pointer; font-size: 12px; line-height: 1; color: var(--text-muted);" } });
       const idx = i;
       x.addEventListener("click", () => {
         items.splice(idx, 1);
