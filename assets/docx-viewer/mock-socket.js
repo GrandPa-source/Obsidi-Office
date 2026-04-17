@@ -459,33 +459,28 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   }, 500);
 
   // --- Obsidian Metadata button in File > Info panel ---
-  // Polls for the info panel DOM, then uses a MutationObserver to inject
-  // the button whenever the panel is shown (OnlyOffice recreates it on each open).
-  var _metaBtnInjected = false;
-  new MutationObserver(function () {
-    if (_metaBtnInjected) return;
-    var panel = document.querySelector(".panel-info");
-    if (!panel) return;
-    _metaBtnInjected = true;
-    // Re-inject whenever the panel content changes
-    new MutationObserver(function () {
-      var inner = panel.querySelector(".inner-content") || panel;
-      if (inner && !inner.querySelector("#obsidi-metadata-btn")) {
-        var btn = document.createElement("button");
-        btn.id = "obsidi-metadata-btn";
-        btn.textContent = "Obsidian Metadata";
-        btn.style.cssText = "margin: 12px 16px; padding: 8px 16px; border-radius: 4px; cursor: pointer; " +
-          "background: var(--interactive-accent, #7b6cd9); color: white; border: none; font-size: 13px; width: calc(100% - 32px);";
-        btn.addEventListener("click", function () {
-          window.parent.postMessage({
-            type: "obsidi-office-metadata",
-            filePath: (window.__oo_params && window.__oo_params.docFilePath) || ""
-          }, "*");
-        });
-        inner.appendChild(btn);
-      }
-    }).observe(panel, { childList: true, subtree: true });
-  }).observe(document.body, { childList: true, subtree: true });
+  // The info panel is at #panel-info. DocumentInfo view renders into it
+  // when the user clicks File > Info. We watch for content changes and
+  // inject our button at the bottom.
+  function injectMetadataBtn() {
+    var panel = document.getElementById("panel-info");
+    if (!panel || panel.querySelector("#obsidi-metadata-btn")) return;
+    var btn = document.createElement("button");
+    btn.id = "obsidi-metadata-btn";
+    btn.textContent = "Obsidian Metadata";
+    btn.style.cssText = "margin: 16px; padding: 8px 16px; border-radius: 4px; cursor: pointer; " +
+      "background: #7b6cd9; color: white; border: none; font-size: 13px; width: calc(100% - 32px);";
+    btn.addEventListener("click", function () {
+      window.parent.postMessage({
+        type: "obsidi-office-metadata",
+        filePath: (window.__oo_params && window.__oo_params.docFilePath) || ""
+      }, "*");
+    });
+    panel.appendChild(btn);
+  }
+  // Try immediately and also watch for DOM changes (panel is populated lazily)
+  new MutationObserver(function () { injectMetadataBtn(); })
+    .observe(document.body, { childList: true, subtree: true });
 
   // Auto-save is handled in the parent (main.js) via onDocumentStateChange event.
   // Parent sends "docx-viewer-save" postMessage to this iframe after 10s debounce.
