@@ -1163,14 +1163,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   async _downloadAssets(pluginAbs) {
-    const ASSET_URL = "https://github.com/GrandPa-source/Obsidi-Office/releases/download/v0.1.0-assets/onlyobsidian-assets-v9.3.1.tar.gz";
+    const ASSET_URL = "https://github.com/GrandPa-source/Obsidi-Office/releases/download/v0.1.0-assets/onlyobsidian-assets-v9.3.1-full-fonts.tar.gz";
     const assetsDir = path.join(pluginAbs, "assets");
-    const notice = new obsidian.Notice("Obsidi-Office: Downloading OnlyOffice assets (213 MB)...", 0);
+    const notice = new obsidian.Notice("Obsidi-Office: Downloading OnlyOffice assets (207 MB)...", 0);
 
     try {
       // Download the archive
       dlog("downloading assets from:", ASSET_URL);
-      notice.setMessage("Obsidi-Office: Downloading assets (213 MB)... this may take a few minutes.");
+      notice.setMessage("Obsidi-Office: Downloading assets (207 MB)... this may take a few minutes.");
 
       const response = await obsidian.requestUrl({ url: ASSET_URL });
       const tarGzBytes = response.arrayBuffer;
