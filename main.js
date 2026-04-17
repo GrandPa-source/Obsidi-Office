@@ -1168,18 +1168,45 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const notice = new obsidian.Notice("Obsidi-Office: Downloading OnlyOffice assets (207 MB)...", 0);
 
     try {
-      // Download the archive
+      // Download the archive via Node.js https (streams to disk, shows progress).
+      // Obsidian's requestUrl() loads the entire file into RAM which is too slow for 207 MB.
       dlog("downloading assets from:", ASSET_URL);
-      notice.setMessage("Obsidi-Office: Downloading assets (207 MB)... this may take a few minutes.");
-
-      const response = await obsidian.requestUrl({ url: ASSET_URL });
-      const tarGzBytes = response.arrayBuffer;
-      dlog("downloaded", tarGzBytes.byteLength, "bytes");
-      notice.setMessage("Obsidi-Office: Download complete. Extracting...");
-
-      // Write tar.gz to temp location
       const tarGzPath = path.join(pluginAbs, "_assets-download.tar.gz");
-      fs.writeFileSync(tarGzPath, Buffer.from(tarGzBytes));
+
+      await new Promise((resolve, reject) => {
+        const https = require("https");
+        const follow = (url, redirects) => {
+          if (redirects > 5) { reject(new Error("Too many redirects")); return; }
+          https.get(url, (res) => {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+              follow(res.headers.location, redirects + 1);
+              return;
+            }
+            if (res.statusCode !== 200) {
+              reject(new Error("HTTP " + res.statusCode));
+              return;
+            }
+            const totalBytes = parseInt(res.headers["content-length"] || "0", 10);
+            let downloaded = 0;
+            const file = fs.createWriteStream(tarGzPath);
+            res.on("data", (chunk) => {
+              downloaded += chunk.length;
+              file.write(chunk);
+              if (totalBytes > 0) {
+                const pct = Math.round((downloaded / totalBytes) * 100);
+                const mb = (downloaded / 1048576).toFixed(0);
+                notice.setMessage("Obsidi-Office: Downloading assets... " + mb + " MB / " +
+                  (totalBytes / 1048576).toFixed(0) + " MB (" + pct + "%)");
+              }
+            });
+            res.on("end", () => { file.end(); file.on("finish", resolve); });
+            res.on("error", reject);
+          }).on("error", reject);
+        };
+        follow(ASSET_URL, 0);
+      });
+      dlog("downloaded to:", tarGzPath, "size:", fs.statSync(tarGzPath).size);
+      notice.setMessage("Obsidi-Office: Download complete. Extracting...");
 
       // Extract using tar (available in Git Bash on Windows, native on Mac/Linux)
       const { execSync } = require("child_process");
