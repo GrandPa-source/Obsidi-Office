@@ -741,10 +741,7 @@ class DocxView extends obsidian.FileView {
     const existingLeaf = this._findExistingLeaf(file);
     if (existingLeaf && existingLeaf !== this.leaf) {
       this.app.workspace.revealLeaf(existingLeaf);
-      // Only detach if this is a fresh view with no document loaded
-      if (!this.file || this.file.path !== file.path) {
-        setTimeout(() => { this.leaf.detach(); }, 0);
-      }
+      this.leaf.detach();
       return;
     }
 
