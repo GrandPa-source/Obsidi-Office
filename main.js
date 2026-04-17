@@ -830,6 +830,9 @@ class DocxView extends obsidian.FileView {
           // OnlyOffice's index.html reads params via getUrlParams() which parses
           // window.location.search.substring(1). Patch the HTML to replace that
           // expression with a hardcoded query string built from captured params.
+          // Add docFilePath so the metadata button knows which file is being edited
+          params.docFilePath = this.file ? this.file.path : "";
+
           const qs = Object.entries(params)
             .map(([k,v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
             .join("&");
@@ -1402,10 +1405,49 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await this._initTemplateDir();
     this._injectTemplateDirCSS();
 
+    // Sidecar metadata: hide *.docx.md from file explorer
+    this._injectSidecarCSS();
+
+    // Sidecar metadata: auto-rename/delete sidecars when .docx files change
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof obsidian.TFile && file.extension === "docx") {
+        const oldSidecar = oldPath + ".md";
+        const newSidecar = file.path + ".md";
+        const sf = this.app.vault.getAbstractFileByPath(oldSidecar);
+        if (sf && sf instanceof obsidian.TFile) {
+          this.app.vault.rename(sf, newSidecar);
+          dlog("sidecar renamed:", oldSidecar, "->", newSidecar);
+        }
+      }
+    }));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      if (file instanceof obsidian.TFile && file.extension === "docx") {
+        const sidecarPath = file.path + ".md";
+        const sf = this.app.vault.getAbstractFileByPath(sidecarPath);
+        if (sf && sf instanceof obsidian.TFile) {
+          this.app.vault.delete(sf);
+          dlog("sidecar deleted:", sidecarPath);
+        }
+      }
+    }));
+
+    // Listen for metadata button postMessage from editor iframe
+    this._metadataHandler = (ev) => {
+      if (ev.data && ev.data.type === "obsidi-office-metadata") {
+        const filePath = ev.data.filePath;
+        if (filePath) {
+          const modal = new MetadataModal(this.app, filePath);
+          modal.open();
+        }
+      }
+    };
+    window.addEventListener("message", this._metadataHandler);
+
     new obsidian.Notice("Obsidi-Office loaded.");
   }
 
   async onunload() {
+    if (this._metadataHandler) window.removeEventListener("message", this._metadataHandler);
     dlog("onunload");
     if (this.bridge) this.bridge.detach(window);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
@@ -1530,12 +1572,233 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     style.textContent = '.nav-folder-title[data-path="' + dir + '"], .nav-folder-title[data-path="' + dir + '"] + .nav-folder-children { display: none !important; }';
   }
 
+  _injectSidecarCSS() {
+    const styleId = "obsidi-office-hide-sidecars";
+    let style = document.getElementById(styleId);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = styleId;
+      document.head.appendChild(style);
+    }
+    // Hide *.docx.md files from file explorer (they're indexed for graph/tags but shouldn't clutter the tree)
+    style.textContent = '.nav-file-title[data-path$=".docx.md"] { display: none !important; }';
+  }
+
   async _openInView(file) {
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: VIEW_TYPE, active: true });
     const view = leaf.view;
     if (view && view.onLoadFile) await view.onLoadFile(file);
   }
+}
+
+// ===========================================================================
+// MetadataModal — Obsidian tags + wikilinks for .docx sidecar
+// ===========================================================================
+
+class MetadataModal extends obsidian.Modal {
+  constructor(app, docxPath) {
+    super(app);
+    this.docxPath = docxPath;
+    this.sidecarPath = docxPath + ".md";
+    this.tags = [];
+    this.links = [];
+  }
+
+  async onOpen() {
+    // Read existing sidecar
+    await this._loadSidecar();
+
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Obsidian Metadata" });
+    contentEl.createEl("p", {
+      text: this.docxPath.split("/").pop(),
+      attr: { style: "color: var(--text-muted); font-size: 13px; margin-top: -8px;" }
+    });
+
+    // --- Tags section ---
+    contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; display: block; margin-top: 12px;" } });
+    this._tagContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; min-height: 28px;" } });
+    this._renderChips(this._tagContainer, this.tags, "tag");
+
+    const tagInput = contentEl.createEl("input", { type: "text" });
+    tagInput.style.width = "100%";
+    tagInput.style.padding = "6px 8px";
+    tagInput.style.marginBottom = "4px";
+    tagInput.placeholder = "Type to search tags...";
+
+    const tagSuggest = contentEl.createEl("div", { attr: { style: "max-height: 120px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none;" } });
+
+    tagInput.addEventListener("input", () => {
+      const q = tagInput.value.replace(/^#/, "").toLowerCase();
+      tagSuggest.empty();
+      if (!q) { tagSuggest.style.display = "none"; return; }
+      const allTags = Object.keys(this.app.metadataCache.getTags() || {})
+        .map(t => t.replace(/^#/, ""))
+        .filter(t => t.toLowerCase().includes(q) && !this.tags.includes(t))
+        .slice(0, 10);
+      if (allTags.length === 0) { tagSuggest.style.display = "none"; return; }
+      tagSuggest.style.display = "block";
+      for (const t of allTags) {
+        const item = tagSuggest.createEl("div", { text: "#" + t, attr: { style: "padding: 4px 8px; cursor: pointer;" } });
+        item.addEventListener("mouseenter", () => { item.style.background = "var(--background-modifier-hover)"; });
+        item.addEventListener("mouseleave", () => { item.style.background = ""; });
+        item.addEventListener("click", () => {
+          this.tags.push(t);
+          this._renderChips(this._tagContainer, this.tags, "tag");
+          tagInput.value = "";
+          tagSuggest.style.display = "none";
+        });
+      }
+    });
+    tagInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && tagInput.value.trim()) {
+        const t = tagInput.value.replace(/^#/, "").trim();
+        if (t && !this.tags.includes(t)) {
+          this.tags.push(t);
+          this._renderChips(this._tagContainer, this.tags, "tag");
+        }
+        tagInput.value = "";
+        tagSuggest.style.display = "none";
+        e.preventDefault();
+      }
+    });
+
+    // --- Links section ---
+    contentEl.createEl("label", { text: "Links", attr: { style: "font-weight: 600; display: block; margin-top: 16px;" } });
+    this._linkContainer = contentEl.createEl("div", { attr: { style: "display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0; min-height: 28px;" } });
+    this._renderChips(this._linkContainer, this.links, "link");
+
+    const linkInput = contentEl.createEl("input", { type: "text" });
+    linkInput.style.width = "100%";
+    linkInput.style.padding = "6px 8px";
+    linkInput.style.marginBottom = "4px";
+    linkInput.placeholder = "Type to search notes...";
+
+    const linkSuggest = contentEl.createEl("div", { attr: { style: "max-height: 120px; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 4px; display: none;" } });
+
+    linkInput.addEventListener("input", () => {
+      const q = linkInput.value.toLowerCase();
+      linkSuggest.empty();
+      if (!q) { linkSuggest.style.display = "none"; return; }
+      const allNotes = this.app.vault.getMarkdownFiles()
+        .filter(f => f.basename.toLowerCase().includes(q) && !f.path.endsWith(".docx.md"))
+        .map(f => f.basename)
+        .filter(n => !this.links.includes("[[" + n + "]]"))
+        .slice(0, 10);
+      if (allNotes.length === 0) { linkSuggest.style.display = "none"; return; }
+      linkSuggest.style.display = "block";
+      for (const n of allNotes) {
+        const item = linkSuggest.createEl("div", { text: "[[" + n + "]]", attr: { style: "padding: 4px 8px; cursor: pointer;" } });
+        item.addEventListener("mouseenter", () => { item.style.background = "var(--background-modifier-hover)"; });
+        item.addEventListener("mouseleave", () => { item.style.background = ""; });
+        item.addEventListener("click", () => {
+          this.links.push("[[" + n + "]]");
+          this._renderChips(this._linkContainer, this.links, "link");
+          linkInput.value = "";
+          linkSuggest.style.display = "none";
+        });
+      }
+    });
+    linkInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && linkInput.value.trim()) {
+        let n = linkInput.value.trim();
+        if (!n.startsWith("[[")) n = "[[" + n + "]]";
+        if (!this.links.includes(n)) {
+          this.links.push(n);
+          this._renderChips(this._linkContainer, this.links, "link");
+        }
+        linkInput.value = "";
+        linkSuggest.style.display = "none";
+        e.preventDefault();
+      }
+    });
+
+    // --- Buttons ---
+    const btnRow = contentEl.createEl("div", { attr: { style: "display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;" } });
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+    const saveBtn = btnRow.createEl("button", { text: "Save", cls: "mod-cta" });
+    saveBtn.addEventListener("click", () => { this._saveSidecar(); this.close(); });
+  }
+
+  _renderChips(container, items, type) {
+    container.empty();
+    for (let i = 0; i < items.length; i++) {
+      const chip = container.createEl("span", {
+        text: type === "tag" ? "#" + items[i] : items[i],
+        attr: { style: "display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 12px; font-size: 12px; background: var(--background-modifier-hover); border: 1px solid var(--background-modifier-border);" }
+      });
+      const x = chip.createEl("span", { text: "\u00D7", attr: { style: "cursor: pointer; font-size: 14px; line-height: 1; color: var(--text-muted);" } });
+      const idx = i;
+      x.addEventListener("click", () => {
+        items.splice(idx, 1);
+        this._renderChips(container, items, type);
+      });
+    }
+  }
+
+  async _loadSidecar() {
+    const f = this.app.vault.getAbstractFileByPath(this.sidecarPath);
+    if (!f || !(f instanceof obsidian.TFile)) return;
+    const content = await this.app.vault.read(f);
+    // Parse YAML frontmatter
+    const fmMatch = content.match(/^---\n([\s\S]*?)\n---/);
+    if (!fmMatch) return;
+    const fm = fmMatch[1];
+    // Extract tags
+    const tagsMatch = fm.match(/tags:\n((?:\s+-\s+.+\n)*)/);
+    if (tagsMatch) {
+      this.tags = tagsMatch[1].match(/^\s+-\s+(.+)$/gm)
+        ?.map(l => l.replace(/^\s+-\s+/, "").trim()) || [];
+    }
+    // Extract links
+    const linksMatch = fm.match(/links:\n((?:\s+-\s+.+\n)*)/);
+    if (linksMatch) {
+      this.links = linksMatch[1].match(/^\s+-\s+(.+)$/gm)
+        ?.map(l => l.replace(/^\s+-\s+/, "").replace(/^["']|["']$/g, "").trim()) || [];
+    }
+  }
+
+  async _saveSidecar() {
+    const hasTags = this.tags.length > 0;
+    const hasLinks = this.links.length > 0;
+
+    if (!hasTags && !hasLinks) {
+      // Delete sidecar if empty
+      const f = this.app.vault.getAbstractFileByPath(this.sidecarPath);
+      if (f && f instanceof obsidian.TFile) {
+        await this.app.vault.delete(f);
+        dlog("sidecar deleted (empty):", this.sidecarPath);
+      }
+      return;
+    }
+
+    const docxName = this.docxPath.split("/").pop();
+    let yaml = "---\n";
+    yaml += 'docx: "[[' + docxName + ']]"\n';
+    if (hasTags) {
+      yaml += "tags:\n";
+      for (const t of this.tags) yaml += "  - " + t + "\n";
+    }
+    if (hasLinks) {
+      yaml += "links:\n";
+      for (const l of this.links) yaml += '  - "' + l + '"\n';
+    }
+    yaml += "---\n";
+
+    const existing = this.app.vault.getAbstractFileByPath(this.sidecarPath);
+    if (existing && existing instanceof obsidian.TFile) {
+      await this.app.vault.modify(existing, yaml);
+    } else {
+      await this.app.vault.create(this.sidecarPath, yaml);
+    }
+    dlog("sidecar saved:", this.sidecarPath, "tags:", this.tags.length, "links:", this.links.length);
+    new obsidian.Notice("Metadata saved for " + docxName);
+  }
+
+  onClose() { this.contentEl.empty(); }
 }
 
 // ===========================================================================
