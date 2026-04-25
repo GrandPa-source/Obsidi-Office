@@ -271,6 +271,17 @@ class TransportBridge {
       return;
     }
     if (d.type !== "rpc-call") return;
+
+    // Coexistence guard — silently ignore doc-specific RPCs whose docKey is
+    // not registered with this bridge. Prevents race conditions when another
+    // TransportBridge (e.g. a sibling fork during dev) is also listening on
+    // window.message. Single-bridge production behavior is unchanged because
+    // every iframe's docKey is registered before the iframe URL is set.
+    const docMethods = ["getDocument", "getMediaManifest", "getMedia", "downloadAs", "upload"];
+    if (docMethods.indexOf(d.method) !== -1 && !this.docs.has(d.docKey)) {
+      return;
+    }
+
     let payload;
     try {
       switch (d.method) {
