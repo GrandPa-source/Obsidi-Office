@@ -825,6 +825,15 @@ class DocxView extends obsidian.FileView {
           const src = node.getAttribute("src") || "";
           if (!src.includes("documenteditor/main/index")) continue;
 
+          // Cancel the original src load IMMEDIATELY before doing any disk I/O.
+          // Without this, the browser starts fetching sub-resources from
+          // app://hash/... while we read HTML/CSS/SVG from disk. Those
+          // sub-resource fetches are cross-origin from the future blob iframe
+          // (app://obsidian.md) and Chromium blocks them with
+          // ERR_BLOCKED_BY_CLIENT — the editor sees require.js missing and
+          // falls into "components took too long" timeout.
+          node.src = "about:blank";
+
           iframeObserver.disconnect();
           dlog("intercepted editor iframe, original src:", src.substring(0, 120));
 
