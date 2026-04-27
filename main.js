@@ -1105,7 +1105,13 @@ class DocxView extends obsidian.FileView {
           forcesave: false, autosave: true, chat: false, comments: true,
           about: false, help: false, feedback: false, plugins: false, macros: false,
           goback: false, close: false, compactHeader: true, hideRightMenu: true,
-          features: { spellcheck: { change: false } }
+          // spellcheck: off + locked. The OnlyOffice Worker that backs spell.js
+          // is blocked cross-origin from the blob iframe ('[blob] Worker blocked
+          // (cross-origin), stubbing: spell.js' in console), so without dictionaries
+          // every word would render with a red underline. OS-level spellcheck
+          // (iOS keyboard, browser/Windows/macOS) handles input-time correction.
+          // See docs/spellcheck-architecture.md (mobile fork) for the re-enable plan.
+          features: { spellcheck: { mode: false, change: false } }
         }
       },
       events: {
