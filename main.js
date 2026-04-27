@@ -51,6 +51,111 @@ const DOCX_EXTENSIONS = ["docx"];
 // Minimal blank .docx (Arial 12pt, Letter, 1" margins)
 const BLANK_DOCX_BASE64 = 'UEsDBBQAAAAIACF7ilzXeYTq8QAAALgBAAATAAAAW0NvbnRlbnRfVHlwZXNdLnhtbH2QzU7DMBCE730Ky9cqccoBIZSkB36OwKE8wMreJFb9J69b2rdn00KREOVozXwz62nXB+/EHjPZGDq5qhspMOhobBg7+b55ru6koALBgIsBO3lEkut+0W6OCUkwHKiTUynpXinSE3qgOiYMrAwxeyj8zKNKoLcworppmlulYygYSlXmDNkvhGgfcYCdK+LpwMr5loyOpHg4e+e6TkJKzmoorKt9ML+Kqq+SmsmThyabaMkGqa6VzOL1jh/0lSfK1qB4g1xewLNRfcRslIl65xmu/0/649o4DFbjhZ/TUo4aiXh77+qL4sGG71+06jR8/wlQSwMEFAAAAAgAIXuKXCAbhuqyAAAALgEAAAsAAABfcmVscy8ucmVsc43Puw6CMBQG4J2naM4uBQdjDIXFmLAafICmPZRGeklbL7y9HRzEODie23fyN93TzOSOIWpnGdRlBQStcFJbxeAynDZ7IDFxK/nsLDJYMELXFs0ZZ57yTZy0jyQjNjKYUvIHSqOY0PBYOo82T0YXDE+5DIp6Lq5cId1W1Y6GTwPagpAVS3rJIPSyBjIsHv/h3ThqgUcnbgZt+vHlayPLPChMDB4uSCrf7TKzQHNKuorZvgBQSwMEFAAAAAgAIXuKXATyCbj8AAAAmgEAABEAAAB3b3JkL2RvY3VtZW50LnhtbEVQQW7DIBC85xWIe4NjuVVkBUe55FapUtsHEExsJGARS+Omr+8SO8mFnZldZlh2+1/v2MUktBAk36wrzkzQ0NswSP79dXzZcoZZhV45CEbyq0G+71a7qe1B/3gTMiOHgO0k+ZhzbIVAPRqvcA3RBOqdIXmViaZBTJD6mEAbRArwTtRV9Sa8soF3K8bI9QT9tcAbiV05PlIpaSlHCBnZ1CrU1kp+SFY5Tnw8BHxwUUbxj+SLcpLXTVHEYiIWz1IfUWh0nhPi8Fku0j6bum6qmzfh1y1hMQ+8q0Rqhkh6M48kO4z5SU+QM/gnd+Z8784vWfLK0uK+dUH3X+3+AVBLAwQUAAAACAAhe4pc1eog13kAAACOAAAAHAAAAHdvcmQvX3JlbHMvZG9jdW1lbnQueG1sLnJlbHNNjEEOwiAQAO99Bdm7BT0YY0p76wOMPmBDV2iEhbDE6O/l6HEymZmWT4rqTVX2zBaOowFF7PK2s7fwuK+HCyhpyBvGzGThSwLLPEw3ith6I2EvovqExUJorVy1FhcooYy5EHfzzDVh61i9Luhe6EmfjDnr+v8APQ8/UEsBAhQDFAAAAAgAIXuKXNd5hOrxAAAAuAEAABMAAAAAAAAAAAAAAIABAAAAAFtDb250ZW50X1R5cGVzXS54bWxQSwECFAMUAAAACAAhe4pcIBuG6rIAAAAuAQAACwAAAAAAAAAAAAAAgAEiAQAAX3JlbHMvLnJlbHNQSwECFAMUAAAACAAhe4pcBPIJuPwAAACaAQAAEQAAAAAAAAAAAAAAgAH9AQAAd29yZC9kb2N1bWVudC54bWxQSwECFAMUAAAACAAhe4pc1eog13kAAACOAAAAHAAAAAAAAAAAAAAAgAEoAwAAd29yZC9fcmVscy9kb2N1bWVudC54bWwucmVsc1BLBQYAAAAABAAEAAMBAADbAwAAAAA=';
 
+// Spell-check Worker prologue. Mirrored from onlyobsidian-mobile (commit
+// 14dd7bd). Injected as the FIRST code in the spawned Worker (Blob URL,
+// same-origin null with the blob iframe). Overrides self.fetch +
+// XMLHttpRequest so the Worker's spell.wasm fetch and dictionary load_file
+// XHR calls route via postMessage RPC to the blob iframe, which forwards
+// to the plugin parent for vio-equivalent reads.
+//
+// Three non-obvious fixes baked in (see mobile fork docs/spellcheck-architecture.md):
+//   1. Regex escape double-back-slash so template literal interpolation
+//      doesn't collapse \. and \? to . and ?.
+//   2. RPC replies tagged type:"init" so spell.js's onmessage handler hits
+//      its dup-init guard and doesn't queue replies as spell-check requests.
+//   3. error + unhandledrejection listeners surface Worker-side failures
+//      that the editor's i2() pR.onerror handler would otherwise swallow
+//      via preventDefault().
+const SPELL_WORKER_PROLOGUE = `(function(){
+  self.addEventListener("error", function(e) {
+    console.error("[spell-worker] uncaught error:", e.message, "at", e.filename + ":" + e.lineno);
+  });
+  self.addEventListener("unhandledrejection", function(e) {
+    console.error("[spell-worker] unhandled rejection:", e.reason);
+  });
+  var _id = 0;
+  var _pending = new Map();
+  var _RPC_TAG = "__onlyoSpellRPC";
+
+  self.addEventListener("message", function(e) {
+    var d = e.data;
+    if (d && d[_RPC_TAG] === true) {
+      var cb = _pending.get(d.id);
+      if (cb) { _pending.delete(d.id); cb(d); }
+    }
+  });
+
+  function rpcFetch(url) {
+    return new Promise(function(resolve, reject) {
+      var id = ++_id;
+      _pending.set(id, function(msg) {
+        if (msg.error) reject(new Error(msg.error));
+        else resolve(msg.bytes);
+      });
+      self.postMessage({ __onlyoSpellRPC: true, type: "fetch", id: id, url: url });
+    });
+  }
+
+  var _origFetch = self.fetch;
+  self.fetch = function(input, opts) {
+    var url = typeof input === "string" ? input : (input && input.url) || "";
+    if (typeof url === "string" &&
+        url.indexOf("blob:") !== 0 && url.indexOf("data:") !== 0) {
+      return rpcFetch(url).then(function(bytes) {
+        var ct = "application/octet-stream";
+        if (/\\.wasm(\\?|$)/i.test(url)) ct = "application/wasm";
+        else if (/\\.js(\\?|$)/i.test(url)) ct = "application/javascript";
+        return new Response(bytes, {
+          status: 200,
+          headers: { "Content-Type": ct }
+        });
+      });
+    }
+    return _origFetch ? _origFetch.call(self, input, opts) : Promise.reject(new Error("fetch unavailable"));
+  };
+
+  var _OrigXHR = self.XMLHttpRequest;
+  function ShimXHR() {
+    this._url = null;
+    this._responseType = "";
+    this._response = null;
+    this._status = 0;
+    this._readyState = 0;
+    this.onload = null;
+    this.onerror = null;
+  }
+  ShimXHR.prototype.open = function(method, url) { this._url = url; this._readyState = 1; };
+  ShimXHR.prototype.setRequestHeader = function() {};
+  ShimXHR.prototype.overrideMimeType = function() {};
+  Object.defineProperty(ShimXHR.prototype, "responseType", {
+    get: function() { return this._responseType; },
+    set: function(v) { this._responseType = v; }
+  });
+  Object.defineProperty(ShimXHR.prototype, "response", {
+    get: function() { return this._response; }
+  });
+  Object.defineProperty(ShimXHR.prototype, "status", {
+    get: function() { return this._status; }
+  });
+  Object.defineProperty(ShimXHR.prototype, "readyState", {
+    get: function() { return this._readyState; }
+  });
+  ShimXHR.prototype.send = function() {
+    var self_ = this;
+    rpcFetch(this._url).then(function(bytes) {
+      self_._response = bytes;
+      self_._status = 200;
+      self_._readyState = 4;
+      if (typeof self_.onload === "function") self_.onload({ target: self_ });
+    }).catch(function(err) {
+      self_._status = 0;
+      self_._readyState = 4;
+      if (typeof self_.onerror === "function") self_.onerror(err);
+    });
+  };
+  self.XMLHttpRequest = ShimXHR;
+})();`;
+
 const DEFAULT_SETTINGS = {
   defaultMode: "edit",
   debugLogging: true,
@@ -237,6 +342,10 @@ class TransportBridge {
     this.converter = opts.converter;
     this.onSave    = opts.onSave || (async () => {});
     this._fontsDir = opts.fontsDir || "";
+    // Spellcheck asset roots — vault-relative path prefixes the spell.js
+    // Worker is permitted to read from. Anything outside these is rejected.
+    this._spellAssetRoots = (opts.spellAssetRoots || []).filter(Boolean);
+    this._adapter         = opts.adapter || null;  // for spell asset path resolution
     this.docs      = new Map();
     this.saveBufs  = new Map();
     this.attached  = false;
@@ -291,6 +400,7 @@ class TransportBridge {
         case "downloadAs":       payload = await this._downloadAs(d.docKey, d.payload); break;
         case "upload":           payload = await this._upload(d.docKey, d.payload); break;
         case "getFont":          payload = this._getFont(d.payload); break;
+        case "getSpellAsset":    payload = this._getSpellAsset(d.payload); break;
         default:
           dlog("unknown RPC method:", d.method);
           payload = { ok: false, error: "unknown method" };
@@ -381,6 +491,54 @@ class TransportBridge {
     }
 
     return { ok: false };
+  }
+
+  // Spell-check asset reader — strict path allowlist, sync fs.readFileSync.
+  // Mirrored from onlyobsidian-mobile (which uses async vio because of
+  // mobile's vault adapter). Allowlist prefixes are configured at bridge
+  // construction (sdkjs/common/spell/spell + assets/dictionaries).
+  _getSpellAsset(payload) {
+    const rel = (payload && payload.path) || "";
+    if (!rel || typeof rel !== "string") return { ok: false, error: "missing path" };
+
+    // Reject path traversal — caller resolved the URL to a vault-rel
+    // path; absolute paths and `..` segments are not expected here.
+    if (rel.indexOf("..") !== -1 || rel.startsWith("/") || /^[a-zA-Z]:/.test(rel)) {
+      return { ok: false, error: "invalid path" };
+    }
+
+    // Allowlist — vault-rel path must start with one of the configured roots
+    const norm = rel.replace(/\\/g, "/");
+    const allowed = this._spellAssetRoots.some((root) => {
+      const r = root.replace(/\\/g, "/").replace(/\/$/, "");
+      return norm === r || norm.startsWith(r + "/");
+    });
+    if (!allowed) {
+      dlog("getSpellAsset rejected (outside allowlist):", norm);
+      return { ok: false, error: "path not allowed" };
+    }
+
+    // The vault-rel path resolves against the vault basePath. We don't
+    // have an Obsidian adapter handle here, but we can use absolute paths
+    // because the test plugin is desktop-only. The caller passes a
+    // vault-rel path (matches mobile fork shape) which we resolve relative
+    // to the vault root.
+    const adapter = this._adapter;
+    if (!adapter) return { ok: false, error: "no adapter" };
+    const basePath = adapter.getBasePath ? adapter.getBasePath() : null;
+    if (!basePath) return { ok: false, error: "no basePath" };
+    const abs = path.join(basePath, norm);
+
+    try {
+      if (!fs.existsSync(abs)) return { ok: false, error: "not found" };
+      const data = fs.readFileSync(abs);
+      return {
+        ok: true,
+        bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
+      };
+    } catch (err) {
+      return { ok: false, error: String(err && err.message || err) };
+    }
   }
 
   async _downloadAs(docKey, payload) {
@@ -818,6 +976,35 @@ class DocxView extends obsidian.FileView {
     const docKey = this.docKey;
     const shimAbsPath = this.plugin.shimAbs;
 
+    // Spell-check assets: pre-cache spell.js source + compute the absolute
+    // dictionaries URL. Needed by the Worker shim built inside the
+    // MutationObserver callback (which runs synchronously and shouldn't do
+    // disk I/O for the race-condition reasons described above L993).
+    const pluginDirRel = this.plugin.manifest.dir;
+    const adapter = this.plugin.app.vault.adapter;
+    let spellSrc = "";
+    try {
+      const spellPath = path.join(onlyOfficeDir, "sdkjs", "common", "spell", "spell", "spell.js");
+      if (fs.existsSync(spellPath)) {
+        spellSrc = fs.readFileSync(spellPath, "utf-8");
+        dlog("pre-cached spell.js source (" + spellSrc.length + " chars)");
+      }
+    } catch (e) { elog("failed to read spell.js (spellcheck will fall back to no-op):", e.message); }
+
+    let dictionariesUrl = "";
+    try {
+      const dictionariesRel = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries");
+      const absDir = path.join(adapter.getBasePath(), dictionariesRel);
+      if (fs.existsSync(absDir)) {
+        dictionariesUrl = adapter.getResourcePath(dictionariesRel).replace(/\?.*$/, "");
+      }
+    } catch (e) { dictionariesUrl = ""; }
+    dlog("dictionariesUrl:", dictionariesUrl || "(missing)");
+
+    const SPELL_DIR_URL = baseUrl + "/sdkjs/common/spell/spell";
+    const SPELL_REL = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/onlyoffice/sdkjs/common/spell/spell");
+    const DICT_REL  = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries");
+
     const iframeObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
@@ -869,21 +1056,79 @@ class DocxView extends obsidian.FileView {
             JSON.stringify(qs)
           );
 
+          // Spell-check Worker shim — see onlyobsidian-mobile/docs/spellcheck-architecture.md.
+          // For non-spell Workers, fall through to no-op stub (existing behavior).
+          // For spell.js: spawn a Blob-URL Worker (same-origin with blob iframe)
+          // with the pre-loaded SPELL_WORKER_PROLOGUE which routes the Worker's
+          // wasm fetch + dict XHRs through the existing transport-shim RPC.
+          const spellShimEnabled = !!spellSrc && !!dictionariesUrl;
+          const workerShim =
+            "var _OrigWorker=window.Worker;" +
+            "var _SPELL_SRC=" + (spellShimEnabled ? JSON.stringify(spellSrc) : '""') + ";" +
+            "var _SPELL_DIR_URL=" + JSON.stringify(SPELL_DIR_URL) + ";" +
+            "var _DICT_URL=" + JSON.stringify(dictionariesUrl) + ";" +
+            "var _SPELL_REL=" + JSON.stringify(SPELL_REL) + ";" +
+            "var _DICT_REL=" + JSON.stringify(DICT_REL) + ";" +
+            "var _SPELL_PROLOGUE=" + JSON.stringify(SPELL_WORKER_PROLOGUE) + ";" +
+            "function _resolveSpellPath(url){" +
+              "var s=String(url);" +
+              "if(s.indexOf(_SPELL_DIR_URL+'/')===0)return _SPELL_REL+'/'+s.substring(_SPELL_DIR_URL.length+1).split('?')[0];" +
+              "if(s.indexOf(_DICT_URL+'/')===0)return _DICT_REL+'/'+s.substring(_DICT_URL.length+1).split('?')[0];" +
+              "return null;" +
+            "}" +
+            "function _wireSpellWorker(w){" +
+              "w.addEventListener('message',function(e){" +
+                "var d=e.data;" +
+                "if(!d||d.__onlyoSpellRPC!==true||d.type!=='fetch')return;" +
+                "var path=_resolveSpellPath(d.url);" +
+                "if(!path){w.postMessage({__onlyoSpellRPC:true,type:'init',id:d.id,error:'unresolved url: '+d.url});return;}" +
+                "if(typeof window.__docxViewerRpc!=='function'){w.postMessage({__onlyoSpellRPC:true,type:'init',id:d.id,error:'rpc not ready'});return;}" +
+                "window.__docxViewerRpc('getSpellAsset',{path:path}).then(function(r){" +
+                  "if(r&&r.ok){w.postMessage({__onlyoSpellRPC:true,type:'init',id:d.id,bytes:r.bytes},[r.bytes]);}" +
+                  "else{w.postMessage({__onlyoSpellRPC:true,type:'init',id:d.id,error:(r&&r.error)||'asset read failed'});}" +
+                "}).catch(function(err){w.postMessage({__onlyoSpellRPC:true,type:'init',id:d.id,error:String(err&&err.message||err)});});" +
+              "});" +
+              // Wrap Worker.postMessage to rewrite the editor's init message
+              // dictionaries_path (default is relative — won't resolve from
+              // a Blob URL Worker; need absolute URL).
+              "var _origPost=w.postMessage.bind(w);" +
+              "w.postMessage=function(msg,transfer){" +
+                "if(msg&&msg.type==='init'&&typeof msg.dictionaries_path==='string'){msg.dictionaries_path=_DICT_URL;}" +
+                "if(transfer)return _origPost(msg,transfer);" +
+                "return _origPost(msg);" +
+              "};" +
+            "}" +
+            "window.Worker=function(url,opts){" +
+              "var fname=String(url).split('/').pop().split('?')[0];" +
+              "if(fname==='spell.js'&&_SPELL_SRC){" +
+                "try{" +
+                  // Module.locateFile prelude — forces spell.wasm URL to absolute
+                  // SPELL_DIR_URL so the Worker prologue's fetch shim catches it.
+                  "var modulePrelude='self.Module=self.Module||{};self.Module.locateFile=function(p){return '+JSON.stringify(_SPELL_DIR_URL)+'+\"/\"+p;};';" +
+                  "var blob=new Blob([_SPELL_PROLOGUE,modulePrelude,_SPELL_SRC],{type:'text/javascript'});" +
+                  "var blobUrl=URL.createObjectURL(blob);" +
+                  "var w=new _OrigWorker(blobUrl,opts);" +
+                  "w.addEventListener('error',function(ev){console.error('[blob] spell Worker error:',ev.message,'at',ev.filename+\":\"+ev.lineno);});" +
+                  "_wireSpellWorker(w);" +
+                  "console.log('[blob] spell Worker spawned (Blob URL '+blob.size+' bytes)');" +
+                  "return w;" +
+                "}catch(e){console.warn('[blob] spell Worker spawn failed:',e&&e.message);}" +
+              "}" +
+              // Non-spell Workers (or spell-disabled fallback) — try original,
+              // otherwise return no-op stub.
+              "try{return new _OrigWorker(url,opts);}catch(e){" +
+                "console.warn('[blob] Worker blocked (cross-origin), stubbing:',fname);" +
+                "var s={postMessage:function(){},terminate:function(){}," +
+                "addEventListener:function(){},removeEventListener:function(){}};" +
+                "Object.defineProperty(s,'onmessage',{set:function(){},get:function(){return null}});" +
+                "Object.defineProperty(s,'onerror',{set:function(){},get:function(){return null}});" +
+                "return s;}" +
+            "};";
+
           const paramsScript = "<script>" +
             "window.__oo_params=" + JSON.stringify(params) + ";" +
             "console.log('[blob] iframe loaded, docKey:'," + JSON.stringify(params.frameEditorId || "") + ");" +
-            // Worker shim: the blob iframe (origin app://obsidian.md) can't create
-            // Workers from app://hash/... (cross-origin). Override Worker to catch
-            // the error and return a no-op stub so SDK initialization continues.
-            "var _OrigWorker=window.Worker;" +
-            "window.Worker=function(url,opts){" +
-            "try{return new _OrigWorker(url,opts);}catch(e){" +
-            "console.warn('[blob] Worker blocked (cross-origin), stubbing:',String(url).split('/').pop());" +
-            "var s={postMessage:function(){},terminate:function(){}," +
-            "addEventListener:function(){},removeEventListener:function(){}};" +
-            "Object.defineProperty(s,'onmessage',{set:function(){},get:function(){return null}});" +
-            "Object.defineProperty(s,'onerror',{set:function(){},get:function(){return null}});" +
-            "return s;}};" +
+            workerShim +
             "</script>";
 
           // Inline the transport shim (avoid sub-resource <script src> for it)
@@ -1105,13 +1350,11 @@ class DocxView extends obsidian.FileView {
           forcesave: false, autosave: true, chat: false, comments: true,
           about: false, help: false, feedback: false, plugins: false, macros: false,
           goback: false, close: false, compactHeader: true, hideRightMenu: true,
-          // spellcheck: off + locked. The OnlyOffice Worker that backs spell.js
-          // is blocked cross-origin from the blob iframe ('[blob] Worker blocked
-          // (cross-origin), stubbing: spell.js' in console), so without dictionaries
-          // every word would render with a red underline. OS-level spellcheck
-          // (iOS keyboard, browser/Windows/macOS) handles input-time correction.
-          // See docs/spellcheck-architecture.md (mobile fork) for the re-enable plan.
-          features: { spellcheck: { mode: false, change: false } }
+          // Spellcheck re-enabled 2026-04-27 (mirrored from onlyobsidian-mobile
+          // commit 14dd7bd). Blob URL Worker + Worker-side fetch/XHR shim +
+          // en_US/en_CA Hunspell dictionaries (MPL-2.0). See mobile fork's
+          // docs/spellcheck-architecture.md for the layered design.
+          features: { spellcheck: { mode: true, change: true } }
         }
       },
       events: {
@@ -1394,8 +1637,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // x2t + bridge
     this.converter = new X2tConverter(this.x2tDir, this.fontsDir);
     this.bridge = new TransportBridge({
+      adapter,                                   // for spell-asset path resolution
       converter: this.converter,
       fontsDir: path.join(this.onlyOfficeDir, "fonts"),
+      // Spellcheck asset roots (vault-relative). getSpellAsset reads are
+      // strictly constrained to these prefixes — anything outside is rejected.
+      spellAssetRoots: [
+        path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/onlyoffice/sdkjs/common/spell/spell"),
+        path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries"),
+      ],
       onSave: async (filePath, docxBytes) => {
         const f = this.app.vault.getAbstractFileByPath(filePath);
         if (f && f instanceof obsidian.TFile) {

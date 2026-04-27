@@ -1,0 +1,6 @@
+# Hunspell dictionary files are sensitive to line endings.
+# Mark binary so git doesn't apply autocrlf.
+*.aff binary
+*.dic binary
+*.wasm binary
+*.zip binary

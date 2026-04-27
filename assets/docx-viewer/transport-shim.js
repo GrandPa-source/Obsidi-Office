@@ -374,6 +374,11 @@
   ShimXHR.UNSENT = 0; ShimXHR.OPENED = 1; ShimXHR.HEADERS_RECEIVED = 2; ShimXHR.LOADING = 3; ShimXHR.DONE = 4;
   window.XMLHttpRequest = ShimXHR;
 
+  // Expose the RPC function for other in-iframe scripts (e.g. the spell-check
+  // Worker shim) to reuse the parent message channel without re-implementing
+  // a separate id space.
+  window.__docxViewerRpc = rpc;
+
   // ---------- announce ready (the parent waits for this before resolving rpc calls) ----------
   try {
     window.parent.postMessage(
