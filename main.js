@@ -177,6 +177,32 @@ function elog() {
 }
 
 // ===========================================================================
+// pdf-lib loader (lazy)
+// ===========================================================================
+// Loaded on first use of the PDF export feature. Source at lib/pdf-lib.min.js.
+// 525 KB on disk; we don't want to evaluate it at plugin load.
+let _pdfLibCache = null;
+function loadPdfLib(pluginAbs) {
+  if (_pdfLibCache) return _pdfLibCache;
+  const pdfLibPath = path.join(pluginAbs, "lib", "pdf-lib.min.js");
+  if (!fs.existsSync(pdfLibPath)) {
+    throw new Error("pdf-lib not found at " + pdfLibPath);
+  }
+  const src = fs.readFileSync(pdfLibPath, "utf-8");
+  // pdf-lib UMD: detects exports/module then sets PDFLib globally on window.
+  // Run in an isolated scope so we don't pollute global; capture via factory.
+  const sandbox = { exports: {}, module: { exports: {} } };
+  // eslint-disable-next-line no-new-func
+  new Function("module", "exports", src)(sandbox.module, sandbox.module.exports);
+  const lib = sandbox.module.exports;
+  if (!lib || !lib.PDFDocument) {
+    throw new Error("pdf-lib failed to expose PDFDocument");
+  }
+  _pdfLibCache = lib;
+  return lib;
+}
+
+// ===========================================================================
 // X2tConverter — WASM DOCX <-> Editor.bin
 // (Adapted minimally from obsidian-docx-viewer to run in-process)
 // ===========================================================================
@@ -629,6 +655,21 @@ function concatChunks(chunks) {
 function randomHex(bytes) {
   return crypto.randomBytes(bytes).toString("hex");
 }
+// pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
+// supports printable ASCII (0x20-0x7E) + most Latin-1 supplement (0xA0-0xFF) +
+// a few extras. Drawing chars outside this set throws. For invisible-text PDF
+// search/copy purposes, we strip non-encodable chars rather than abort.
+function sanitizeForWinAnsi(s) {
+  if (!s) return "";
+  // Keep printable ASCII, common whitespace (CR, LF, tab), and Latin-1 supplement.
+  // Replace tabs with spaces (some PDF readers don't index tabbed text well anyway).
+  return String(s)
+    .replace(/\t/g, " ")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, " ");
+}
+
 function guessContentType(name) {
   const ext = (name.split(".").pop() || "").toLowerCase();
   return {
@@ -1590,6 +1631,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
 
     const pluginAbs = path.join(basePath, pluginDirRel);
+    this.pluginAbs     = pluginAbs;  // for lazy loaders (pdf-lib, etc.)
     this.onlyOfficeDir = path.join(pluginAbs, "assets", "onlyoffice");
     this.x2tDir        = path.join(pluginAbs, "assets", "x2t");
     this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
@@ -1728,6 +1770,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (ev.data.type === "obsidi-office-print" && ev.data.images) {
         this._openPrintTab(ev.data.images);
       }
+      if (ev.data.type === "obsidi-office-pdf-export" && ev.data.pages) {
+        this._exportPdfToVault(ev.data).catch((err) => {
+          elog("PDF export failed:", err);
+          new obsidian.Notice("PDF export failed: " + (err.message || err));
+          this._notifyPdfDone(null);
+        });
+      }
+      // (obsidi-office-pdf-diagnostic handler removed 2026-04-29 — diagnostic
+      //  probes were development-only; PDF export now ships via the print-
+      //  preview API. Lessons preserved in vault decisions/2026-04.md and
+      //  meta/lessons.md under 2026-04-29.)
     };
     window.addEventListener("message", this._metadataHandler);
 
@@ -1882,6 +1935,127 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     dlog("print: wrote", images.length, "pages to", tempPath);
     require("electron").shell.openPath(tempPath);
     new obsidian.Notice("Opening print preview in browser...");
+  }
+
+  // Hybrid PDF export: each page = canvas image (visible) + invisible text
+  // overlay (searchable). Text rendering mode 3 in PDF spec = "invisible";
+  // viewers index it for Ctrl+F and copy-paste but don't paint it.
+  //
+  // payload: { docKey, pages: [{dataUrl, text, w, h}], basename }
+  async _exportPdfToVault(payload) {
+    if (!this.pluginAbs) {
+      new obsidian.Notice("PDF export: plugin not initialised");
+      return;
+    }
+    const lib = loadPdfLib(this.pluginAbs);
+    const { PDFDocument, StandardFonts, rgb } = lib;
+
+    const pages = payload.pages || [];
+    if (pages.length === 0) {
+      new obsidian.Notice("PDF export: no pages");
+      return;
+    }
+
+    dlog("Exporting PDF (" + pages.length + " pages)...");
+    const t0 = Date.now();
+
+    const pdfDoc = await PDFDocument.create();
+    const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+    // mm → PDF points: 1 inch = 25.4 mm = 72 points.
+    const MM_TO_PT = 72 / 25.4;
+
+    for (const p of pages) {
+      const dataUrl = p.dataUrl || "";
+      const b64 = dataUrl.indexOf(",") >= 0 ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
+      const pngBytes = Uint8Array.from(Buffer.from(b64, "base64"));
+      const png = await pdfDoc.embedPng(pngBytes);
+
+      // PDF page size: prefer the document's actual page dimensions in mm
+      // (so the PDF is Letter/A4 sized, not viewport-canvas sized). Fall back
+      // to the captured PNG dimensions if mm sizing isn't available.
+      let pdfW, pdfH;
+      if (p.pageMmW && p.pageMmH && p.pageMmW > 0 && p.pageMmH > 0) {
+        pdfW = p.pageMmW * MM_TO_PT;
+        pdfH = p.pageMmH * MM_TO_PT;
+      } else {
+        pdfW = png.width;
+        pdfH = png.height;
+      }
+
+      const pdfPage = pdfDoc.addPage([pdfW, pdfH]);
+      pdfPage.drawImage(png, { x: 0, y: 0, width: pdfW, height: pdfH });
+
+      // Invisible text layer. opacity:0 + color rgb(1,1,1) keeps the bytes in
+      // the page content stream (indexed by PDF readers for Ctrl+F and copy)
+      // without painting. Helvetica is WinAnsi-only — we strip chars outside.
+      const text = sanitizeForWinAnsi(p.text || "");
+      if (text.length > 0) {
+        try {
+          pdfPage.drawText(text, {
+            x: 4,
+            y: pdfH - 12,
+            font: helvetica,
+            size: 8,
+            color: rgb(1, 1, 1),
+            opacity: 0,
+            maxWidth: pdfW - 8,
+            lineHeight: 9,
+          });
+        } catch (e) {
+          dlog("invisible text layer failed for one page (skipping):", e.message);
+        }
+      }
+    }
+
+    const pdfBytes = await pdfDoc.save();
+
+    // Resolve target path: <docDir>/<basename>.pdf next to the .docx.
+    // Prefer docFilePath sent from the iframe; fall back to docKey lookup via bridge.
+    const basename = (payload.basename || "document").replace(/\.docx$/i, "");
+    const docPath = payload.docFilePath || this._lookupDocFilePath(payload.docKey) || "";
+    const docDir = docPath ? docPath.split("/").slice(0, -1).join("/") : "";
+    const targetPath = (docDir ? docDir + "/" : "") + basename + ".pdf";
+
+    await this.app.vault.adapter.writeBinary(targetPath, pdfBytes);
+    const ms = Date.now() - t0;
+    dlog("PDF exported:", targetPath, "(" + (pdfBytes.byteLength / 1024).toFixed(1) + " KB) in", ms, "ms");
+
+    // Open the produced PDF in a new Obsidian tab. Wait one tick for the
+    // vault to register the new file before resolving its TFile.
+    try {
+      await new Promise((r) => setTimeout(r, 100));
+      const file = this.app.vault.getAbstractFileByPath(targetPath);
+      if (file instanceof obsidian.TFile) {
+        const leaf = this.app.workspace.getLeaf("tab");
+        await leaf.openFile(file);
+      } else {
+        dlog("PDF written but TFile not yet resolvable for", targetPath);
+      }
+    } catch (err) {
+      elog("Failed to open exported PDF:", err);
+    }
+
+    // Notify all editor iframes to hide their PDF loading overlay.
+    this._notifyPdfDone(targetPath);
+
+    new obsidian.Notice("PDF exported");
+  }
+
+  _notifyPdfDone(targetPath) {
+    try {
+      const iframes = document.querySelectorAll("iframe");
+      iframes.forEach((f) => {
+        try { f.contentWindow.postMessage({ type: "docx-viewer-pdf-done", path: targetPath || null }, "*"); }
+        catch (e) {}
+      });
+    } catch (e) {}
+  }
+
+  _lookupDocFilePath(docKey) {
+    if (!this.bridge || !docKey) return null;
+    const d = this.bridge.docs.get(docKey);
+    return d ? d.filePath : null;
   }
 
   _injectSidecarCSS() {

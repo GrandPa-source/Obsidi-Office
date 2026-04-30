@@ -328,16 +328,24 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     var btn = document.getElementById("slot-btn-save");
     if (btn && saveIndicator) {
       var rect = btn.getBoundingClientRect();
-      saveIndicator.style.left = (rect.left + rect.width / 2 - 6) + "px";
-      saveIndicator.style.top = (rect.bottom + 4) + "px";
+      // Indicator (12x12) sits inside the save icon's bottom-right area:
+      // -6 centers it on the corner, additional -5 each axis nudges it
+      // up-and-left so it sits inset from the corner.
+      saveIndicator.style.left = (rect.right  - 11) + "px";
+      saveIndicator.style.top  = (rect.bottom - 11) + "px";
     }
   }
 
+  function repositionToolbarOverlays() {
+    positionSaveIndicator();
+    if (typeof positionPrintBtn === "function") positionPrintBtn();
+  }
   var _posTimer = setInterval(function () {
     var btn = document.getElementById("slot-btn-save");
     if (btn) {
-      positionSaveIndicator();
+      repositionToolbarOverlays();
       clearInterval(_posTimer);
+      window.addEventListener("resize", repositionToolbarOverlays);
       var observer = new MutationObserver(function () {
         var panel = document.getElementById("file-menu-panel") || document.querySelector(".panel-menu");
         var toolbar = document.querySelector(".toolbar");
@@ -345,6 +353,10 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           (toolbar && toolbar.style.display === "none") ||
           document.querySelector(".btn-tab-file.active, .ribtab.active[data-tab='file']");
         saveIndicator.style.opacity = isMenuOpen ? "0" : "1";
+        if (typeof printBtn !== "undefined" && printBtn) {
+          printBtn.style.opacity = isMenuOpen ? "0" : "1";
+        }
+        repositionToolbarOverlays();
       });
       observer.observe(document.body, { attributes: true, childList: true, subtree: true });
     }
@@ -375,6 +387,68 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   window.__showSaving = showSaving;
   window.__showSaved = showSaved;
+
+  // --- PDF loading overlay (shown during PDF export) ---
+  var pdfOverlay = document.createElement("div");
+  pdfOverlay.id = "docx-pdf-overlay";
+  pdfOverlay.style.cssText =
+    "position: fixed; inset: 0; z-index: 99999; background: rgba(0,0,0,0.5); " +
+    "display: none; align-items: center; justify-content: center; " +
+    "font-family: system-ui, sans-serif;";
+  pdfOverlay.innerHTML =
+    '<div style="background: white; padding: 22px 30px; border-radius: 8px; ' +
+    'display: flex; flex-direction: column; align-items: center; gap: 14px; ' +
+    'box-shadow: 0 4px 16px rgba(0,0,0,0.3); min-width: 220px;">' +
+    '<svg width="32" height="32" viewBox="0 0 50 50" style="animation: docx-spin 1s linear infinite;">' +
+    '<circle cx="25" cy="25" r="20" fill="none" stroke="#4a90d9" stroke-width="4" ' +
+    'stroke-linecap="round" stroke-dasharray="100 60"/></svg>' +
+    '<div style="font-size: 14px; color: #333;">Generating PDF…</div>' +
+    '</div>';
+  document.body.appendChild(pdfOverlay);
+  window.__showPdfOverlay = function () { pdfOverlay.style.display = "flex"; };
+  window.__hidePdfOverlay = function () { pdfOverlay.style.display = "none"; };
+
+  // --- Print button (positioned below save button) ---
+  var printSvg =
+    '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">' +
+    '<path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>' +
+    '</svg>';
+  var printBtnStyle = document.createElement("style");
+  printBtnStyle.textContent =
+    "#docx-print-btn { position: absolute; z-index: 99998; pointer-events: auto; " +
+    "display: flex; align-items: center; justify-content: center; padding: 0; " +
+    "background: transparent; border: none; cursor: pointer; " +
+    "color: rgba(255,255,255,0.55); border-radius: 3px; " +
+    "transition: background 0.1s, color 0.1s, opacity 0.2s; } " +
+    "#docx-print-btn:hover { background: rgba(255,255,255,0.1); color: white; } " +
+    "#docx-print-btn:active { background: rgba(255,255,255,0.18); } " +
+    ".document-menu-opened #docx-print-btn, .toolbar-mask #docx-print-btn, " +
+    "body.menu-opened #docx-print-btn { opacity: 0 !important; pointer-events: none; }";
+  document.head.appendChild(printBtnStyle);
+
+  var printBtn = document.createElement("button");
+  printBtn.id = "docx-print-btn";
+  printBtn.title = "Export to PDF (Ctrl+P)";
+  printBtn.innerHTML = printSvg;
+  printBtn.addEventListener("click", function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+    _slog("Print button pressed — exporting PDF");
+    pdfOverlay.style.display = "flex";
+    setTimeout(captureAndExportPdf, 50);
+  });
+  document.body.appendChild(printBtn);
+
+  function positionPrintBtn() {
+    var saveBtn = document.getElementById("slot-btn-save");
+    if (saveBtn && printBtn) {
+      var rect = saveBtn.getBoundingClientRect();
+      printBtn.style.left = rect.left + "px";
+      printBtn.style.top  = (rect.bottom + 6) + "px";
+      printBtn.style.width  = rect.width + "px";
+      printBtn.style.height = rect.height + "px";
+    }
+  }
 
   // --- Ctrl+S interceptor ---
   window.addEventListener("keydown", function (e) {
@@ -416,11 +490,352 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       triggerSaveToVault();
     }
     if (e.data.type === "docx-viewer-print") {
-      captureAndPrint();
+      captureAndExportPdf();
+    }
+    if (e.data.type === "docx-viewer-export-pdf") {
+      captureAndExportPdf();
+    }
+    if (e.data.type === "docx-viewer-pdf-done") {
+      pdfOverlay.style.display = "none";
     }
   });
 
-  // --- Print via canvas capture ---
+  // --- PDF export: hybrid (canvas image + invisible text overlay) ---
+  // Captures each page as a PNG dataUrl, extracts full document text via
+  // asc_EditSelectAll + asc_GetSelectedText, splits the text heuristically
+  // into N segments at word boundaries, and posts everything to the parent
+  // window. The parent renders pdf-lib output and writes <basename>.pdf to
+  // the vault next to the source .docx.
+  async function captureAndExportPdf() {
+    if (!window.Asc || !window.Asc.editor) {
+      _slog("PDF export: editor not ready");
+      return;
+    }
+    var editor = window.Asc.editor;
+
+    // 1. Page count — print-preview path doesn't depend on event-driven
+    // pagination tracking; the polled getter is reliable in current builds.
+    var pageCount = 1;
+    try {
+      if (editor.getCountPages) pageCount = editor.getCountPages();
+      if (!pageCount || pageCount < 1) pageCount = 1;
+    } catch (e) { pageCount = 1; }
+    _slog("PDF export: " + pageCount + " pages");
+
+    // 2. Page geometry — used by parent to size the PDF page in points.
+    var pageMm = null;
+    try {
+      if (editor.asc_getPageSize) pageMm = editor.asc_getPageSize(0);
+    } catch (e) {}
+    _slog("PDF export: page size (mm):", pageMm ? (pageMm.W + "x" + pageMm.H) : "unknown");
+
+    // 3. Extract full document text BEFORE entering print preview (so the
+    // editor's selection state is unaffected). Strategy validated 2026-04-28.
+    var allText = "";
+    try {
+      if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
+      else if (editor.asc_SelectAll) editor.asc_SelectAll();
+      await new Promise(function (r) { setTimeout(r, 200); });
+      if (editor.asc_GetSelectedText) {
+        allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+      }
+    } catch (e) {
+      _slog("PDF export: text extraction failed:", e.message);
+    }
+    _slog("PDF export: extracted", allText.length, "chars of text");
+    try { if (editor.MoveCursorToStartPos) editor.MoveCursorToStartPos(); } catch (e) {}
+    var perPageText = splitTextByHeadingAnchors(editor, allText, pageCount);
+
+    // 4. Use OnlyOffice's print-preview API for clean per-page renders.
+    // - asc_initPrintPreview(elementId) creates a canvas inside that element
+    //   sized to fit. Each call to asc_drawPrintPreview(N) renders page N to
+    //   that canvas, so we just capture the canvas after each draw.
+    // - The host's CSS dimensions (width/height) control render resolution.
+    //   Set to ~2x device pixels for sharper output.
+    //
+    // The host is positioned offscreen with visibility:hidden so the user
+    // doesn't see anything happen during export.
+    var hostId = "obsidi-pp-export-host";
+    var existing = document.getElementById(hostId);
+    if (existing) existing.remove();
+    var host = document.createElement("div");
+    host.id = hostId;
+    // Letter at ~144 DPI: 8.5" * 144 = 1224, 11" * 144 = 1584. Aspect-correct
+    // for any page size since canvas inside takes whatever shape host has.
+    host.style.cssText =
+      "position: fixed; top: -10000px; left: 0; " +
+      "width: 1224px; height: 1584px; " +
+      "visibility: hidden; pointer-events: none;";
+    document.body.appendChild(host);
+
+    var pages = [];
+    try {
+      if (typeof editor.asc_initPrintPreview !== "function") {
+        throw new Error("asc_initPrintPreview not available");
+      }
+      editor.asc_initPrintPreview(hostId);
+      // Allow the editor to wire up the preview canvas inside our host.
+      await new Promise(function (r) { setTimeout(r, 250); });
+
+      var previewCanvas = host.querySelector("canvas");
+      if (!previewCanvas) throw new Error("print-preview canvas not created");
+      _slog("PDF export: preview canvas " + previewCanvas.width + "x" + previewCanvas.height);
+
+      // OnlyOffice's print preview draws a page-edge stroke at the canvas
+      // perimeter. The stroke + AA fuzz is heavier on top/bottom than on
+      // the sides (likely from header/footer band rendering). Asymmetric
+      // crop — modest on sides, more on top/bottom.
+      var dpr = window.devicePixelRatio || 1;
+      var CROP_L = Math.max(11, Math.round(11 * dpr));
+      var CROP_R = Math.max(11, Math.round(11 * dpr));
+      var CROP_T = Math.max(15, Math.round(15 * dpr));
+      var CROP_B = Math.max(15, Math.round(15 * dpr));
+
+      for (var p = 0; p < pageCount; p++) {
+        try {
+          editor.asc_drawPrintPreview(p);
+          // Two animation frames + a small timeout so the canvas finishes painting.
+          await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
+          await new Promise(function (r) { setTimeout(r, 80); });
+
+          // Re-query in case the canvas was replaced between calls.
+          var cv = host.querySelector("canvas");
+          if (!cv) { _slog("PDF export: page " + (p + 1) + " no preview canvas"); continue; }
+
+          // Crop the page-edge perimeter to remove OnlyOffice's preview
+          // border. Per-edge values — empirically tuned.
+          var safeW = Math.floor(cv.width  / 20);
+          var safeH = Math.floor(cv.height / 20);
+          var iL = Math.min(CROP_L, safeW);
+          var iR = Math.min(CROP_R, safeW);
+          var iT = Math.min(CROP_T, safeH);
+          var iB = Math.min(CROP_B, safeH);
+          var cw = cv.width  - iL - iR;
+          var ch = cv.height - iT - iB;
+          var crop = document.createElement("canvas");
+          crop.width = cw;
+          crop.height = ch;
+          var cctx = crop.getContext("2d");
+          cctx.drawImage(cv, iL, iT, cw, ch, 0, 0, cw, ch);
+          var dataUrl = crop.toDataURL("image/png");
+
+          if (!dataUrl || dataUrl.length < 100) { _slog("PDF export: page " + (p + 1) + " empty"); continue; }
+          pages.push({
+            dataUrl: dataUrl,
+            text: perPageText[p] || "",
+            w: cw,
+            h: ch,
+            pageMmW: pageMm ? pageMm.W : null,
+            pageMmH: pageMm ? pageMm.H : null
+          });
+        } catch (e) {
+          _slog("PDF export: page " + (p + 1) + " threw:", e.message);
+        }
+      }
+      _slog("PDF export: cropped L=" + CROP_L + " R=" + CROP_R + " T=" + CROP_T + " B=" + CROP_B + " (CSS px)");
+    } finally {
+      try { if (typeof editor.asc_closePrintPreview === "function") editor.asc_closePrintPreview(); } catch (e) {}
+      try { host.remove(); } catch (e) {}
+    }
+
+    if (pages.length === 0) {
+      _slog("PDF export: no pages captured");
+      return;
+    }
+
+    // 5. Send to parent. Parent looks up filePath from docKey via the bridge.
+    var docKey = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
+    var docFilePath = (window.__oo_params && window.__oo_params.docFilePath) || "";
+    var basename = docFilePath ? docFilePath.split("/").pop().replace(/\.docx$/i, "") : "document";
+    window.parent.postMessage({
+      type: "obsidi-office-pdf-export",
+      docKey: docKey,
+      docFilePath: docFilePath,
+      basename: basename,
+      pages: pages
+    }, "*");
+    _slog("PDF export: posted " + pages.length + " pages to parent (basename=" + basename + ")");
+  }
+
+  // (findPageRect removed 2026-04-29 — no longer needed: PDF export now uses
+  // OnlyOffice's print-preview API which renders one clean page per canvas,
+  // eliminating the viewport-canvas pixel-detection problem entirely.)
+
+  // ---- Heading-anchored text-to-page mapping (replaces uniform heuristic) ----
+  // The uniform chars-per-page split drifts forward through documents whose
+  // ToC / cover pages have higher char density than body content. This builder
+  // grounds page boundaries on real heading positions in the doc — drift
+  // collapses from systemic 1-page error to <1-paragraph interpolation error.
+  //
+  // Strategy:
+  //   1. Auto-detect the mangled paragraph page-getter method via a one-time
+  //      differential 0-arg scan on heads[0] vs heads[last]. The page-getter's
+  //      signature: 0-arg method returning a small int that's < pageCount and
+  //      differs between first and last heading. Cached for the session.
+  //   2. Build {offset, page} anchor pairs from heading paragraphs (text via
+  //      asc_getText, page via the discovered method, offset via monotonic
+  //      String.indexOf in the extracted text).
+  //   3. For each interior page boundary, piecewise-linear-interpolate the
+  //      char offset between bracketing anchors.
+  //
+  // If detection or anchor building fails at any point, fall back to the
+  // uniform heuristic with a console warning.
+  var _pageGetterName = null;
+  var _pageGetterTried = false;
+
+  // Known mangled names for the paragraph page-getter on OnlyOffice v9.3.1
+  // (discovered via differential 0-arg scan, 2026-04-29). These names are
+  // aliases — likely Get_StartPage / Get_AbsolutePage / etc inherited along
+  // the paragraph prototype chain — all returning the absolute page number.
+  // If a future OnlyOffice version remangles, this list will need updating
+  // (recovery path: re-run __probePageApi probe sequence in vault notes).
+  // We deliberately do NOT brute-force scan ALL 0-arg methods at runtime —
+  // doing so on real paragraph objects can side-effect the editor state
+  // (paragraph methods don't follow English-mutator naming conventions, so
+  // a name-pattern filter doesn't reliably exclude destructive methods).
+  var KNOWN_PAGE_GETTER_NAMES = ["VRa", "QSb", "Pw", "qD"];
+
+  function _findPageGetter(editor, pageCount) {
+    if (_pageGetterName) return _pageGetterName;
+    if (_pageGetterTried) return null;
+    _pageGetterTried = true;
+    if (!editor || typeof editor.asc_GetAllHeadingParagraphs !== "function") return null;
+    var heads;
+    try { heads = editor.asc_GetAllHeadingParagraphs(); } catch (e) { return null; }
+    if (!heads || heads.length < 2) return null;
+    var h0 = heads[0];
+    var hL = heads[heads.length - 1];
+    for (var i = 0; i < KNOWN_PAGE_GETTER_NAMES.length; i++) {
+      var k = KNOWN_PAGE_GETTER_NAMES[i];
+      if (typeof h0[k] !== "function" || h0[k].length !== 0) continue;
+      var r0, rL;
+      try { r0 = h0[k](); } catch (e) { continue; }
+      try { rL = hL[k](); } catch (e) { continue; }
+      if (typeof r0 === "number" && typeof rL === "number" &&
+          r0 >= 0 && rL >= 0 &&
+          r0 < pageCount + 5 && rL < pageCount + 5 &&
+          r0 === Math.floor(r0) && rL === Math.floor(rL) &&
+          r0 < rL && rL >= Math.max(1, pageCount - 3)) {
+        _pageGetterName = k;
+        return k;
+      }
+    }
+    return null;
+  }
+
+  function splitTextByHeadingAnchors(editor, text, pageCount) {
+    if (!editor || !text || pageCount < 1) return splitTextHeuristically(text, pageCount);
+    var pageGetter = _findPageGetter(editor, pageCount);
+    if (!pageGetter) {
+      _slog("PDF export: page-getter not found — falling back to heuristic split");
+      return splitTextHeuristically(text, pageCount);
+    }
+    _slog("PDF export: page-getter resolved to method '" + pageGetter + "'");
+
+    var heads;
+    try { heads = editor.asc_GetAllHeadingParagraphs() || []; }
+    catch (e) { return splitTextHeuristically(text, pageCount); }
+
+    // Build monotonic anchor table {offset, page}
+    var anchors = [];
+    var lastIdx = 0;
+    for (var i = 0; i < heads.length; i++) {
+      var h = heads[i];
+      var hText, hPage;
+      try { hText = h.asc_getText && h.asc_getText(); } catch (e) {}
+      try { hPage = h[pageGetter] && h[pageGetter](); } catch (e) {}
+      if (typeof hText !== "string" || !hText.length) continue;
+      if (typeof hPage !== "number" || hPage < 0 || hPage >= pageCount) continue;
+      var idx = text.indexOf(hText, lastIdx);
+      if (idx < 0) continue;
+      // Reject anchors that go backward in page order (shouldn't happen given
+      // doc order, but defensive).
+      if (anchors.length && hPage < anchors[anchors.length - 1].page) continue;
+      anchors.push({ offset: idx, page: hPage });
+      lastIdx = idx + hText.length;
+    }
+
+    if (anchors.length === 0) {
+      _slog("PDF export: no heading anchors matched in extracted text — falling back to heuristic");
+      return splitTextHeuristically(text, pageCount);
+    }
+    _slog("PDF export: built " + anchors.length + " anchors from " + heads.length + " headings");
+
+    // Compute char offset for each page boundary [0..pageCount].
+    var pageStart = new Array(pageCount + 1);
+    pageStart[0] = 0;
+    pageStart[pageCount] = text.length;
+
+    for (var p = 1; p < pageCount; p++) {
+      var before = null, after = null;
+      for (var j = 0; j < anchors.length; j++) {
+        if (anchors[j].page <= p) before = anchors[j];
+        if (anchors[j].page >= p && after === null) after = anchors[j];
+      }
+      var startOff;
+      if (before && after && before.page === after.page) {
+        startOff = after.offset;
+      } else if (before && after) {
+        var span = after.page - before.page;
+        var frac = (p - before.page) / span;
+        startOff = Math.round(before.offset + frac * (after.offset - before.offset));
+      } else if (before) {
+        // No anchor after — extrapolate to text end via remaining-pages distribution
+        var pagesLeft = Math.max(1, pageCount - before.page);
+        var remaining = text.length - before.offset;
+        startOff = Math.round(before.offset + (p - before.page) * (remaining / pagesLeft));
+      } else if (after) {
+        // No anchor before — extrapolate from start
+        var prefixLen = after.offset;
+        var pagesBefore = Math.max(1, after.page);
+        startOff = Math.round((p / pagesBefore) * prefixLen);
+      } else {
+        startOff = Math.floor(p * text.length / pageCount);
+      }
+      // Snap backward to nearest whitespace within a small window so we don't
+      // split a word across pages.
+      var snapEnd = Math.max(0, startOff - 80);
+      var snapped = startOff;
+      while (snapped > snapEnd && snapped > 0 && !/\s/.test(text[snapped])) snapped--;
+      if (snapped > snapEnd) startOff = snapped;
+      pageStart[p] = Math.max(0, Math.min(text.length, startOff));
+    }
+
+    // Defensive monotonic enforcement.
+    for (var q = 1; q <= pageCount; q++) {
+      if (pageStart[q] < pageStart[q - 1]) pageStart[q] = pageStart[q - 1];
+    }
+
+    var out = [];
+    for (var p2 = 0; p2 < pageCount; p2++) {
+      out.push(text.substring(pageStart[p2], pageStart[p2 + 1]));
+    }
+    return out;
+  }
+
+  // Split text into N segments by chars-per-page, snapping each end backward
+  // to the nearest whitespace so words aren't broken across pages. Used as
+  // fallback when heading-anchor detection fails.
+  function splitTextHeuristically(text, n) {
+    var out = [];
+    if (!text || n < 1) return out;
+    var charsPerPage = Math.ceil(text.length / n);
+    var cursor = 0;
+    for (var p = 0; p < n; p++) {
+      var start = cursor;
+      var end = Math.min(text.length, start + charsPerPage);
+      if (end < text.length) {
+        // Snap back to last whitespace within window.
+        while (end > start && !/\s/.test(text[end])) end--;
+        if (end === start) end = Math.min(text.length, start + charsPerPage);
+      }
+      out.push(text.substring(start, end));
+      cursor = end;
+    }
+    return out;
+  }
+
+  // --- Print via canvas capture (legacy, kept for compatibility) ---
   function captureAndPrint() {
     if (!window.Asc || !window.Asc.editor) return;
     var editor = window.Asc.editor;
@@ -507,10 +922,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-      _slog("Ctrl+P intercepted — canvas capture print");
-      captureAndPrint();
+      _slog("Ctrl+P intercepted — exporting PDF to vault");
+      pdfOverlay.style.display = "flex";
+      setTimeout(captureAndExportPdf, 50);
     }
   }, true);
+
+  // (Diagnostic probes __probePageBoundaries / __diagnosePdfExport and the
+  //  obsidi-pdf-probe-btn floating button removed 2026-04-29 after PDF export
+  //  shipped via the print-preview API. Lessons preserved in vault:
+  //  decisions/2026-04.md and meta/lessons.md under 2026-04-29.)
+
 
   // --- Fit-to-width on document load ---
   var _fitTimer = setInterval(function () {
