@@ -569,6 +569,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     document.body.appendChild(host);
 
     var pages = [];
+    // Note: we previously attempted spatial-alignment of the invisible text
+    // layer by monkey-patching CanvasRenderingContext2D.prototype.fillText
+    // around the print-preview loop, expecting per-glyph (text, x, y) tuples.
+    // It produced 0 captured runs because OnlyOffice's sdkjs renders body
+    // text as vector glyph paths (bezierCurveTo + ctx.fill()), not via
+    // fillText. Path operations carry no text content. Spatial alignment
+    // would need either OCR-lite line detection on the rendered canvas or
+    // a sdkjs-internal y-coordinate getter on paragraph objects.
+    // See: vault decisions/2026-04.md and meta/lessons.md (2026-04-29).
     try {
       if (typeof editor.asc_initPrintPreview !== "function") {
         throw new Error("asc_initPrintPreview not available");

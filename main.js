@@ -1989,6 +1989,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // Invisible text layer. opacity:0 + color rgb(1,1,1) keeps the bytes in
       // the page content stream (indexed by PDF readers for Ctrl+F and copy)
       // without painting. Helvetica is WinAnsi-only — we strip chars outside.
+      //
+      // Text is positioned at top-of-page rather than spatially aligned with
+      // the rendered glyphs because OnlyOffice's sdkjs renders text as vector
+      // glyph paths (bezierCurveTo + fill), not via fillText. Path operations
+      // carry no text content, so per-glyph interception isn't possible.
+      // Search lands on the correct PAGE (heading-anchor splitter); on-page
+      // position is approximate. See vault decisions/2026-04.md (2026-04-29).
       const text = sanitizeForWinAnsi(p.text || "");
       if (text.length > 0) {
         try {
