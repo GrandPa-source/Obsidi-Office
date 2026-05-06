@@ -1768,7 +1768,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         }
       }
       if (ev.data.type === "obsidi-office-print" && ev.data.images) {
-        this._openPrintTab(ev.data.images);
+        this._printDocument(ev.data.images, ev.data.pageMmW, ev.data.pageMmH);
+        // Iframe overlay can hide as soon as the print iframe takes over.
+        this._notifyPdfDone(null);
       }
       if (ev.data.type === "obsidi-office-pdf-export" && ev.data.pages) {
         this._exportPdfToVault(ev.data).catch((err) => {
@@ -1913,28 +1915,62 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     style.textContent = '.nav-folder-title[data-path="' + dir + '"], .nav-folder-title[data-path="' + dir + '"] + .nav-folder-children { display: none !important; }';
   }
 
-  _openPrintTab(images) {
-    // Write captured pages to a temp HTML file and open in system browser.
-    // Electron's window.print() always prints the full BrowserWindow —
-    // the system browser's print dialog works correctly for just the content.
-    const os = require("os");
-    const tempPath = path.join(os.tmpdir(), "obsidi-office-print.html");
-    let html = '<!DOCTYPE html><html><head><title>Print — Obsidi-Office</title><style>' +
-      '@media print { @page { margin: 0; } } ' +
-      'body { margin: 0; background: white; } ' +
-      'img { display: block; width: 100%; height: auto; page-break-after: always; } ' +
-      'img:last-child { page-break-after: avoid; }' +
-      '</style></head><body>';
-    for (const src of images) {
-      html += '<img src="' + src + '">';
-    }
-    html += '<script>window.onload=function(){setTimeout(function(){window.print();},500);};<\/script>';
-    html += '</body></html>';
+  _printDocument(images, pageMmW, pageMmH) {
+    // Direct print via hidden iframe in the parent (Obsidian) window.
+    // Electron treats iframes as separate documents for print purposes:
+    // iframe.contentWindow.print() prints ONLY the iframe content, not
+    // the full BrowserWindow. Same pattern as P11_TaskBoard and
+    // P13_HomeInventory.
+    //
+    // Pagination + exact layout: each image is OnlyOffice's authoritative
+    // per-page render (asc_drawPrintPreview output). @page sized to the
+    // document's actual page dimensions (mm) so 1 image = 1 print page,
+    // and page-break-after: always enforces the page boundary.
+    const pageSize = (pageMmW && pageMmH && pageMmW > 0 && pageMmH > 0)
+      ? `${pageMmW}mm ${pageMmH}mm`
+      : "letter";
 
-    fs.writeFileSync(tempPath, html, "utf-8");
-    dlog("print: wrote", images.length, "pages to", tempPath);
-    require("electron").shell.openPath(tempPath);
-    new obsidian.Notice("Opening print preview in browser...");
+    let body = "";
+    for (const src of images) {
+      body += '<img src="' + src + '">';
+    }
+
+    const html =
+      '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Print</title><style>' +
+      '@page { size: ' + pageSize + '; margin: 0; } ' +
+      'html, body { margin: 0; padding: 0; background: white; } ' +
+      'img { display: block; width: 100%; height: 100%; page-break-after: always; } ' +
+      'img:last-child { page-break-after: avoid; } ' +
+      '@media print { html, body { width: 100%; height: 100%; } }' +
+      '</style></head><body>' + body + '</body></html>';
+
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText =
+      "position: fixed; left: -9999px; top: -9999px; width: 0; height: 0; " +
+      "border: 0; visibility: hidden;";
+    iframe.srcdoc = html;
+
+    iframe.addEventListener("load", () => {
+      // Small delay so the iframe's image elements have actually rendered
+      // their bitmaps before the print dialog samples them.
+      setTimeout(() => {
+        try {
+          const win = iframe.contentWindow;
+          if (!win) return;
+          win.focus();
+          win.print();
+        } catch (e) {
+          elog("Print failed:", e);
+          new obsidian.Notice("Print failed: " + (e.message || e));
+        }
+        // Detach the iframe shortly after — the print dialog has its own
+        // captured render and stays open even if the iframe is removed.
+        setTimeout(() => { try { iframe.remove(); } catch (e) {} }, 2000);
+      }, 100);
+    }, { once: true });
+
+    document.body.appendChild(iframe);
+    dlog("print: opened print dialog (" + images.length + " pages, " + pageSize + ")");
   }
 
   // Hybrid PDF export: each page = canvas image (visible) + invisible text
@@ -1990,29 +2026,64 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // the page content stream (indexed by PDF readers for Ctrl+F and copy)
       // without painting. Helvetica is WinAnsi-only — we strip chars outside.
       //
-      // Text is positioned at top-of-page rather than spatially aligned with
-      // the rendered glyphs because OnlyOffice's sdkjs renders text as vector
-      // glyph paths (bezierCurveTo + fill), not via fillText. Path operations
-      // carry no text content, so per-glyph interception isn't possible.
-      // Search lands on the correct PAGE (heading-anchor splitter); on-page
-      // position is approximate. See vault decisions/2026-04.md (2026-04-29).
-      const text = sanitizeForWinAnsi(p.text || "");
-      if (text.length > 0) {
-        try {
-          pdfPage.drawText(text, {
-            x: 4,
-            y: pdfH - 12,
-            font: helvetica,
-            size: 8,
-            color: rgb(1, 1, 1),
-            opacity: 0,
-            maxWidth: pdfW - 8,
-            lineHeight: 9,
-          });
-        } catch (e) {
-          dlog("invisible text layer failed for one page (skipping):", e.message);
+      // Preferred path: spatially-aligned per-line placement using line-band
+      // positions detected by pixel scan of the rendered canvas. Each text
+      // chunk drawn at the detected baseline of its line, so search highlights
+      // land on the correct visual line. Fallback: top-of-page text dump if
+      // pixel-scan detection failed (e.g. tainted canvas).
+      const runs = Array.isArray(p.textRuns) ? p.textRuns : [];
+      const cw = p.w || png.width;
+      const ch = p.h || png.height;
+      const sx = pdfW / cw;
+      const sy = pdfH / ch;
+
+      if (runs.length > 0) {
+        let placed = 0, skipped = 0;
+        for (const r of runs) {
+          const text = sanitizeForWinAnsi(r.text == null ? "" : String(r.text));
+          if (!text.length) { skipped++; continue; }
+          const fontSizePx = (typeof r.fontSizePx === "number" && r.fontSizePx > 0) ? r.fontSizePx : 12;
+          const pdfFontSize = Math.max(1, fontSizePx * sy);
+          const pdfX = r.x * sx;
+          // Canvas y is from top, baseline; PDF y is from bottom, baseline.
+          const pdfY = pdfH - r.y * sy;
+          try {
+            pdfPage.drawText(text, {
+              x: pdfX,
+              y: pdfY,
+              font: helvetica,
+              size: pdfFontSize,
+              color: rgb(1, 1, 1),
+              opacity: 0,
+            });
+            placed++;
+          } catch (e) {
+            skipped++;
+          }
+        }
+        dlog("page " + (pages.indexOf(p) + 1) + ": placed " + placed + " runs, skipped " + skipped);
+      } else {
+        const text = sanitizeForWinAnsi(p.text || "");
+        if (text.length > 0) {
+          try {
+            pdfPage.drawText(text, {
+              x: 4,
+              y: pdfH - 12,
+              font: helvetica,
+              size: 8,
+              color: rgb(1, 1, 1),
+              opacity: 0,
+              maxWidth: pdfW - 8,
+              lineHeight: 9,
+            });
+          } catch (e) {
+            dlog("invisible text layer failed for one page (skipping):", e.message);
+          }
         }
       }
+      // Yield to the event loop between pages so the host-side notice/UI stays
+      // responsive across the (~50-100ms per page) drawText operations.
+      await new Promise((r) => setTimeout(r, 0));
     }
 
     const pdfBytes = await pdfDoc.save();

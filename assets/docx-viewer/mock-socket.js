@@ -402,10 +402,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     '<svg width="32" height="32" viewBox="0 0 50 50" style="animation: docx-spin 1s linear infinite;">' +
     '<circle cx="25" cy="25" r="20" fill="none" stroke="#4a90d9" stroke-width="4" ' +
     'stroke-linecap="round" stroke-dasharray="100 60"/></svg>' +
-    '<div style="font-size: 14px; color: #333;">Generating PDF…</div>' +
+    '<div class="docx-pdf-overlay-label" style="font-size: 14px; color: #333;">Generating PDF…</div>' +
     '</div>';
   document.body.appendChild(pdfOverlay);
-  window.__showPdfOverlay = function () { pdfOverlay.style.display = "flex"; };
+  function setOverlayLabel(text) {
+    var lbl = pdfOverlay.querySelector(".docx-pdf-overlay-label");
+    if (lbl) lbl.textContent = text;
+  }
+  window.__showPdfOverlay = function (label) {
+    if (label) setOverlayLabel(label);
+    pdfOverlay.style.display = "flex";
+  };
   window.__hidePdfOverlay = function () { pdfOverlay.style.display = "none"; };
 
   // --- Print button (positioned below save button) ---
@@ -428,14 +435,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
 
   var printBtn = document.createElement("button");
   printBtn.id = "docx-print-btn";
-  printBtn.title = "Export to PDF (Ctrl+P)";
+  printBtn.title = "Print (Ctrl+P)";
   printBtn.innerHTML = printSvg;
   printBtn.addEventListener("click", function (e) {
     e.preventDefault();
     e.stopPropagation();
-    _slog("Print button pressed — exporting PDF");
+    _slog("Print button pressed");
+    setOverlayLabel("Preparing print…");
     pdfOverlay.style.display = "flex";
-    setTimeout(captureAndExportPdf, 50);
+    setTimeout(function () { captureAndExportPdf("print"); }, 50);
   });
   document.body.appendChild(printBtn);
 
@@ -459,6 +467,21 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       _slog("Ctrl+S intercepted");
       showSaving();
       setTimeout(triggerSaveToVault, 50);
+    }
+  }, true);
+
+  // --- Ctrl+P interceptor (print) ---
+  // Capture phase + stopImmediatePropagation so OnlyOffice's own Ctrl+P
+  // (which would open its in-editor print modal) doesn't fire.
+  window.addEventListener("keydown", function (e) {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "p" || e.key === "P")) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      _slog("Ctrl+P intercepted — printing");
+      setOverlayLabel("Preparing print…");
+      pdfOverlay.style.display = "flex";
+      setTimeout(function () { captureAndExportPdf("print"); }, 50);
     }
   }, true);
 
@@ -490,25 +513,32 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       triggerSaveToVault();
     }
     if (e.data.type === "docx-viewer-print") {
-      captureAndExportPdf();
+      setOverlayLabel("Preparing print…");
+      pdfOverlay.style.display = "flex";
+      captureAndExportPdf("print");
     }
     if (e.data.type === "docx-viewer-export-pdf") {
-      captureAndExportPdf();
+      setOverlayLabel("Generating PDF…");
+      pdfOverlay.style.display = "flex";
+      captureAndExportPdf("export");
     }
     if (e.data.type === "docx-viewer-pdf-done") {
       pdfOverlay.style.display = "none";
     }
   });
 
-  // --- PDF export: hybrid (canvas image + invisible text overlay) ---
-  // Captures each page as a PNG dataUrl, extracts full document text via
-  // asc_EditSelectAll + asc_GetSelectedText, splits the text heuristically
-  // into N segments at word boundaries, and posts everything to the parent
-  // window. The parent renders pdf-lib output and writes <basename>.pdf to
-  // the vault next to the source .docx.
-  async function captureAndExportPdf() {
+  // --- PDF export / print: capture each page via OnlyOffice's print-preview API.
+  //   mode "export" (default): build a hybrid searchable PDF — canvas image
+  //     plus invisible text overlay via pdf-lib in the parent. Includes
+  //     full-document text extraction + per-page text-line detection.
+  //   mode "print": skip the text/searchability work (~100-300ms per page
+  //     saved) and post just the page images to the parent for direct
+  //     iframe-print.
+  async function captureAndExportPdf(mode) {
+    mode = (mode === "print") ? "print" : "export";
+    var tag = (mode === "print") ? "Print" : "PDF export";
     if (!window.Asc || !window.Asc.editor) {
-      _slog("PDF export: editor not ready");
+      _slog(tag + ": editor not ready");
       return;
     }
     var editor = window.Asc.editor;
@@ -520,31 +550,34 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       if (editor.getCountPages) pageCount = editor.getCountPages();
       if (!pageCount || pageCount < 1) pageCount = 1;
     } catch (e) { pageCount = 1; }
-    _slog("PDF export: " + pageCount + " pages");
+    _slog(tag + ": " + pageCount + " pages");
 
-    // 2. Page geometry — used by parent to size the PDF page in points.
+    // 2. Page geometry — used by parent for PDF/page sizing.
     var pageMm = null;
     try {
       if (editor.asc_getPageSize) pageMm = editor.asc_getPageSize(0);
     } catch (e) {}
-    _slog("PDF export: page size (mm):", pageMm ? (pageMm.W + "x" + pageMm.H) : "unknown");
+    _slog(tag + ": page size (mm):", pageMm ? (pageMm.W + "x" + pageMm.H) : "unknown");
 
-    // 3. Extract full document text BEFORE entering print preview (so the
-    // editor's selection state is unaffected). Strategy validated 2026-04-28.
-    var allText = "";
-    try {
-      if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
-      else if (editor.asc_SelectAll) editor.asc_SelectAll();
-      await new Promise(function (r) { setTimeout(r, 200); });
-      if (editor.asc_GetSelectedText) {
-        allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+    // 3. Extract full document text + heading-anchor split — only needed
+    //    for the searchable-PDF text overlay. Skip in print mode.
+    var perPageText = [];
+    if (mode === "export") {
+      var allText = "";
+      try {
+        if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
+        else if (editor.asc_SelectAll) editor.asc_SelectAll();
+        await new Promise(function (r) { setTimeout(r, 200); });
+        if (editor.asc_GetSelectedText) {
+          allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+        }
+      } catch (e) {
+        _slog(tag + ": text extraction failed:", e.message);
       }
-    } catch (e) {
-      _slog("PDF export: text extraction failed:", e.message);
+      _slog(tag + ": extracted", allText.length, "chars of text");
+      try { if (editor.MoveCursorToStartPos) editor.MoveCursorToStartPos(); } catch (e) {}
+      perPageText = splitTextByHeadingAnchors(editor, allText, pageCount);
     }
-    _slog("PDF export: extracted", allText.length, "chars of text");
-    try { if (editor.MoveCursorToStartPos) editor.MoveCursorToStartPos(); } catch (e) {}
-    var perPageText = splitTextByHeadingAnchors(editor, allText, pageCount);
 
     // 4. Use OnlyOffice's print-preview API for clean per-page renders.
     // - asc_initPrintPreview(elementId) creates a canvas inside that element
@@ -628,42 +661,78 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
           cctx.drawImage(cv, iL, iT, cw, ch, 0, 0, cw, ch);
           var dataUrl = crop.toDataURL("image/png");
 
-          if (!dataUrl || dataUrl.length < 100) { _slog("PDF export: page " + (p + 1) + " empty"); continue; }
+          if (!dataUrl || dataUrl.length < 100) { _slog(tag + ": page " + (p + 1) + " empty"); continue; }
+          // Detect text-line bands (only for searchable-PDF export). Skip
+          // entirely in print mode — saves ~100-300ms per page.
+          var textRuns = [];
+          if (mode === "export") {
+            var detectStart = performance.now();
+            textRuns = detectTextLineRuns(crop, perPageText[p] || "");
+            var detectMs = Math.round(performance.now() - detectStart);
+            var firstY = textRuns.length ? textRuns[0].y : -1;
+            var lastY  = textRuns.length ? textRuns[textRuns.length - 1].y : -1;
+            var midY   = textRuns.length ? textRuns[Math.floor(textRuns.length / 2)].y : -1;
+            var firstX = textRuns.length ? textRuns[0].x : -1;
+            var midX   = textRuns.length ? textRuns[Math.floor(textRuns.length / 2)].x : -1;
+            _slog(tag + ": page " + (p + 1) + " detect=" + detectMs + "ms runs=" + textRuns.length +
+                  " ch=" + ch + " y(f/m/l)=" + firstY + "/" + midY + "/" + lastY +
+                  " x(f/m)=" + firstX + "/" + midX);
+          }
           pages.push({
             dataUrl: dataUrl,
             text: perPageText[p] || "",
+            textRuns: textRuns,
             w: cw,
             h: ch,
             pageMmW: pageMm ? pageMm.W : null,
             pageMmH: pageMm ? pageMm.H : null
           });
+          // Yield to the event loop so the loading overlay's spinner animates
+          // and the iframe stays responsive. The pixel scan is ~100-300ms per
+          // page; without yielding, 16 pages of work blocks for several seconds.
+          await new Promise(function (r) { setTimeout(r, 0); });
         } catch (e) {
-          _slog("PDF export: page " + (p + 1) + " threw:", e.message);
+          _slog(tag + ": page " + (p + 1) + " threw:", e.message);
         }
       }
-      _slog("PDF export: cropped L=" + CROP_L + " R=" + CROP_R + " T=" + CROP_T + " B=" + CROP_B + " (CSS px)");
+      _slog(tag + ": cropped L=" + CROP_L + " R=" + CROP_R + " T=" + CROP_T + " B=" + CROP_B + " (CSS px)");
     } finally {
       try { if (typeof editor.asc_closePrintPreview === "function") editor.asc_closePrintPreview(); } catch (e) {}
       try { host.remove(); } catch (e) {}
     }
 
     if (pages.length === 0) {
-      _slog("PDF export: no pages captured");
+      _slog(tag + ": no pages captured");
       return;
     }
 
-    // 5. Send to parent. Parent looks up filePath from docKey via the bridge.
+    // 5. Send to parent.
     var docKey = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
     var docFilePath = (window.__oo_params && window.__oo_params.docFilePath) || "";
     var basename = docFilePath ? docFilePath.split("/").pop().replace(/\.docx$/i, "") : "document";
-    window.parent.postMessage({
-      type: "obsidi-office-pdf-export",
-      docKey: docKey,
-      docFilePath: docFilePath,
-      basename: basename,
-      pages: pages
-    }, "*");
-    _slog("PDF export: posted " + pages.length + " pages to parent (basename=" + basename + ")");
+
+    if (mode === "print") {
+      // Print payload: just the per-page image dataUrls + page geometry.
+      var images = pages.map(function (p) { return p.dataUrl; });
+      window.parent.postMessage({
+        type: "obsidi-office-print",
+        docKey: docKey,
+        images: images,
+        pageMmW: pageMm ? pageMm.W : null,
+        pageMmH: pageMm ? pageMm.H : null
+      }, "*");
+      _slog(tag + ": posted " + images.length + " page images to parent");
+    } else {
+      // Export payload: full pages array (image + text + textRuns + size).
+      window.parent.postMessage({
+        type: "obsidi-office-pdf-export",
+        docKey: docKey,
+        docFilePath: docFilePath,
+        basename: basename,
+        pages: pages
+      }, "*");
+      _slog(tag + ": posted " + pages.length + " pages to parent (basename=" + basename + ")");
+    }
   }
 
   // (findPageRect removed 2026-04-29 — no longer needed: PDF export now uses
@@ -844,6 +913,244 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     return out;
   }
 
+  // ---- Spatial text-layer alignment: line-band detection from canvas pixels ----
+  // OnlyOffice renders text as vector glyph paths (no fillText), so per-glyph
+  // interception is impossible. Instead we scan the rendered canvas for rows
+  // of "ink" pixels to locate text line bands, then distribute the per-page
+  // extracted text across detected lines proportionally by character count.
+  //
+  // Result: invisible PDF text sits on the same line as the rendered text,
+  // so Ctrl+F highlights land on the correct visual line. Within-line word X
+  // alignment is approximate (uses Helvetica metrics for char widths). Phase B
+  // word-level X detection can be layered on later if needed.
+  //
+  // Returns an array of {text, x, y, fontSizePx} runs in cropped-canvas coords.
+  // Caller (parent main.js) maps to PDF points using the cropped-canvas size.
+  function detectTextLineRuns(canvas, pageText) {
+    if (!pageText || !pageText.trim().length) return [];
+    var ctx;
+    try { ctx = canvas.getContext("2d"); } catch (e) { return []; }
+    if (!ctx) return [];
+    var imageData;
+    try { imageData = ctx.getImageData(0, 0, canvas.width, canvas.height); }
+    catch (e) { _slog("PDF export: getImageData threw:", e.message); return []; }
+    var data = imageData.data;
+    var w = canvas.width, h = canvas.height;
+    // INK threshold: any RGB channel below this counts the pixel as text/glyph.
+    // 240 captures most rendered text and excludes light-gray UI artifacts.
+    var INK = 240;
+    function pixelIsInk(idx) {
+      return data[idx] < INK || data[idx + 1] < INK || data[idx + 2] < INK;
+    }
+
+    // ---- Phase A: row-ink profile + line-band extraction ----
+    var rowInk = new Uint16Array(h);
+    for (var y = 0; y < h; y++) {
+      var rowStart = y * w * 4;
+      var c = 0;
+      for (var x = 0; x < w; x++) {
+        if (pixelIsInk(rowStart + x * 4)) c++;
+      }
+      rowInk[y] = c;
+    }
+    // Bands: contiguous rows where ink count exceeds a small threshold (>= 0.5%
+    // of canvas width). Skip noise bands < 4 rows tall (usually horizontal rules
+    // or top/bottom edge artifacts that survived the perimeter crop).
+    var bands = [];
+    var bStart = -1;
+    var minRowInk = Math.max(2, Math.floor(w * 0.005));
+    for (var y = 0; y < h; y++) {
+      if (rowInk[y] >= minRowInk) {
+        if (bStart === -1) bStart = y;
+      } else if (bStart !== -1) {
+        if (y - bStart >= 4) bands.push({ y0: bStart, y1: y - 1 });
+        bStart = -1;
+      }
+    }
+    if (bStart !== -1 && h - bStart >= 4) bands.push({ y0: bStart, y1: h - 1 });
+    if (bands.length === 0) return [];
+
+    // Filter out page-header and page-footer bands. asc_GetSelectedText does
+    // NOT include header/footer text in the per-page extraction, so those
+    // bands have no corresponding text to place on them. If we kept them,
+    // extracted text would shift forward and land on wrong line bands.
+    //
+    // Header detection: walk bands top-down within the top 15% of canvas;
+    // the first vertical gap >= 25 px between consecutive bands is the
+    // header→body separator. Bands at or above the separator are header.
+    // Falls back to no filter if no gap is found (cover pages, etc.).
+    // Footer: bottom 4% of canvas (typical 1" bottom margin minus body line).
+    var topZoneEnd = Math.floor(h * 0.15);
+    var headerCutoff = 0;
+    for (var hi = 1; hi < bands.length; hi++) {
+      if (bands[hi].y0 > topZoneEnd) break;
+      var gap = bands[hi].y0 - bands[hi - 1].y1;
+      if (gap >= 25) {
+        headerCutoff = bands[hi - 1].y1;
+        break; // first big gap = header→body separator
+      }
+    }
+    var footerCutoff = h - Math.floor(h * 0.04);
+    var contentBands = [];
+    for (var bf = 0; bf < bands.length; bf++) {
+      var bnd = bands[bf];
+      if (bnd.y0 <= headerCutoff) continue;
+      if (bnd.y0 >= footerCutoff) continue;
+      contentBands.push(bnd);
+    }
+    bands = contentBands;
+    if (bands.length === 0) return [];
+
+    // Merge near-bands into "logical row" bands. Multi-line table cells get
+    // split by Phase A into one band per visual line; merging by a small gap
+    // threshold recovers some of the row structure. The threshold is empirical:
+    //   - wrap-line gaps within a paragraph or cell: ~3-7 px
+    //   - row-to-row gaps in tables (cell padding only): ~8-15 px
+    //   - heading-to-body / paragraph-to-paragraph: ~15-30 px
+    // 5 px catches only the tightest wrap-line merges and leaves table rows,
+    // section headings, and paragraph breaks intact. Better to under-merge
+    // (slot count slightly inflated, drift small) than over-merge (rows
+    // collapse into one giant band, search hits land on row 1 of group).
+    var MERGE_GAP = 5;
+    var merged = [];
+    for (var mi = 0; mi < bands.length; mi++) {
+      var mb = bands[mi];
+      if (merged.length > 0 && mb.y0 - merged[merged.length - 1].y1 < MERGE_GAP) {
+        // Extend previous merged band downward; keep `lineH` as the first
+        // sub-band's height (the canonical line height for that row).
+        merged[merged.length - 1].y1 = mb.y1;
+      } else {
+        merged.push({ y0: mb.y0, y1: mb.y1, lineH: mb.y1 - mb.y0 + 1 });
+      }
+    }
+    bands = merged;
+
+    // For each band: leftmost ink column (paragraph indentation), baseline,
+    // font size estimate, AND per-word column ink groups for X alignment.
+    // Border rows (where ink covers >50% of the canvas width — horizontal
+    // table borders, blue rule lines, decorative underlines) are excluded
+    // from the column-ink profile. Without this, a single continuous border
+    // contributes ink to every column and defeats word-gap detection,
+    // collapsing the band's word slots to one giant slot at x=0.
+    var BORDER_INK_MIN = Math.floor(w * 0.5);
+    for (var bi = 0; bi < bands.length; bi++) {
+      var band = bands[bi];
+      var bH = band.y1 - band.y0 + 1;
+      var colInk = new Uint16Array(w);
+      for (var by = band.y0; by <= band.y1; by++) {
+        if (rowInk[by] >= BORDER_INK_MIN) continue;
+        var rowBase = by * w * 4;
+        for (var bx = 0; bx < w; bx++) {
+          if (pixelIsInk(rowBase + bx * 4)) colInk[bx]++;
+        }
+      }
+      // Phase B: word-group detection. Words = contiguous ink runs separated
+      // by gaps of >= 25% of band height. Tunes for inter-word spaces vs
+      // intra-word kerning.
+      var minGap = Math.max(3, Math.floor(bH * 0.20));
+      var wordSlots = [];
+      var wStart = -1;
+      var gapRun = 0;
+      var xLeft = -1;
+      for (var sx = 0; sx < w; sx++) {
+        if (colInk[sx] > 0) {
+          if (wStart === -1) wStart = sx;
+          if (xLeft === -1) xLeft = sx; // first ink column on the band
+          gapRun = 0;
+        } else if (wStart !== -1) {
+          gapRun++;
+          if (gapRun >= minGap) {
+            wordSlots.push({ x0: wStart, x1: sx - gapRun });
+            wStart = -1;
+          }
+        }
+      }
+      if (wStart !== -1) wordSlots.push({ x0: wStart, x1: w - 1 });
+
+      band.x0 = xLeft >= 0 ? xLeft : 0;
+      // For merged multi-line rows, use the first sub-band's line height for
+      // font size and place the baseline near the top of the band (on the
+      // first visual line). Visually the search highlight would land on the
+      // first wrap-line of the row, which is acceptable since the row is the
+      // smallest logical unit we can map text to without per-word OCR.
+      var lineH = (typeof band.lineH === "number" && band.lineH > 0) ? band.lineH : bH;
+      band.baseline = band.y0 + lineH - Math.max(1, Math.floor(lineH * 0.15));
+      band.fontSizePx = Math.max(6, Math.floor(lineH * 0.75));
+      band.wordSlots = wordSlots;
+    }
+
+    // Build a flat slot list across all bands in document order. Each slot is
+    // a (x, y, fontSizePx) anchor for one extracted word. Skip bands that
+    // produced no word slots (very thin bands that are likely table borders
+    // or horizontal rules).
+    var slots = [];
+    for (var bi3 = 0; bi3 < bands.length; bi3++) {
+      var b3 = bands[bi3];
+      if (!b3.wordSlots || b3.wordSlots.length === 0) continue;
+      for (var ws = 0; ws < b3.wordSlots.length; ws++) {
+        slots.push({
+          x: b3.wordSlots[ws].x0,
+          y: b3.baseline,
+          fontSizePx: b3.fontSizePx
+        });
+      }
+    }
+    if (slots.length === 0) return [];
+
+    // Tokenize the per-page extracted text on whitespace.
+    var tokens = pageText.split(/\s+/);
+    var nonEmpty = [];
+    for (var ti = 0; ti < tokens.length; ti++) {
+      if (tokens[ti].length > 0) nonEmpty.push(tokens[ti]);
+    }
+    tokens = nonEmpty;
+    if (tokens.length === 0) return [];
+
+    // Map tokens to slots. Three regimes for count mismatch:
+    //  - exact: one token per slot
+    //  - more tokens than slots: pack proportional ranges into one slot
+    //  - more slots than tokens: spread tokens at proportional positions
+    var runs = [];
+    if (tokens.length === slots.length) {
+      for (var i1 = 0; i1 < slots.length; i1++) {
+        runs.push({
+          text: tokens[i1],
+          x: slots[i1].x,
+          y: slots[i1].y,
+          fontSizePx: slots[i1].fontSizePx
+        });
+      }
+    } else if (tokens.length > slots.length) {
+      var ratio = tokens.length / slots.length;
+      for (var i2 = 0; i2 < slots.length; i2++) {
+        var s = Math.floor(i2 * ratio);
+        var e = (i2 === slots.length - 1) ? tokens.length : Math.floor((i2 + 1) * ratio);
+        var combined = tokens.slice(s, e).join(" ");
+        if (combined.length > 0) {
+          runs.push({
+            text: combined,
+            x: slots[i2].x,
+            y: slots[i2].y,
+            fontSizePx: slots[i2].fontSizePx
+          });
+        }
+      }
+    } else {
+      var stride = slots.length / tokens.length;
+      for (var i3 = 0; i3 < tokens.length; i3++) {
+        var slotIdx = Math.floor(i3 * stride);
+        if (slotIdx >= slots.length) slotIdx = slots.length - 1;
+        runs.push({
+          text: tokens[i3],
+          x: slots[slotIdx].x,
+          y: slots[slotIdx].y,
+          fontSizePx: slots[slotIdx].fontSizePx
+        });
+      }
+    }
+    return runs;
+  }
+
   // --- Print via canvas capture (legacy, kept for compatibility) ---
   function captureAndPrint() {
     if (!window.Asc || !window.Asc.editor) return;
@@ -988,9 +1295,67 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       panel.appendChild(btn);
     }
   }
-  // Try immediately and also watch for DOM changes (panel is populated lazily)
-  new MutationObserver(function () { injectMetadataBtn(); })
-    .observe(document.body, { childList: true, subtree: true });
+
+  // --- Export to PDF item in File panel left rail ---
+  // Adds a menu item directly below "Info" that runs the same PDF export
+  // pipeline as the floating canvas-overlay button:
+  //   captureAndExportPdf() -> postMessage "obsidi-office-pdf-export"
+  //   -> main.js _exportPdfToVault() -> writes <basename>.pdf next to .docx.
+  // The canvas-overlay button is reserved for a future direct-print feature.
+  function injectExportPdfMenuItem() {
+    var info = document.getElementById("fm-btn-info");
+    if (!info || !info.parentNode) return;
+    if (document.getElementById("fm-btn-obsidi-export-pdf")) return;
+
+    // Clone Info to inherit OnlyOffice's exact CSS classes / inner structure.
+    // cloneNode does NOT copy addEventListener handlers, so the Info-panel
+    // switch won't fire from the clone — but data-/aria- driven delegation
+    // could still match, so we strip those attributes defensively.
+    var item = info.cloneNode(true);
+    item.id = "fm-btn-obsidi-export-pdf";
+    item.classList.remove("active");
+    Array.from(item.attributes).forEach(function (a) {
+      if (a.name.indexOf("data-") === 0 || a.name.indexOf("aria-") === 0) {
+        item.removeAttribute(a.name);
+      }
+    });
+
+    // The cloned Info node has icon + label nested in wrappers that vary
+    // across OnlyOffice builds; surgical text replacement leaves duplicates
+    // behind. Nuke inner DOM and add a single clean caption span — outer
+    // item classes still provide layout / hover / active styling.
+    item.innerHTML = '<span class="caption">Export to PDF</span>';
+    if (item.hasAttribute("title")) item.setAttribute("title", "Export to PDF");
+
+    item.addEventListener("click", function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      _slog("File > Export to PDF clicked");
+      // Reset overlay label (the print path may have set it to "Preparing print…")
+      // and show the overlay.
+      setOverlayLabel("Generating PDF…");
+      pdfOverlay.style.display = "flex";
+      // Close the File panel so the overlay is actually visible.
+      var back = document.getElementById("fm-btn-back");
+      if (back) { try { back.click(); } catch (err) {} }
+      setTimeout(function () { captureAndExportPdf("export"); }, 50);
+    }, true);  // capture phase, ahead of OnlyOffice's delegated handlers
+
+    if (info.nextSibling) {
+      info.parentNode.insertBefore(item, info.nextSibling);
+    } else {
+      info.parentNode.appendChild(item);
+    }
+    _slog("Injected File > Export to PDF menu item");
+  }
+
+  // Try immediately and watch for DOM changes (File panel populates lazily).
+  new MutationObserver(function () {
+    injectMetadataBtn();
+    injectExportPdfMenuItem();
+  }).observe(document.body, { childList: true, subtree: true });
+  injectExportPdfMenuItem();
 
   // Auto-save is handled in the parent (main.js) via onDocumentStateChange event.
   // Parent sends "docx-viewer-save" postMessage to this iframe after 10s debounce.
