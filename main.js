@@ -25,9 +25,18 @@
 "use strict";
 
 const obsidian = require("obsidian");
-const fs       = require("fs");
-const path     = require("path");
-const crypto   = require("crypto");
+
+// Mobile (Capacitor / iOS) gating. On mobile, Node-only modules are unavailable
+// or unsafe — fs/path/crypto would throw at module load. Detect once at top
+// and gate all subsequent require() calls. Mobile-specific code paths use the
+// vault adapter (vio shim, added in Phase 2) for I/O and Web Crypto API for
+// random bytes (see randomHex). Inline requires for `os`, `https`,
+// `child_process`, `electron` live inside methods that are gated on
+// !isMobile by their callers (added throughout Phase 1+).
+const isMobile = obsidian.Platform && obsidian.Platform.isMobile;
+const fs       = isMobile ? null : require("fs");
+const path     = isMobile ? null : require("path");
+const crypto   = isMobile ? null : require("crypto");
 
 // ===========================================================================
 // Constants
@@ -653,7 +662,32 @@ function concatChunks(chunks) {
   return out;
 }
 function randomHex(bytes) {
-  return crypto.randomBytes(bytes).toString("hex");
+  // Use Web Crypto API — present in both Electron renderer and Capacitor
+  // WKWebView. The module-top `crypto` is the Node module and is null on
+  // mobile; `globalThis.crypto` is the Web Crypto API which is separate
+  // and always available in browser-like environments.
+  const wc = (typeof globalThis !== "undefined" && globalThis.crypto) ||
+             (typeof window !== "undefined" && window.crypto);
+  if (wc && typeof wc.getRandomValues === "function") {
+    const arr = new Uint8Array(bytes);
+    wc.getRandomValues(arr);
+    let hex = "";
+    for (let i = 0; i < arr.length; i++) {
+      const b = arr[i];
+      hex += (b < 16 ? "0" : "") + b.toString(16);
+    }
+    return hex;
+  }
+  if (crypto && typeof crypto.randomBytes === "function") {
+    return crypto.randomBytes(bytes).toString("hex");
+  }
+  // Last-resort Math.random — keys are opaque session IDs, not security-bearing.
+  let hex = "";
+  for (let i = 0; i < bytes; i++) {
+    const b = Math.floor(Math.random() * 256);
+    hex += (b < 16 ? "0" : "") + b.toString(16);
+  }
+  return hex;
 }
 // pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
 // supports printable ASCII (0x20-0x7E) + most Latin-1 supplement (0xA0-0xFF) +
