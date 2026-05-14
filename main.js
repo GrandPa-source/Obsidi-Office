@@ -2037,46 +2037,63 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const adapter = this.app.vault.adapter;
     const pluginDirRel = this.manifest.dir;
     this.pluginDirRel = pluginDirRel;  // for vio access from method scope (zip install, etc.)
-    const basePath = adapter.getBasePath ? adapter.getBasePath() : null;
-    if (!basePath) {
-      new obsidian.Notice("Obsidi-Office: cannot resolve vault base path (desktop only).");
-      return;
-    }
-
-    const pluginAbs = path.join(basePath, pluginDirRel);
-    this.pluginAbs     = pluginAbs;  // for lazy loaders (pdf-lib, etc.)
-    this.onlyOfficeDir = path.join(pluginAbs, "assets", "onlyoffice");
-    this.x2tDir        = path.join(pluginAbs, "assets", "x2t");
-    this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
-    this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
+    // Vault-relative paths (work on both platforms via vio.*).
+    this.onlyOfficeRel = vio.join(pluginDirRel, "assets/onlyoffice");
     this.x2tRel        = vio.join(pluginDirRel, "assets/x2t");
     this.x2tFontsRel   = vio.join(pluginDirRel, "assets/x2t-fonts");
-    this.onlyOfficeRel = vio.join(pluginDirRel, "assets/onlyoffice");
     this.shimRel       = vio.join(pluginDirRel, "assets/docx-viewer/transport-shim.js");
+    this.mockSocketRel = vio.join(pluginDirRel, "assets/docx-viewer/mock-socket.js");
 
-    // x2t converter uses system fonts for accurate text metrics during conversion.
-    // The numbered files in assets/onlyoffice/fonts/ are for editor canvas rendering
-    // (proprietary binary format, not .ttf) — x2t can't use those.
-    if (process.platform === "win32") {
-      this.fontsDir = "C:\\Windows\\Fonts";
-    } else if (process.platform === "darwin") {
-      this.fontsDir = "/Library/Fonts";
-    } else {
-      this.fontsDir = "/usr/share/fonts";
+    // Absolute paths (desktop only — used by code paths that still need fs:
+    //   - Emscripten's locateFile callback (X2tConverter desktop branch)
+    //   - The legacy AssetPatcher (runtime HTML rewriting on disk)
+    //   - The legacy _downloadAssets (https/tar.gz fallback)
+    // On mobile these stay null; consumer code is gated on isMobile.
+    let basePath = null;
+    let pluginAbs = null;
+    if (!isMobile && adapter.getBasePath) {
+      basePath = adapter.getBasePath();
     }
-    dlog("x2t fontsDir (system fonts):", this.fontsDir);
+    if (basePath) {
+      pluginAbs = path.join(basePath, pluginDirRel);
+      this.pluginAbs     = pluginAbs;  // for lazy loaders (pdf-lib, etc.)
+      this.onlyOfficeDir = path.join(pluginAbs, "assets", "onlyoffice");
+      this.x2tDir        = path.join(pluginAbs, "assets", "x2t");
+      this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
+      this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
+    } else {
+      this.pluginAbs     = null;
+      this.onlyOfficeDir = null;
+      this.x2tDir        = null;
+      this.shimAbs       = null;
+      this.mockSocketAbs = null;
+    }
 
-    // Use Obsidian's app:// protocol for assets. Obsidian serves vault files
-    // via app://hash/path URLs. file:// is blocked by Chromium from app:// origin.
-    // api.js is loaded via eval() (bypasses <script src> restrictions), and
-    // the inner editor iframe loads at app:// where Obsidian serves the HTML+assets.
-    const ooRelToVault = path.relative(basePath, this.onlyOfficeDir).split(path.sep).join("/");
-    this.assetBaseUrl = adapter.getResourcePath(ooRelToVault).replace(/\?.*$/, "");
+    // System fonts dir for x2t metric reads. Desktop only — iPad sandboxes
+    // its system fonts so x2t relies on the shipped font subset (Phase 8).
+    if (!isMobile && typeof process !== "undefined" && process.platform) {
+      if (process.platform === "win32")       this.fontsDir = "C:\\Windows\\Fonts";
+      else if (process.platform === "darwin") this.fontsDir = "/Library/Fonts";
+      else                                    this.fontsDir = "/usr/share/fonts";
+      dlog("x2t fontsDir (system fonts):", this.fontsDir);
+    } else {
+      this.fontsDir = null;
+    }
+
+    // Asset base URL — vault-relative input → app:// (desktop) or
+    // capacitor:// (mobile) URL via adapter.getResourcePath. Works on both
+    // platforms; the earlier basePath+path.relative form was desktop-only.
+    this.assetBaseUrl = adapter.getResourcePath(this.onlyOfficeRel).replace(/\?.*$/, "");
     dlog("assetBaseUrl:", this.assetBaseUrl);
 
-    // Check assets — download if missing
-    const assetsNeeded = !fs.existsSync(this.onlyOfficeDir) || !fs.existsSync(this.x2tDir) ||
-      !fs.existsSync(path.join(this.x2tDir, "x2t.js")) || !fs.existsSync(path.join(this.x2tDir, "x2t.wasm"));
+    // Check assets — vio-based existence checks (mobile-safe). Same four
+    // canaries as the previous fs-based version (onlyoffice tree + x2t
+    // binaries) so existing desktop installs without the Phase-8 font
+    // subset or the spellcheck dictionaries don't trigger a reinstall.
+    const assetsNeeded = !(await vio.exists(this, this.onlyOfficeRel)) ||
+      !(await vio.exists(this, this.x2tRel)) ||
+      !(await vio.exists(this, vio.join(this.x2tRel, "x2t.js"))) ||
+      !(await vio.exists(this, vio.join(this.x2tRel, "x2t.wasm")));
 
     if (assetsNeeded) {
       dlog("assets missing — starting install");
@@ -2103,15 +2120,32 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         });
         return;
       }
-      const ok = await this._downloadAssets(pluginAbs);
-      if (!ok) {
-        new obsidian.Notice("Obsidi-Office: asset download failed. See console for details.", 15000);
+      if (!isMobile && pluginAbs) {
+        // Legacy https/tar fallback — synchronous, desktop only. Kept for
+        // users who haven't set assetZipSource yet.
+        const ok = await this._downloadAssets(pluginAbs);
+        if (!ok) {
+          new obsidian.Notice("Obsidi-Office: asset download failed. See console for details.", 15000);
+          return;
+        }
+      } else {
+        new obsidian.Notice(
+          "Obsidi-Office: assets missing and no Asset zip source configured. " +
+          "Set one in plugin settings (vault-relative path or http(s) URL).",
+          15000
+        );
         return;
       }
     }
 
-    // Patch the tree (idempotent)
-    if (fs.existsSync(this.onlyOfficeDir) && fs.existsSync(this.shimAbs) && fs.existsSync(this.mockSocketAbs)) {
+    // Patch the tree (idempotent) — DESKTOP ONLY.
+    // Runtime AssetPatcher uses fs.readFileSync/writeFileSync to inject the
+    // transport-shim <script> tag and replace socket.io.min.js. Mobile gets
+    // these substitutions baked into the zip at build time (Phase 3 build-
+    // assets.js prepatch), so this step is unnecessary and would crash on
+    // missing fs.
+    if (!isMobile && this.onlyOfficeDir && this.shimAbs && this.mockSocketAbs &&
+        fs.existsSync(this.onlyOfficeDir) && fs.existsSync(this.shimAbs) && fs.existsSync(this.mockSocketAbs)) {
       const r = this.runPatcher();
       if (r.errors.length) elog("patcher errors:", r.errors);
     }
