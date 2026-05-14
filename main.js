@@ -269,6 +269,12 @@ const DEFAULT_SETTINGS = {
   debugLogging: true,
   autoSaveDelayMs: 1500,
   templateDir: "_docx-templates",
+  // Phase B3 — runtime asset delivery.
+  // Either an http(s) URL (production / iPad — fetched via obsidian.requestUrl)
+  // or a vault-relative path to a zip already in the vault (dev — read via
+  // adapter.readBinary, no network). Empty string falls back to the legacy
+  // streaming-https tar.gz GitHub flow on desktop. Mobile requires this set.
+  assetZipSource: "",
 };
 
 // ===========================================================================
@@ -308,6 +314,30 @@ function loadPdfLib(pluginAbs) {
   }
   _pdfLibCache = lib;
   return lib;
+}
+
+// ===========================================================================
+// fflate loader (lazy)
+// ===========================================================================
+// fflate is vendored as lib/fflate.umd.js.
+// Loaded lazily on first use of zip-based asset install. Async + vault-adapter
+// (vio.readText) so it works on both desktop and mobile. Before mobile ship,
+// run `node scripts/inline-fflate.js` to bake the source into a string literal
+// — Obsidian Sync on iOS doesn't reliably transfer plugin sub-folders (lib/),
+// so loading from disk via vio.readText fails on iPad.
+let _fflateCache = null;
+async function loadFflate(plugin) {
+  if (_fflateCache) return _fflateCache;
+  const fflateRel = vio.join(plugin.pluginDirRel, "lib/fflate.umd.js");
+  const code = await vio.readText(plugin, fflateRel);
+  const m = { exports: {} };
+  // eslint-disable-next-line no-new-func
+  new Function("module", "exports", code)(m, m.exports);
+  if (!m.exports || typeof m.exports.unzipSync !== "function") {
+    throw new Error("fflate failed to expose unzipSync");
+  }
+  _fflateCache = m.exports;
+  return m.exports;
 }
 
 // ===========================================================================
@@ -1673,6 +1703,37 @@ class SettingsTab extends obsidian.PluginSettingTab {
           this.plugin._injectTemplateDirCSS();
         }));
 
+    new obsidian.Setting(containerEl)
+      .setName("Asset zip source")
+      .setDesc(
+        "Where to fetch the trimmed asset zip from when assets are missing. " +
+        "Accepts an http(s) URL (production / iPad) or a vault-relative path " +
+        "to a zip already in your vault (dev). Leave empty to use the legacy " +
+        "streaming-https tar.gz GitHub flow on desktop (mobile requires this set)."
+      )
+      .addText(t => t
+        .setPlaceholder("https://github.com/.../obsidi-office-assets-v9.3.1.zip OR obsidi-office-assets-v9.3.1.zip")
+        .setValue(this.plugin.settings.assetZipSource || "")
+        .onChange(async v => {
+          this.plugin.settings.assetZipSource = v.trim();
+          await this.plugin.saveSettings();
+        }));
+
+    new obsidian.Setting(containerEl)
+      .setName("Re-install assets from zip")
+      .setDesc(
+        "Triggers the zip-based install flow now (instead of waiting for the " +
+        "next plugin reload). Useful when iterating on a new asset bundle."
+      )
+      .addButton(b => b.setButtonText("Install now").onClick(async () => {
+        const src = (this.plugin.settings.assetZipSource || "").trim();
+        if (!src) {
+          new obsidian.Notice("Set 'Asset zip source' first.");
+          return;
+        }
+        await this.plugin._downloadAssetsViaZip(src);
+      }));
+
     containerEl.createEl("h3", { text: "Asset paths" });
     const code = (label, value) => {
       const wrap = containerEl.createEl("div", { attr: { style: "margin: 6px 0; font-size: 12px;" } });
@@ -1822,6 +1883,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     const adapter = this.app.vault.adapter;
     const pluginDirRel = this.manifest.dir;
+    this.pluginDirRel = pluginDirRel;  // for vio access from method scope (zip install, etc.)
     const basePath = adapter.getBasePath ? adapter.getBasePath() : null;
     if (!basePath) {
       new obsidian.Notice("OnlyObsidian Test: cannot resolve vault base path (desktop only).");
@@ -1861,7 +1923,30 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       !fs.existsSync(path.join(this.x2tDir, "x2t.js")) || !fs.existsSync(path.join(this.x2tDir, "x2t.wasm"));
 
     if (assetsNeeded) {
-      dlog("assets missing — starting download");
+      dlog("assets missing — starting install");
+      // Phase B3 — prefer the zip-based flow when assetZipSource is set.
+      // Falls back to the legacy streaming-https/tar.gz flow on desktop when
+      // the setting is empty, so existing dev workflows keep working until
+      // zip-flow proves universal.
+      const zipSrc = (this.settings.assetZipSource || "").trim();
+      if (zipSrc) {
+        // Phase B4.3 — background install. Don't await — extracting ~1000
+        // files takes long enough that Obsidian fires its "plugin taking
+        // too long" warning if onload blocks. Detach the install, show a
+        // clear notice, and bail. User reloads when "Assets installed"
+        // appears. Subsequent loads find assets present and skip this.
+        new obsidian.Notice(
+          "Obsidi-Office: Installing assets in background. " +
+          "Reload Obsidian when the 'Assets installed' notice appears.",
+          0
+        );
+        this._downloadAssetsViaZip(zipSrc).then((ok) => {
+          if (!ok) {
+            new obsidian.Notice("Obsidi-Office: asset install failed. See console.", 15000);
+          }
+        });
+        return;
+      }
       const ok = await this._downloadAssets(pluginAbs);
       if (!ok) {
         new obsidian.Notice("Obsidi-Office: asset download failed. See console for details.", 15000);
@@ -2091,6 +2176,74 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (err) {
       elog("asset download/extract failed:", err);
       notice.setMessage("Obsidi-Office: Download failed — " + (err.message || err));
+      setTimeout(() => notice.hide(), 10000);
+      return false;
+    }
+  }
+
+  // Phase B3 — runtime asset delivery via pre-packaged zip. `source` is
+  // either an http(s) URL (production / iPad) or a vault-relative path to
+  // a local zip (dev). Returns true on success.
+  async _downloadAssetsViaZip(source) {
+    const notice = new obsidian.Notice("Obsidi-Office: Preparing assets...", 0);
+    try {
+      // 1. Fetch zip bytes
+      let zipBytes;
+      if (/^https?:\/\//i.test(source)) {
+        notice.setMessage("Obsidi-Office: Downloading assets...");
+        const r = await obsidian.requestUrl({ url: source });
+        zipBytes = new Uint8Array(r.arrayBuffer);
+      } else {
+        notice.setMessage("Obsidi-Office: Reading local asset zip...");
+        const buf = await vio.readBinary(this, source);
+        zipBytes = new Uint8Array(buf);
+      }
+      dlog("zip bytes:", zipBytes.length);
+
+      // 2. Extract via fflate (vendored at lib/fflate.umd.js; see loadFflate)
+      notice.setMessage("Obsidi-Office: Extracting " +
+        (zipBytes.length / 1048576).toFixed(0) + " MB...");
+      const fflate = await loadFflate(this);
+      const entries = fflate.unzipSync(zipBytes);
+      const fileNames = Object.keys(entries).filter(n => !n.endsWith("/") && entries[n].length > 0);
+      dlog("zip entries:", fileNames.length, "files");
+
+      // 3. Write each entry to the plugin assets dir via vault adapter.
+      // Pre-create directories — adapter.mkdir is non-recursive on mobile.
+      const dirsCreated = new Set();
+      const ensureDir = async (relDir) => {
+        if (!relDir || relDir === "." || dirsCreated.has(relDir)) return;
+        if (await vio.exists(this, relDir)) { dirsCreated.add(relDir); return; }
+        const parent = relDir.split("/").slice(0, -1).join("/");
+        if (parent) await ensureDir(parent);
+        await vio.mkdir(this, relDir);
+        dirsCreated.add(relDir);
+      };
+
+      let written = 0;
+      const total = fileNames.length;
+      const progressEvery = Math.max(1, Math.floor(total / 20));
+      for (const name of fileNames) {
+        const targetRel = vio.join(this.pluginDirRel, "assets", name);
+        const targetDir = targetRel.split("/").slice(0, -1).join("/");
+        await ensureDir(targetDir);
+        await vio.writeBinary(this, targetRel, entries[name].buffer.slice(
+          entries[name].byteOffset,
+          entries[name].byteOffset + entries[name].byteLength
+        ));
+        written++;
+        if (written % progressEvery === 0) {
+          notice.setMessage("Obsidi-Office: Installing " + written + " / " + total + " files...");
+        }
+      }
+
+      notice.setMessage("Obsidi-Office: Assets installed (" + total + " files). Reload to activate.");
+      setTimeout(() => notice.hide(), 6000);
+      dlog("zip install complete:", total, "files");
+      return true;
+    } catch (err) {
+      elog("zip install failed:", err);
+      notice.setMessage("Obsidi-Office: Asset install failed: " + (err && err.message || err));
       setTimeout(() => notice.hide(), 10000);
       return false;
     }
