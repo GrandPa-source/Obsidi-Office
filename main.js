@@ -2269,8 +2269,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         this._notifyPdfDone(null);
       }
       if (ev.data.type === "obsidi-office-pdf-export" && ev.data.pages) {
-        this._exportPdfToVault(ev.data).catch((err) => {
-          elog("PDF export failed:", err);
+        dlog("obsidi-office-pdf-export received, pages:", ev.data.pages.length, "basename:", ev.data.basename, "transient:", !!ev.data.transientPrint);
+        this._exportPdfToVault(ev.data).then(() => {
+          dlog("_exportPdfToVault resolved");
+        }).catch((err) => {
+          elog("PDF export failed:", err && err.stack || err);
           new obsidian.Notice("PDF export failed: " + (err.message || err));
           this._notifyPdfDone(null);
         });
@@ -2599,7 +2602,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // inline as PDFLIB_UMD_SOURCE, so loadPdfLib() needs no path. The old
     // guard returned silently on mobile (pluginAbs=null per Phase 14
     // hotfix) and left the iframe's "Generating PDF..." overlay stuck.
-    const lib = loadPdfLib();
+    dlog("_exportPdfToVault enter, pages:", payload.pages ? payload.pages.length : 0);
+    const t0 = Date.now();
+    let lib;
+    try {
+      lib = loadPdfLib();
+      dlog("_exportPdfToVault loadPdfLib OK");
+    } catch (err) {
+      elog("_exportPdfToVault loadPdfLib threw:", err && err.stack || err);
+      this._notifyPdfDone(null);
+      throw err;
+    }
     const { PDFDocument, StandardFonts, rgb } = lib;
 
     const pages = payload.pages || [];
@@ -2610,7 +2623,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
 
     dlog("Exporting PDF (" + pages.length + " pages)...");
-    const t0 = Date.now();
 
     const pdfDoc = await PDFDocument.create();
     const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
