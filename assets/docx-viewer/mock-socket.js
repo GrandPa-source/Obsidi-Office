@@ -416,6 +416,26 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   window.__hidePdfOverlay = function () { pdfOverlay.style.display = "none"; };
 
   // --- Print button (positioned below save button) ---
+  // Are we running inside an Obsidian mobile (Capacitor) WebView? Editor
+  // iframe's HTML/JS lives in the plugin's assets dir, so document.baseURI
+  // starts with "capacitor://" on iOS/Android and "app://" / "file://" on
+  // Electron desktop. Used to route print through a transient PDF +
+  // share-sheet AirPrint on iPad — window.print() is a silent no-op in
+  // Capacitor WKWebView (verified 2026-05-07). User can opt-in via
+  // Settings → "Enable Print on mobile".
+  var IS_CAPACITOR = (function () {
+    try { return !!document.baseURI && document.baseURI.indexOf("capacitor://") === 0; }
+    catch (e) { return false; }
+  })();
+
+  // Floating Print button visibility gate. main.js writes
+  // params.enablePrint into __oo_params at editor-config time; it's true
+  // on desktop and (mobile && settings.enableMobilePrint). When false,
+  // skip the printBtn appendChild entirely. positionPrintBtn stays
+  // defined regardless — it's a no-op when printBtn isn't appended.
+  var ENABLE_PRINT_BTN = !(window.__oo_params && window.__oo_params.enablePrint === false);
+
+  if (ENABLE_PRINT_BTN) {
   var printSvg =
     '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">' +
     '<path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/>' +
@@ -433,24 +453,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     "body.menu-opened #docx-print-btn { opacity: 0 !important; pointer-events: none; }";
   document.head.appendChild(printBtnStyle);
 
-  // Are we running inside an Obsidian mobile (Capacitor) WebView? Editor
-  // iframe's HTML/JS lives in the plugin's assets dir, so document.baseURI
-  // starts with "capacitor://" on iOS/Android and "app://" / "file://" on
-  // Electron desktop. Used to route print through a transient PDF +
-  // share-sheet AirPrint on iPad — window.print() is a silent no-op in
-  // Capacitor WKWebView (verified 2026-05-07).
-  var IS_CAPACITOR = (function () {
-    try { return !!document.baseURI && document.baseURI.indexOf("capacitor://") === 0; }
-    catch (e) { return false; }
-  })();
-
   var printBtn = document.createElement("button");
   printBtn.id = "docx-print-btn";
   printBtn.title = "Print (Ctrl+P)";
   printBtn.innerHTML = printSvg;
-  printBtn.addEventListener("click", function (e) {
-    e.preventDefault();
-    e.stopPropagation();
+  // pointerdown fires on iOS WKWebView for absolutely-positioned overlay
+  // buttons; click events on body-level absolute buttons can fail to
+  // register in Capacitor (the save button uses the same delegation
+  // pattern via document.addEventListener("pointerdown", ...)). Guard
+  // against double-trigger if the pointer fires both pointerdown + click
+  // on desktop with a small re-entrance flag.
+  var _printBtnFiring = false;
+  function _firePrint(ev) {
+    if (_printBtnFiring) return;
+    _printBtnFiring = true;
+    setTimeout(function () { _printBtnFiring = false; }, 500);
+    ev.preventDefault();
+    ev.stopPropagation();
     _slog("Print button pressed (capacitor=" + IS_CAPACITOR + ")");
     if (IS_CAPACITOR) {
       // iOS Capacitor: window.print() is a no-op. Route through the export
@@ -467,8 +486,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       pdfOverlay.style.display = "flex";
       setTimeout(function () { captureAndExportPdf("print"); }, 50);
     }
-  });
+  }
+  printBtn.addEventListener("pointerdown", _firePrint);
+  printBtn.addEventListener("click", _firePrint);
   document.body.appendChild(printBtn);
+  } // end if (ENABLE_PRINT_BTN)
 
   function positionPrintBtn() {
     var saveBtn = document.getElementById("slot-btn-save");

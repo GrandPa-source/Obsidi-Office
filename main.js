@@ -275,6 +275,13 @@ const DEFAULT_SETTINGS = {
   // adapter.readBinary, no network). Empty string falls back to the legacy
   // streaming-https tar.gz GitHub flow on desktop. Mobile requires this set.
   assetZipSource: "",
+  // Mobile-only opt-in for the floating Print button. Hidden by default
+  // on mobile because Capacitor WKWebView doesn't implement window.print()
+  // (verified 2026-05-07) — the print path falls back to "generate
+  // transient PDF and open in PDF viewer for AirPrint" (Phase 11), which
+  // is more friction than most users want exposed by default. Always
+  // enabled on desktop regardless of this setting.
+  enableMobilePrint: false,
 };
 
 // ===========================================================================
@@ -1504,7 +1511,7 @@ class DocxView extends obsidian.FileView {
           // desktop; on mobile, governed by the user setting (defaults to
           // false because Capacitor WKWebView doesn't implement
           // window.print() — see DEFAULT_SETTINGS comment).
-          params.enablePrint = !isMobile;
+          params.enablePrint = !isMobile || !!this.plugin.settings.enableMobilePrint;
 
           let html = htmlTemplate;
           const baseHref = baseUrl + "/web-apps/apps/documenteditor/main/";
@@ -1861,6 +1868,25 @@ class SettingsTab extends obsidian.PluginSettingTab {
         }
         await this.plugin._downloadAssetsViaZip(src);
       }));
+
+    new obsidian.Setting(containerEl)
+      .setName("Enable Print on mobile")
+      .setDesc(
+        "Mobile only. iOS Capacitor doesn't implement window.print(), so " +
+        "tapping Print on iPad generates a transient PDF, opens it in a " +
+        "tab for AirPrint via the share sheet, then auto-deletes after " +
+        "60 s. Desktop print is unaffected. Open editors auto-reload " +
+        "when this changes."
+      )
+      .addToggle(t => t
+        .setValue(!!this.plugin.settings.enableMobilePrint)
+        .onChange(async v => {
+          this.plugin.settings.enableMobilePrint = v;
+          await this.plugin.saveSettings();
+          // Re-render any open editors so the new visibility takes
+          // effect immediately without manual close/reopen.
+          this.plugin._reloadOpenEditors();
+        }));
 
     containerEl.createEl("h3", { text: "Asset paths" });
     const code = (label, value) => {
@@ -2659,6 +2685,47 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         elog("transient PDF cleanup failed:", e && e.message ? e.message : e);
       }
     }, TIMEOUT_MS);
+  }
+
+  // Re-render every open DocxView so a settings change that's only read at
+  // editor-render time (e.g. params.enablePrint) takes effect without the
+  // user having to manually close and reopen each tab. Calls the view's
+  // onLoadFile with its current file — which clears containerEl and
+  // rebuilds the iframe from scratch. Loses scroll position. Asks each
+  // editor iframe to flush its save buffer first so 10 s auto-save
+  // window edits aren't lost; waits a short grace period before reload.
+  async _reloadOpenEditors() {
+    const targets = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view && leaf.view.getViewType() === VIEW_TYPE && leaf.view.file) {
+        targets.push(leaf.view);
+      }
+    });
+    if (targets.length === 0) return;
+    dlog("reloading", targets.length, "open editor(s) after settings change");
+
+    // Ask any open editor iframes to save first. mock-socket listens for
+    // docx-viewer-save and runs triggerSaveToVault().
+    try {
+      const iframes = document.querySelectorAll("iframe");
+      iframes.forEach((f) => {
+        try { f.contentWindow.postMessage({ type: "docx-viewer-save" }, "*"); } catch (e) {}
+      });
+    } catch (e) {}
+    // Give the save round-trip a moment (mock-socket save → x2t → vault
+    // adapter writeBinary). 250 ms covers the desktop case; on mobile
+    // the round-trip is similar (~140 ms observed on iPad).
+    await new Promise((r) => setTimeout(r, 300));
+
+    for (const view of targets) {
+      try {
+        // Trigger re-render. _onLoadFileInner clears the container and
+        // rebuilds the editor with fresh params from current settings.
+        view.onLoadFile(view.file).catch((err) => elog("editor reload failed:", err));
+      } catch (e) {
+        elog("editor reload threw:", e && e.message ? e.message : e);
+      }
+    }
   }
 
   _notifyPdfDone(targetPath) {
