@@ -282,12 +282,81 @@ const DEFAULT_SETTINGS = {
 // ===========================================================================
 
 let DEBUG = false;
+
+// File-based logging fallback for mobile debugging.
+// When isMobile + DEBUG, dlog/elog also append to a vault file the user can
+// open in Obsidian itself. iOS doesn't have built-in console access without
+// a Mac, and the obsidian-dev-tools plugin (2021) doesn't reliably work on
+// modern Obsidian. Writing to a file is the lowest-tech-but-works approach.
+const DEBUG_LOG_FILE_PATH = "obsidi-office-debug.md";
+let _debugLogPlugin = null; // set on plugin onload
+let _debugLogQueue = [];
+let _debugLogFlushTimer = null;
+let _debugLogFlushing = false;
+
+function _stringifyArg(a) {
+  if (typeof a === "string") return a;
+  if (a == null) return String(a);
+  if (a instanceof Error) return a.stack || (a.name + ": " + a.message);
+  try { return JSON.stringify(a); } catch (e) { return String(a); }
+}
+
+async function _flushDebugLog() {
+  _debugLogFlushTimer = null;
+  if (_debugLogFlushing || !_debugLogPlugin || _debugLogQueue.length === 0) return;
+  _debugLogFlushing = true;
+  const lines = _debugLogQueue.splice(0).join("\n") + "\n";
+  try {
+    // adapter.append exists on both desktop and mobile FileSystemAdapters
+    await _debugLogPlugin.app.vault.adapter.append(DEBUG_LOG_FILE_PATH, lines);
+  } catch (e) {
+    // can't recursively log; drop the lines on the floor
+  } finally {
+    _debugLogFlushing = false;
+    if (_debugLogQueue.length > 0) _scheduleDebugFlush();
+  }
+}
+
+function _scheduleDebugFlush() {
+  if (_debugLogFlushTimer != null) return;
+  _debugLogFlushTimer = setTimeout(_flushDebugLog, 100);
+}
+
+function _enqueueDebugLog(level, args) {
+  if (!isMobile || !DEBUG || !_debugLogPlugin) return;
+  const ts = new Date().toISOString().slice(11, 23); // HH:MM:SS.mmm
+  const text = Array.from(args).map(_stringifyArg).join(" ");
+  _debugLogQueue.push("`" + ts + "` `" + level + "` " + text + "  ");
+  _scheduleDebugFlush();
+}
+
+// Called from plugin onload to bind plugin reference and reset the log file.
+async function initDebugLog(plugin) {
+  _debugLogPlugin = plugin;
+  if (!isMobile || !DEBUG) return;
+  try {
+    const header =
+      "# Obsidi-Office debug log\n\n" +
+      "Session started: " + new Date().toISOString() + "  \n" +
+      "Plugin version: " + (plugin.manifest && plugin.manifest.version || "?") + "  \n" +
+      "Platform: " + (obsidian.Platform.isIosApp ? "iOS"
+                    : obsidian.Platform.isAndroidApp ? "Android"
+                    : obsidian.Platform.isMobile ? "mobile (other)"
+                    : "desktop") + "  \n\n" +
+      "---\n\n";
+    await plugin.app.vault.adapter.write(DEBUG_LOG_FILE_PATH, header);
+  } catch (e) { /* swallow */ }
+}
+
 function dlog() {
-  if (!DEBUG) return;
-  try { console.log.apply(console, ["[OnlyObsidian Test]"].concat([].slice.call(arguments))); } catch (e) {}
+  if (DEBUG) {
+    try { console.log.apply(console, ["[OnlyObsidian Test]"].concat([].slice.call(arguments))); } catch (e) {}
+  }
+  _enqueueDebugLog("LOG", arguments);
 }
 function elog() {
   try { console.error.apply(console, ["[OnlyObsidian Test]"].concat([].slice.call(arguments))); } catch (e) {}
+  _enqueueDebugLog("ERR", arguments);
 }
 
 // ===========================================================================
@@ -1941,6 +2010,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async onload() {
     await this.loadSettings();
     DEBUG = !!this.settings.debugLogging;
+    // Set up file-based logging BEFORE the first dlog so onload start is captured.
+    await initDebugLog(this);
     dlog("onload");
 
     const adapter = this.app.vault.adapter;
