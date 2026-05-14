@@ -1959,6 +1959,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
     this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
     this.x2tRel        = vio.join(pluginDirRel, "assets/x2t");
+    this.x2tFontsRel   = vio.join(pluginDirRel, "assets/x2t-fonts");
     this.onlyOfficeRel = vio.join(pluginDirRel, "assets/onlyoffice");
     this.shimRel       = vio.join(pluginDirRel, "assets/docx-viewer/transport-shim.js");
 
@@ -2030,7 +2031,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.converter = new X2tConverter(this, {
       x2tRel:   this.x2tRel,
       x2tAbs:   this.x2tDir,
-      fontsRel: null,            // Phase 8: set to this.x2tFontsRel when font subset ships
+      // Shipped metric-only font subset (~5.6 MB, 44 .ttf files produced by
+      // scripts/subset-fonts.py). Byte-identical x2t output vs full system
+      // fonts. On desktop this loads additively with fontsAbs (system dir);
+      // on mobile this is the only source x2t sees (OS sandboxes system fonts).
+      // If the directory doesn't exist (e.g. older installs that only ran the
+      // legacy streaming-https tar.gz), X2tConverter._loadFonts silently
+      // skips it and falls through to fontsAbs.
+      fontsRel: this.x2tFontsRel,
       fontsAbs: this.fontsDir,   // C:\Windows\Fonts on desktop
     });
     this.bridge = new TransportBridge({
