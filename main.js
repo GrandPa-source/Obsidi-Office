@@ -2263,13 +2263,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           modal.open();
         }
       }
-      if (ev.data.type === "obsidi-office-print" && ev.data.images) {
+      // Accept both the post-Phase-13 message type and the pre-Phase-13
+      // "obsidi-office-mobile-*" variant. iPad's mock-socket.js comes from
+      // the asset zip, which was built from the mobile fork BEFORE the
+      // Phase 13 rebrand — so existing installs are still emitting the
+      // -mobile-suffixed names. A zip rebuild + reinstall would fix this
+      // properly; this branch is a compatibility bridge for installs that
+      // haven't been reinstalled yet.
+      if ((ev.data.type === "obsidi-office-print" || ev.data.type === "obsidi-office-mobile-print") && ev.data.images) {
         this._printDocument(ev.data.images, ev.data.pageMmW, ev.data.pageMmH);
         // Iframe overlay can hide as soon as the print iframe takes over.
         this._notifyPdfDone(null);
       }
-      if (ev.data.type === "obsidi-office-pdf-export" && ev.data.pages) {
-        dlog("obsidi-office-pdf-export received, pages:", ev.data.pages.length, "basename:", ev.data.basename, "transient:", !!ev.data.transientPrint);
+      if ((ev.data.type === "obsidi-office-pdf-export" || ev.data.type === "obsidi-office-mobile-pdf-export") && ev.data.pages) {
+        dlog("pdf-export received (type=" + ev.data.type + "), pages:", ev.data.pages.length, "basename:", ev.data.basename, "transient:", !!ev.data.transientPrint);
         this._exportPdfToVault(ev.data).then(() => {
           dlog("_exportPdfToVault resolved");
         }).catch((err) => {
