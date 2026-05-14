@@ -2640,7 +2640,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     for (const p of pages) {
       const dataUrl = p.dataUrl || "";
       const b64 = dataUrl.indexOf(",") >= 0 ? dataUrl.slice(dataUrl.indexOf(",") + 1) : dataUrl;
-      const pngBytes = Uint8Array.from(Buffer.from(b64, "base64"));
+      // Browser-safe base64 -> Uint8Array. Was Buffer.from(b64, "base64"),
+      // but Capacitor WKWebView has no Node Buffer global -> "can't find
+      // variable Buffer" on iPad. atob is universally available.
+      const bin = atob(b64);
+      const pngBytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) pngBytes[i] = bin.charCodeAt(i);
       const png = await pdfDoc.embedPng(pngBytes);
 
       // PDF page size: prefer the document's actual page dimensions in mm
