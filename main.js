@@ -565,14 +565,18 @@ class X2tConverter {
 // ===========================================================================
 
 class TransportBridge {
+  // opts.plugin    — owning plugin (for vio adapter access)
+  // opts.fontsRel  — vault-relative path to numbered fonts dir (preferred)
+  // opts.fontsDir  — absolute path to numbered fonts dir (desktop fallback)
   constructor(opts) {
+    this.plugin    = opts.plugin || null;
     this.converter = opts.converter;
     this.onSave    = opts.onSave || (async () => {});
     this._fontsDir = opts.fontsDir || "";
-    // Spellcheck asset roots — vault-relative path prefixes the spell.js
-    // Worker is permitted to read from. Anything outside these is rejected.
+    this._fontsRel = opts.fontsRel || "";
+    // Spellcheck asset roots — vault-relative paths used by getSpellAsset
+    // to constrain reads. Anything outside these prefixes is rejected.
     this._spellAssetRoots = (opts.spellAssetRoots || []).filter(Boolean);
-    this._adapter         = opts.adapter || null;  // for spell asset path resolution
     this.docs      = new Map();
     this.saveBufs  = new Map();
     this.attached  = false;
@@ -608,11 +612,13 @@ class TransportBridge {
     }
     if (d.type !== "rpc-call") return;
 
-    // Coexistence guard — silently ignore doc-specific RPCs whose docKey is
-    // not registered with this bridge. Prevents race conditions when another
-    // TransportBridge (e.g. a sibling fork during dev) is also listening on
-    // window.message. Single-bridge production behavior is unchanged because
-    // every iframe's docKey is registered before the iframe URL is set.
+    // Multi-instance guard — if multiple TransportBridges are attached to
+    // the same window (e.g. two .docx tabs open simultaneously), a
+    // doc-specific RPC could be answered by the bridge that does NOT own
+    // the docKey, returning an error reply that races with the real
+    // bridge's success reply and breaks the editor. Silently ignore such
+    // calls so only the owning bridge responds. doc-independent methods
+    // (getFont) are still answered by everyone.
     const docMethods = ["getDocument", "getMediaManifest", "getMedia", "downloadAs", "upload"];
     if (docMethods.indexOf(d.method) !== -1 && !this.docs.has(d.docKey)) {
       return;
@@ -626,8 +632,8 @@ class TransportBridge {
         case "getMedia":         payload = await this._getMedia(d.docKey, d.payload && d.payload.name); break;
         case "downloadAs":       payload = await this._downloadAs(d.docKey, d.payload); break;
         case "upload":           payload = await this._upload(d.docKey, d.payload); break;
-        case "getFont":          payload = this._getFont(d.payload); break;
-        case "getSpellAsset":    payload = this._getSpellAsset(d.payload); break;
+        case "getFont":          payload = await this._getFont(d.payload); break;
+        case "getSpellAsset":    payload = await this._getSpellAsset(d.payload); break;
         default:
           dlog("unknown RPC method:", d.method);
           payload = { ok: false, error: "unknown method" };
@@ -698,43 +704,69 @@ class TransportBridge {
     return { reply: response };
   }
 
-  _getFont(payload) {
+  async _getFont(payload) {
     const fontFile = (payload && payload.fontFile) || "";
     if (!fontFile) return { ok: false };
-    const fontsDir = path.join(this._fontsDir || "", "");
-    const fontPath = path.join(fontsDir, fontFile);
 
-    if (fs.existsSync(fontPath)) {
-      const data = fs.readFileSync(fontPath);
-      return { ok: true, bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) };
+    const tryRead = async (rel) => {
+      try {
+        if (this.plugin && (await vio.exists(this.plugin, rel))) {
+          const buf = await vio.readBinary(this.plugin, rel);
+          // adapter.readBinary returns ArrayBuffer; ensure we return a clean copy
+          return { ok: true, bytes: buf instanceof ArrayBuffer ? buf : buf.buffer.slice(buf.byteOffset || 0, (buf.byteOffset || 0) + buf.byteLength) };
+        }
+      } catch (e) { /* fall through */ }
+      return null;
+    };
+    const tryReadAbs = (abs) => {
+      if (isMobile) return null;
+      try {
+        if (vioAbs.exists(abs)) {
+          const data = vioAbs.readBinary(abs);
+          return { ok: true, bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) };
+        }
+      } catch (e) { /* fall through */ }
+      return null;
+    };
+
+    // Primary: vault-relative (works on both platforms; preferred on mobile)
+    if (this._fontsRel) {
+      const r = await tryRead(vio.join(this._fontsRel, fontFile));
+      if (r) return r;
+    }
+    // Fallback: absolute (desktop only)
+    if (this._fontsDir) {
+      const r = tryReadAbs(path.join(this._fontsDir, fontFile));
+      if (r) return r;
     }
 
-    // Fallback: serve Arial Regular (font 029) for missing fonts
-    const arialPath = path.join(fontsDir, "029");
-    if (fs.existsSync(arialPath)) {
-      dlog("font fallback:", fontFile, "-> 029 (Arial)");
-      const data = fs.readFileSync(arialPath);
-      return { ok: true, bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) };
+    // Arial 029 fallback for missing fonts
+    if (this._fontsRel) {
+      const r = await tryRead(vio.join(this._fontsRel, "029"));
+      if (r) { dlog("font fallback:", fontFile, "-> 029 (Arial)"); return r; }
+    }
+    if (this._fontsDir) {
+      const r = tryReadAbs(path.join(this._fontsDir, "029"));
+      if (r) { dlog("font fallback:", fontFile, "-> 029 (Arial)"); return r; }
     }
 
     return { ok: false };
   }
 
-  // Spell-check asset reader — strict path allowlist, sync fs.readFileSync.
-  // Mirrored from onlyobsidian-mobile (which uses async vio because of
-  // mobile's vault adapter). Allowlist prefixes are configured at bridge
-  // construction (sdkjs/common/spell/spell + assets/dictionaries).
-  _getSpellAsset(payload) {
+  // Read a spell-check asset (spell.wasm, spell.js.mem, dictionaries .aff/.dic)
+  // from disk via vio. Path is constrained to allowlisted roots — any
+  // request outside those is rejected. Roots are configured by the plugin
+  // at bridge construction (sdkjs/common/spell/spell/, dictionaries/).
+  async _getSpellAsset(payload) {
     const rel = (payload && payload.path) || "";
     if (!rel || typeof rel !== "string") return { ok: false, error: "missing path" };
 
-    // Reject path traversal — caller resolved the URL to a vault-rel
-    // path; absolute paths and `..` segments are not expected here.
+    // Reject path traversal and absolute paths
     if (rel.indexOf("..") !== -1 || rel.startsWith("/") || /^[a-zA-Z]:/.test(rel)) {
       return { ok: false, error: "invalid path" };
     }
 
-    // Allowlist — vault-rel path must start with one of the configured roots
+    // Normalize and allowlist-check
     const norm = rel.replace(/\\/g, "/");
     const allowed = this._spellAssetRoots.some((root) => {
       const r = root.replace(/\\/g, "/").replace(/\/$/, "");
@@ -745,24 +777,14 @@ class TransportBridge {
       return { ok: false, error: "path not allowed" };
     }
 
-    // The vault-rel path resolves against the vault basePath. We don't
-    // have an Obsidian adapter handle here, but we can use absolute paths
-    // because the test plugin is desktop-only. The caller passes a
-    // vault-rel path (matches mobile fork shape) which we resolve relative
-    // to the vault root.
-    const adapter = this._adapter;
-    if (!adapter) return { ok: false, error: "no adapter" };
-    const basePath = adapter.getBasePath ? adapter.getBasePath() : null;
-    if (!basePath) return { ok: false, error: "no basePath" };
-    const abs = path.join(basePath, norm);
-
+    if (!this.plugin) return { ok: false, error: "no plugin" };
     try {
-      if (!fs.existsSync(abs)) return { ok: false, error: "not found" };
-      const data = fs.readFileSync(abs);
-      return {
-        ok: true,
-        bytes: data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength),
-      };
+      if (!(await vio.exists(this.plugin, norm))) return { ok: false, error: "not found" };
+      const buf = await vio.readBinary(this.plugin, norm);
+      const ab = buf instanceof ArrayBuffer
+        ? buf
+        : buf.buffer.slice(buf.byteOffset || 0, (buf.byteOffset || 0) + buf.byteLength);
+      return { ok: true, bytes: ab };
     } catch (err) {
       return { ok: false, error: String(err && err.message || err) };
     }
@@ -881,6 +903,27 @@ function randomHex(bytes) {
   }
   return hex;
 }
+
+function makeEditorKey(seed) {
+  if (crypto && typeof crypto.createHash === "function") {
+    return crypto.createHash("sha256")
+      .update(String(seed) + Date.now().toString())
+      .digest("hex").slice(0, 20);
+  }
+  return Math.random().toString(16).slice(2, 14) +
+         Date.now().toString(16).slice(-8);
+}
+
+// Username for the OnlyOffice editor's user.id/name. Desktop reads OS user;
+// mobile gets a generic label. Either way OnlyOffice just shows it in the
+// presence indicator and uses it for the local editing session.
+function getUsername() {
+  if (!isMobile) {
+    try { return require("os").userInfo().username; } catch (e) {}
+  }
+  return "Mobile User";
+}
+
 // pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
 // supports printable ASCII (0x20-0x7E) + most Latin-1 supplement (0xA0-0xFF) +
 // a few extras. Drawing chars outside this set throws. For invisible-text PDF
@@ -1038,6 +1081,7 @@ class DocxView extends obsidian.FileView {
     this.docKey = "doc-" + randomHex(6);
     this.placeholderId = this.docKey;
     this._autoSaveTimer = null;
+    dlog("DocxView constructed, docKey:", this.docKey);
   }
 
   getViewType() { return VIEW_TYPE; }
@@ -1045,10 +1089,15 @@ class DocxView extends obsidian.FileView {
   getIcon() { return "file-text"; }
 
   async onOpen() {
-    this.containerEl.empty();
-    this.containerEl.style.padding = "0";
-    if (!this.file) {
-      this._renderLandingPage();
+    dlog("DocxView onOpen, hasFile:", !!this.file, "filePath:", this.file ? this.file.path : "(none)");
+    try {
+      this.containerEl.empty();
+      this.containerEl.style.padding = "0";
+      if (!this.file) {
+        this._renderLandingPage();
+      }
+    } catch (err) {
+      elog("DocxView onOpen threw:", err && err.stack || err);
     }
   }
 
@@ -1173,13 +1222,38 @@ class DocxView extends obsidian.FileView {
   }
 
   async onLoadFile(file) {
+    dlog("DocxView onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
+    try {
+      await this._onLoadFileInner(file);
+    } catch (err) {
+      elog("DocxView onLoadFile top-level threw:", err && err.stack || err);
+      try {
+        this.containerEl.empty();
+        this.containerEl.createEl("pre", {
+          text: "Failed to open " + (file && file.path) + "\n\n" + (err && err.stack || err),
+          attr: { style: "padding: 16px; color: var(--text-error); white-space: pre-wrap;" }
+        });
+      } catch (e2) {}
+    }
+  }
+
+  async _onLoadFileInner(file) {
+    // Auto-migrate leaves to onlyobsidian-test on DESKTOP only. The test
+    // plugin is isDesktopOnly:true so it can never load on mobile — but
+    // its id can still appear in enabledPlugins (community-plugins.json
+    // sync from desktop). Without the !isMobile guard, mobile would
+    // migrate the leaf to a view-type with no registered handler, leaving
+    // the landing page stuck on screen until the leaf is destroyed.
+
     // Check if another leaf already has this file open
     const existingLeaf = this._findExistingLeaf(file);
     if (existingLeaf && existingLeaf !== this.leaf) {
+      dlog("duplicate leaf detected — revealing existing, detaching this one");
       this.app.workspace.revealLeaf(existingLeaf);
       this.leaf.detach();
       return;
     }
+    dlog("onLoadFile proceeding with file:", file && file.path);
 
     this.file = file;
 
@@ -1208,7 +1282,7 @@ class DocxView extends obsidian.FileView {
         this.docKey, file.path, result.editorBin, result.media
       );
 
-      this._renderEditor();
+      await this._renderEditor();
     } catch (err) {
       elog("onLoadFile error:", err);
       this.containerEl.empty();
@@ -1219,7 +1293,11 @@ class DocxView extends obsidian.FileView {
     }
   }
 
-  _renderEditor() {
+  // Phase B4 — async, vio-based render.
+  // All disk reads are pre-loaded at the top via vio (vault adapter, mobile-
+  // safe). The MutationObserver callback then transforms HTML using cached
+  // values and stays synchronous — no fs/path inside the observer.
+  async _renderEditor() {
     this.containerEl.empty();
     this.containerEl.createEl("div", {
       attr: {
@@ -1228,49 +1306,114 @@ class DocxView extends obsidian.FileView {
       }
     });
 
-    const baseUrl = this.plugin.assetBaseUrl;
+    const plugin = this.plugin;
+    const baseUrl = plugin.assetBaseUrl;
     const apiSrc = baseUrl + "/web-apps/apps/api/documents/api.js";
     dlog("loading api.js from:", apiSrc);
 
-    // --- Blob iframe interceptor ---
-    // Obsidian's app:// protocol serves iframe HTML but blocks JS/CSS
-    // sub-resources inside app:// iframes (ERR_BLOCKED_BY_CLIENT).
-    // Workaround: intercept the iframe api.js creates, read the HTML from
-    // disk, inject a <base> tag for relative URL resolution, and load via
-    // blob: URL. Blob URLs inherit the parent's origin (app://obsidian.md),
-    // making sub-resource loads same-origin.
-    const onlyOfficeDir = this.plugin.onlyOfficeDir;
-    const docKey = this.docKey;
-    const shimAbsPath = this.plugin.shimAbs;
+    // --- Pre-load all asset files via vio ---
+    const onlyRel = plugin.onlyOfficeRel;
+    const htmlRel = vio.join(onlyRel, "web-apps/apps/documenteditor/main/index.html");
+    const apiRel  = vio.join(onlyRel, "web-apps/apps/api/documents/api.js");
+    const shimRel = plugin.shimRel;
+    const spellJsRel = vio.join(onlyRel, "sdkjs/common/spell/spell/spell.js");
+    const htmlDirRel = vio.join(onlyRel, "web-apps/apps/documenteditor/main");
+    const svgPathsRel = [
+      vio.join(htmlDirRel, "resources/img/iconssmall@2.5x.svg"),
+      vio.join(htmlDirRel, "resources/img/iconsbig@2.5x.svg"),
+      vio.join(htmlDirRel, "resources/img/iconshuge@2.5x.svg"),
+      vio.join(onlyRel,    "web-apps/apps/common/main/resources/img/doc-formats/formats@2.5x.svg"),
+    ];
 
-    // Spell-check assets: pre-cache spell.js source + compute the absolute
-    // dictionaries URL. Needed by the Worker shim built inside the
-    // MutationObserver callback (which runs synchronously and shouldn't do
-    // disk I/O for the race-condition reasons described above L993).
-    const pluginDirRel = this.plugin.manifest.dir;
-    const adapter = this.plugin.app.vault.adapter;
+    let htmlTemplate, apiCode;
+    try {
+      [htmlTemplate, apiCode] = await Promise.all([
+        vio.readText(plugin, htmlRel),
+        vio.readText(plugin, apiRel),
+      ]);
+    } catch (err) {
+      elog("failed to load editor HTML or api.js:", err);
+      this.containerEl.createEl("pre", {
+        text: "Failed to load editor assets.\n\n" + (err && err.stack || err),
+        attr: { style: "padding: 16px; color: var(--text-error); white-space: pre-wrap;" }
+      });
+      return;
+    }
+
+    let shimCode = "";
+    try { shimCode = await vio.readText(plugin, shimRel); }
+    catch (e) { elog("failed to read transport shim:", e.message); }
+
+    // Spell-check Worker source — pre-cached for the Blob-URL Worker spawn
+    // path. Empty string disables the spellcheck Worker shim path; the
+    // existing no-op stub is used instead. See docs/spellcheck-architecture.md.
     let spellSrc = "";
     try {
-      const spellPath = path.join(onlyOfficeDir, "sdkjs", "common", "spell", "spell", "spell.js");
-      if (fs.existsSync(spellPath)) {
-        spellSrc = fs.readFileSync(spellPath, "utf-8");
+      if (await vio.exists(plugin, spellJsRel)) {
+        spellSrc = await vio.readText(plugin, spellJsRel);
         dlog("pre-cached spell.js source (" + spellSrc.length + " chars)");
       }
     } catch (e) { elog("failed to read spell.js (spellcheck will fall back to no-op):", e.message); }
 
+    // Absolute URL of the dictionaries dir, used to override the relative
+    // default dictionaries_path that the editor passes to the Worker.
+    // adapter.getResourcePath returns an app://hash/... or capacitor://...
+    // URL that our Worker shim's RPC bridge can resolve back to a vault path.
+    const dictionariesRel = vio.join(plugin.pluginDirRel, "assets/dictionaries");
     let dictionariesUrl = "";
     try {
-      const dictionariesRel = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries");
-      const absDir = path.join(adapter.getBasePath(), dictionariesRel);
-      if (fs.existsSync(absDir)) {
-        dictionariesUrl = adapter.getResourcePath(dictionariesRel).replace(/\?.*$/, "");
+      if (await vio.exists(plugin, dictionariesRel)) {
+        dictionariesUrl = plugin.app.vault.adapter
+          .getResourcePath(dictionariesRel)
+          .replace(/\?.*$/, "");
       }
     } catch (e) { dictionariesUrl = ""; }
     dlog("dictionariesUrl:", dictionariesUrl || "(missing)");
 
-    const SPELL_DIR_URL = baseUrl + "/sdkjs/common/spell/spell";
-    const SPELL_REL = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/onlyoffice/sdkjs/common/spell/spell");
-    const DICT_REL  = path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries");
+    // SVG sprites — read in parallel, missing files become empty string
+    const svgContents = await Promise.all(svgPathsRel.map(async (p) => {
+      try {
+        return (await vio.exists(plugin, p)) ? await vio.readText(plugin, p) : "";
+      } catch (e) { return ""; }
+    }));
+    const svgContent = svgContents.join("");
+
+    // CSS files — parse <link> tags from the HTML, read each CSS in parallel
+    const linkTags = htmlTemplate.match(/<link\s+[^>]*rel=["']stylesheet["'][^>]*>/gi) || [];
+    const cssCache = new Map(); // href (as in HTML) -> { css, cssDirRel }
+    await Promise.all(linkTags.map(async (tag) => {
+      const m = tag.match(/href=["']([^"']+)["']/);
+      if (!m) return;
+      const href = m[1];
+      const cssRel = vio.resolve(htmlDirRel, href);
+      try {
+        if (!(await vio.exists(plugin, cssRel))) return;
+        const css = await vio.readText(plugin, cssRel);
+        cssCache.set(href, { css, cssDirRel: vio.dirname(cssRel) });
+      } catch (e) { /* skip missing */ }
+    }));
+
+    // api.js frameOrigin patch (in-memory transform — no I/O)
+    // api.js derives frameOrigin from iframe.src via:
+    //   this.frameOrigin = pathArray[0] + '//' + pathArray[2];
+    // That yields "app://hash" from the original src, but our blob iframe's
+    // origin is "app://obsidian.md" (inherited from parent). The mismatch
+    // causes _onMessage to silently drop ALL messages from the iframe.
+    // Fix: replace the derivation with window.location.origin.
+    const beforeLen = apiCode.length;
+    apiCode = apiCode.replace(
+      /this\.frameOrigin\s*=\s*pathArray\[0\]\s*\+\s*['"]\/\/['"]\s*\+\s*pathArray\[2\]/,
+      "this.frameOrigin = window.location.origin"
+    );
+    if (apiCode.length !== beforeLen) {
+      dlog("patched api.js frameOrigin (string length changed:", beforeLen, "->", apiCode.length, ")");
+    } else {
+      elog("WARNING: frameOrigin patch regex did NOT match — postMessage will fail");
+    }
+
+    // --- MutationObserver: transform iframe HTML using cached values ---
+    const filePath = this.file ? this.file.path : "";
+    const placeholderId = this.placeholderId;
 
     const iframeObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
@@ -1279,15 +1422,8 @@ class DocxView extends obsidian.FileView {
           const src = node.getAttribute("src") || "";
           if (!src.includes("documenteditor/main/index")) continue;
 
-          // Cancel the original src load IMMEDIATELY before doing any disk I/O.
-          // Without this, the browser starts fetching sub-resources from
-          // app://hash/... while we read HTML/CSS/SVG from disk. Those
-          // sub-resource fetches are cross-origin from the future blob iframe
-          // (app://obsidian.md) and Chromium blocks them with
-          // ERR_BLOCKED_BY_CLIENT — the editor sees require.js missing and
-          // falls into "components took too long" timeout.
+          // Race fix: kill original src load synchronously before any work.
           node.src = "about:blank";
-
           iframeObserver.disconnect();
           dlog("intercepted editor iframe, original src:", src.substring(0, 120));
 
@@ -1297,24 +1433,17 @@ class DocxView extends obsidian.FileView {
             const u = new URL(src, "http://dummy");
             u.searchParams.forEach((v, k) => { params[k] = v; });
           } catch (e) {}
+          params.docFilePath = filePath;
+          // Print-button enable signal for the iframe. Always true on
+          // desktop; on mobile, governed by the user setting (defaults to
+          // false because Capacitor WKWebView doesn't implement
+          // window.print() — see DEFAULT_SETTINGS comment).
+          params.enablePrint = !isMobile;
 
-          // Read the actual HTML from disk
-          const htmlPath = path.join(onlyOfficeDir,
-            "web-apps", "apps", "documenteditor", "main", "index.html");
-          let html = fs.readFileSync(htmlPath, "utf-8");
-
-          // Inject <base> for relative URL resolution via app://
+          let html = htmlTemplate;
           const baseHref = baseUrl + "/web-apps/apps/documenteditor/main/";
 
-          // Inject params as globals (blob URL has no query string)
-          // Also inject diagnostics for CSP, errors, and script loading
-          // In blob iframes, window.location.search is empty and read-only.
-          // OnlyOffice's index.html reads params via getUrlParams() which parses
-          // window.location.search.substring(1). Patch the HTML to replace that
-          // expression with a hardcoded query string built from captured params.
-          // Add docFilePath so the metadata button knows which file is being edited
-          params.docFilePath = this.file ? this.file.path : "";
-
+          // Replace getUrlParams() since blob iframes have no query string
           const qs = Object.entries(params)
             .map(([k,v]) => encodeURIComponent(k) + "=" + encodeURIComponent(v))
             .join("&");
@@ -1323,19 +1452,25 @@ class DocxView extends obsidian.FileView {
             JSON.stringify(qs)
           );
 
-          // Spell-check Worker shim — see onlyobsidian-mobile/docs/spellcheck-architecture.md.
+          // Spell-check Worker shim — see docs/spellcheck-architecture.md.
           // For non-spell Workers, fall through to no-op stub (existing behavior).
           // For spell.js: spawn a Blob-URL Worker (same-origin with blob iframe)
-          // with the pre-loaded SPELL_WORKER_PROLOGUE which routes the Worker's
-          // wasm fetch + dict XHRs through the existing transport-shim RPC.
+          // with a fetch+XHR shim prologue that routes asset reads through the
+          // existing transport-shim RPC. dictionaries_path is rewritten to an
+          // absolute URL so Worker-side relative resolution works.
+          const SPELL_DIR_URL = baseUrl + "/sdkjs/common/spell/spell";
           const spellShimEnabled = !!spellSrc && !!dictionariesUrl;
           const workerShim =
             "var _OrigWorker=window.Worker;" +
             "var _SPELL_SRC=" + (spellShimEnabled ? JSON.stringify(spellSrc) : '""') + ";" +
             "var _SPELL_DIR_URL=" + JSON.stringify(SPELL_DIR_URL) + ";" +
             "var _DICT_URL=" + JSON.stringify(dictionariesUrl) + ";" +
-            "var _SPELL_REL=" + JSON.stringify(SPELL_REL) + ";" +
-            "var _DICT_REL=" + JSON.stringify(DICT_REL) + ";" +
+            "var _ONLY_REL=" + JSON.stringify(plugin.onlyOfficeRel) + ";" +
+            "var _SPELL_REL=" + JSON.stringify(vio.join(plugin.onlyOfficeRel, "sdkjs/common/spell/spell")) + ";" +
+            "var _DICT_REL=" + JSON.stringify(vio.join(plugin.pluginDirRel, "assets/dictionaries")) + ";" +
+            // Worker-side prologue: overrides self.fetch + XHR, talks to the
+            // blob iframe via postMessage RPC. This becomes the FIRST code
+            // executed inside the spawned Worker, before spell.js runs.
             "var _SPELL_PROLOGUE=" + JSON.stringify(SPELL_WORKER_PROLOGUE) + ";" +
             "function _resolveSpellPath(url){" +
               "var s=String(url);" +
@@ -1344,6 +1479,10 @@ class DocxView extends obsidian.FileView {
               "return null;" +
             "}" +
             "function _wireSpellWorker(w){" +
+              // RPC bridge: Worker posts {__onlyoSpellRPC:true,type:'fetch',...},
+              // we resolve via vio.readBinary in the plugin parent, reply with
+              // type:'init' so spell.js's onmessage hits its dup-init guard
+              // (self.spellchecker already exists by the time replies arrive).
               "w.addEventListener('message',function(e){" +
                 "var d=e.data;" +
                 "if(!d||d.__onlyoSpellRPC!==true||d.type!=='fetch')return;" +
@@ -1369,8 +1508,8 @@ class DocxView extends obsidian.FileView {
               "var fname=String(url).split('/').pop().split('?')[0];" +
               "if(fname==='spell.js'&&_SPELL_SRC){" +
                 "try{" +
-                  // Module.locateFile prelude — forces spell.wasm URL to absolute
-                  // SPELL_DIR_URL so the Worker prologue's fetch shim catches it.
+                  // Provide an absolute base for spell.wasm via Module.locateFile
+                  // so the Worker emits the right URL for our fetch shim to catch.
                   "var modulePrelude='self.Module=self.Module||{};self.Module.locateFile=function(p){return '+JSON.stringify(_SPELL_DIR_URL)+'+\"/\"+p;};';" +
                   "var blob=new Blob([_SPELL_PROLOGUE,modulePrelude,_SPELL_SRC],{type:'text/javascript'});" +
                   "var blobUrl=URL.createObjectURL(blob);" +
@@ -1382,7 +1521,7 @@ class DocxView extends obsidian.FileView {
                 "}catch(e){console.warn('[blob] spell Worker spawn failed:',e&&e.message);}" +
               "}" +
               // Non-spell Workers (or spell-disabled fallback) — try original,
-              // otherwise return no-op stub.
+              // otherwise return no-op stub (preserves existing behavior).
               "try{return new _OrigWorker(url,opts);}catch(e){" +
                 "console.warn('[blob] Worker blocked (cross-origin), stubbing:',fname);" +
                 "var s={postMessage:function(){},terminate:function(){}," +
@@ -1398,16 +1537,8 @@ class DocxView extends obsidian.FileView {
             workerShim +
             "</script>";
 
-          // Inline the transport shim (avoid sub-resource <script src> for it)
-          let shimScript = "";
-          try {
-            const shimCode = fs.readFileSync(shimAbsPath, "utf-8");
-            shimScript = "<script>" + shimCode + "</script>";
-          } catch (e) {
-            elog("failed to read transport shim:", e.message);
-          }
+          const shimScript = shimCode ? "<script>" + shimCode + "</script>" : "";
 
-          // Inject after <head>: base tag, params, inlined shim
           html = html.replace(/<head([^>]*)>/i,
             "<head$1>\n" +
             '<base href="' + baseHref + '">\n' +
@@ -1415,72 +1546,43 @@ class DocxView extends obsidian.FileView {
             shimScript + "\n"
           );
 
-          // Remove the patcher's <script src="...transport-shim.js"> since we inlined it
+          // Strip the (pre-patched or runtime-patched) <script src="...transport-shim.js">
           html = html.replace(/<script\s+src="[^"]*transport-shim\.js"><\/script>\s*/g, "");
 
-          // Inline CSS: Obsidian's CSP blocks <link rel="stylesheet"> from app://hash/...
-          // because 'self' = app://obsidian.md (blob origin) != app://hash (resource host).
-          // 'unsafe-inline' IS allowed, so <style> tags work.
-          const htmlDir = path.join(onlyOfficeDir, "web-apps", "apps", "documenteditor", "main");
+          // Inline CSS using cache (Obsidian CSP blocks <link> sub-resources from app://hash)
           html = html.replace(/<link\s+[^>]*rel=["']stylesheet["'][^>]*>/gi, (tag) => {
-            const hrefMatch = tag.match(/href=["']([^"']+)["']/);
-            if (!hrefMatch) return tag;
-            const href = hrefMatch[1];
-            // Resolve relative href against the HTML directory
-            const cssAbsPath = path.resolve(htmlDir, href);
-            if (!fs.existsSync(cssAbsPath)) {
-              dlog("CSS not found, keeping link tag:", href);
+            const m = tag.match(/href=["']([^"']+)["']/);
+            if (!m) return tag;
+            const href = m[1];
+            const entry = cssCache.get(href);
+            if (!entry) {
+              dlog("CSS not in cache, keeping link tag:", href);
               return tag;
             }
-            try {
-              let css = fs.readFileSync(cssAbsPath, "utf-8");
-              // Rewrite url() paths: CSS was at resources/css/app.css, but
-              // when inlined, url() resolves against <base> (the main/ dir).
-              // Convert url(../../resources/img/x) -> url(resources/img/x)
-              const cssDir = path.dirname(cssAbsPath);
-              css = css.replace(/url\(["']?([^"')]+)["']?\)/g, (match, relUrl) => {
-                if (relUrl.startsWith("data:") || relUrl.startsWith("http") || relUrl.startsWith("//")) return match;
-                const absUrl = path.resolve(cssDir, relUrl);
-                const fromBase = path.relative(htmlDir, absUrl).split(path.sep).join("/");
-                return "url(" + fromBase + ")";
-              });
-              // Also rewrite --sprite-button-icons-base-url which is a plain path
-              // (not inside url()), used by JS to construct icon sprite URLs at runtime.
-              css = css.replace(
-                /--sprite-button-icons-base-url:\s*([^;}\s]+)/g,
-                (match, relPath) => {
-                  if (relPath.startsWith("url(")) return match; // already a url()
-                  const absPath2 = path.resolve(cssDir, relPath);
-                  const fromBase = path.relative(htmlDir, absPath2).split(path.sep).join("/");
-                  return "--sprite-button-icons-base-url:" + fromBase;
-                }
-              );
-              dlog("inlined CSS:", href, "(" + css.length + " chars)");
-              return "<style>" + css + "</style>";
-            } catch (e) {
-              elog("failed to inline CSS:", href, e.message);
-              return tag;
-            }
+            let css = entry.css;
+            const cssDirRel = entry.cssDirRel;
+            // Rewrite url() paths so they resolve relative to <base> (htmlDirRel)
+            css = css.replace(/url\(["']?([^"')]+)["']?\)/g, (match, relUrl) => {
+              if (relUrl.startsWith("data:") || relUrl.startsWith("http") || relUrl.startsWith("//")) return match;
+              const absRel = vio.resolve(cssDirRel, relUrl);
+              const fromBase = vio.relative(htmlDirRel, absRel);
+              return "url(" + fromBase + ")";
+            });
+            // Rewrite --sprite-button-icons-base-url (used by JS at runtime)
+            css = css.replace(
+              /--sprite-button-icons-base-url:\s*([^;}\s]+)/g,
+              (match, relPathStr) => {
+                if (relPathStr.startsWith("url(")) return match;
+                const absRel = vio.resolve(cssDirRel, relPathStr);
+                const fromBase = vio.relative(htmlDirRel, absRel);
+                return "--sprite-button-icons-base-url:" + fromBase;
+              }
+            );
+            dlog("inlined CSS:", href, "(" + css.length + " chars)");
+            return "<style>" + css + "</style>";
           });
 
-          // Pre-inject SVG icons into <div class="inlined-svg">.
-          // OnlyOffice v9.3 uses SVG sprites (not PNG) for toolbar icons.
-          // injectSvgIcons() fetches SVG files via fetch(), but those requests
-          // fail in the blob iframe (cross-origin to app://hash/...).
-          // Fix: read SVGs from disk and inject them directly into the HTML.
-          // Also set svgiconsrunonce=true to prevent runtime re-fetch.
-          const svgFiles = [
-            path.join(htmlDir, "resources", "img", "iconssmall@2.5x.svg"),
-            path.join(htmlDir, "resources", "img", "iconsbig@2.5x.svg"),
-            path.join(htmlDir, "resources", "img", "iconshuge@2.5x.svg"),
-            path.join(onlyOfficeDir, "web-apps", "apps", "common", "main", "resources", "img", "doc-formats", "formats@2.5x.svg"),
-          ];
-          let svgContent = "";
-          for (const svgPath of svgFiles) {
-            if (fs.existsSync(svgPath)) {
-              svgContent += fs.readFileSync(svgPath, "utf-8");
-            }
-          }
+          // Pre-inject SVG sprite content (injectSvgIcons() can't fetch from blob iframe)
           if (svgContent) {
             html = html.replace(
               '<div class="inlined-svg"></div>',
@@ -1491,13 +1593,12 @@ class DocxView extends obsidian.FileView {
               /<\/head>/i,
               '<script>window.svgiconsrunonce=true;</script>\n</head>'
             );
-            dlog("pre-injected", svgFiles.length, "SVG icon sprites (" + svgContent.length + " chars)");
+            dlog("pre-injected", svgPathsRel.length, "SVG icon sprites (" + svgContent.length + " chars)");
           }
 
           // Create blob URL (inherits parent origin app://obsidian.md)
           const blob = new Blob([html], { type: "text/html" });
           const blobUrl = URL.createObjectURL(blob);
-
           node.src = blobUrl;
           dlog("iframe replaced with blob URL, base:", baseHref);
         }
@@ -1505,6 +1606,7 @@ class DocxView extends obsidian.FileView {
     });
     iframeObserver.observe(this.containerEl, { childList: true, subtree: true });
 
+    // --- DocsAPI bootstrap ---
     const create = () => {
       const DocsAPI = window.DocsAPI;
       if (!DocsAPI) {
@@ -1513,7 +1615,7 @@ class DocxView extends obsidian.FileView {
       }
       try {
         const config = this._buildEditorConfig();
-        new DocsAPI.DocEditor(this.placeholderId, config);
+        new DocsAPI.DocEditor(placeholderId, config);
       } catch (err) {
         elog("DocEditor init failed:", err);
       }
@@ -1521,80 +1623,43 @@ class DocxView extends obsidian.FileView {
 
     if (window.DocsAPI) {
       create();
-    } else {
-      // Chromium blocks <script src="file://..."> from app:// origin.
-      // Workaround: place a non-executing marker <script> tag with the correct
-      // file:// src so api.js's getBasePath() can scan it from the DOM,
-      // then load the actual code via eval().
-      const apiAbsPath = path.join(this.plugin.onlyOfficeDir,
-        "web-apps", "apps", "api", "documents", "api.js");
+      return;
+    }
 
-      if (!fs.existsSync(apiAbsPath)) {
-        elog("api.js not found at:", apiAbsPath);
-        this.containerEl.createEl("pre", {
-          text: "api.js not found.\n\nExpected at: " + apiAbsPath +
-                "\n\nRun setup.js to copy OnlyOffice assets.",
-          attr: { style: "padding: 16px; color: var(--text-error); white-space: pre-wrap;" }
-        });
-        return;
-      }
+    // Marker <script> tag — api.js scans document.scripts for a src ending in
+    // api/documents/api.js to derive its base URL. type='text/plain' so the
+    // browser doesn't try to fetch it.
+    const marker = document.createElement("script");
+    marker.type = "text/plain";
+    marker.setAttribute("src", apiSrc);
+    document.head.appendChild(marker);
 
-      // Marker tag: api.js scans document.getElementsByTagName('script') for
-      // a src matching "api/documents/api.js" to derive its base URL.
-      // type='text/plain' prevents the browser from fetching the file:// URL.
-      const marker = document.createElement("script");
-      marker.type = "text/plain";
-      marker.setAttribute("src", apiSrc);
-      document.head.appendChild(marker);
+    // PostMessage debug logger (one per render — keeps the existing pattern)
+    const _pmDebug = (ev) => {
+      if (!ev.data) return;
+      const d = typeof ev.data === 'string' ? ev.data.substring(0, 120) : JSON.stringify(ev.data).substring(0, 120);
+      dlog("postMessage from origin:", ev.origin, "data:", d);
+    };
+    window.addEventListener("message", _pmDebug);
 
-      // Temporary: log all postMessages to debug the handshake
-      const _pmDebug = (ev) => {
-        if (!ev.data) return;
-        const d = typeof ev.data === 'string' ? ev.data.substring(0, 120) : JSON.stringify(ev.data).substring(0, 120);
-        dlog("postMessage from origin:", ev.origin, "data:", d);
-      };
-      window.addEventListener("message", _pmDebug);
-
-      try {
-        dlog("loading api.js via eval from:", apiAbsPath);
-        let apiCode = fs.readFileSync(apiAbsPath, "utf-8");
-
-        // CRITICAL FIX: api.js derives frameOrigin from iframe.src via string split:
-        //   this.frameOrigin = pathArray[0] + '//' + pathArray[2];
-        // This yields "app://hash" from the original src. But our blob iframe's
-        // origin is "app://obsidian.md" (inherited from parent). The mismatch
-        // causes _onMessage to silently drop ALL messages from the iframe.
-        // Fix: replace the origin derivation to use window.location.origin,
-        // which matches the blob iframe's origin.
-        const beforeLen = apiCode.length;
-        apiCode = apiCode.replace(
-          /this\.frameOrigin\s*=\s*pathArray\[0\]\s*\+\s*['"]\/\/['"]\s*\+\s*pathArray\[2\]/,
-          "this.frameOrigin = window.location.origin"
-        );
-        if (apiCode.length !== beforeLen) {
-          dlog("patched api.js frameOrigin (string length changed:", beforeLen, "->", apiCode.length, ")");
-        } else {
-          elog("WARNING: frameOrigin patch regex did NOT match — postMessage will fail");
-        }
-
-        (0, eval)(apiCode);
-        create();
-      } catch (err) {
-        elog("Failed to eval api.js:", err);
-        this.containerEl.createEl("pre", {
-          text: "Failed to load OnlyOffice api.js via eval()\n\n" +
-                (err && err.stack || err),
-          attr: { style: "padding: 16px; color: var(--text-error); white-space: pre-wrap;" }
-        });
-      }
+    try {
+      dlog("loading api.js via eval (cached", apiCode.length, "bytes)");
+      // eslint-disable-next-line no-eval
+      (0, eval)(apiCode);
+      create();
+    } catch (err) {
+      elog("Failed to eval api.js:", err);
+      this.containerEl.createEl("pre", {
+        text: "Failed to load OnlyOffice api.js via eval()\n\n" + (err && err.stack || err),
+        attr: { style: "padding: 16px; color: var(--text-error); white-space: pre-wrap;" }
+      });
     }
   }
 
   _buildEditorConfig() {
     const filename = this.file.basename + "." + this.file.extension;
-    const editorKey = crypto.createHash("sha256")
-      .update(this.file.path + Date.now().toString())
-      .digest("hex").slice(0, 20);
+    const editorKey = makeEditorKey(this.file.path);
+    const username = getUsername();
 
     return {
       document: {
@@ -1612,15 +1677,14 @@ class DocxView extends obsidian.FileView {
       editorConfig: {
         mode: this.plugin.settings.defaultMode,
         lang: "en",
-        user: { id: require("os").userInfo().username, name: require("os").userInfo().username },
+        user: { id: username, name: username },
         customization: {
           forcesave: false, autosave: true, chat: false, comments: true,
           about: false, help: false, feedback: false, plugins: false, macros: false,
           goback: false, close: false, compactHeader: true, hideRightMenu: true,
-          // Spellcheck re-enabled 2026-04-27 (mirrored from onlyobsidian-mobile
-          // commit 14dd7bd). Blob URL Worker + Worker-side fetch/XHR shim +
-          // en_US/en_CA Hunspell dictionaries (MPL-2.0). See mobile fork's
-          // docs/spellcheck-architecture.md for the layered design.
+          // Spellcheck re-enabled 2026-04-27 via Blob-URL Worker + Worker-side
+          // fetch/XHR shim + en_US/en_CA Hunspell dictionaries (MPL-2.0).
+          // See docs/spellcheck-architecture.md for the layered design.
           features: { spellcheck: { mode: true, change: true } }
         }
       },
@@ -1895,6 +1959,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
     this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
     this.x2tRel        = vio.join(pluginDirRel, "assets/x2t");
+    this.onlyOfficeRel = vio.join(pluginDirRel, "assets/onlyoffice");
+    this.shimRel       = vio.join(pluginDirRel, "assets/docx-viewer/transport-shim.js");
 
     // x2t converter uses system fonts for accurate text metrics during conversion.
     // The numbered files in assets/onlyoffice/fonts/ are for editor canvas rendering
@@ -1968,14 +2034,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       fontsAbs: this.fontsDir,   // C:\Windows\Fonts on desktop
     });
     this.bridge = new TransportBridge({
-      adapter,                                   // for spell-asset path resolution
+      plugin:    this,
       converter: this.converter,
-      fontsDir: path.join(this.onlyOfficeDir, "fonts"),
+      fontsRel:  vio.join(this.onlyOfficeRel, "fonts"),
+      fontsDir:  this.onlyOfficeDir ? path.join(this.onlyOfficeDir, "fonts") : null,
       // Spellcheck asset roots (vault-relative). getSpellAsset reads are
       // strictly constrained to these prefixes — anything outside is rejected.
       spellAssetRoots: [
-        path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/onlyoffice/sdkjs/common/spell/spell"),
-        path.posix.join(pluginDirRel.replace(/\\/g, "/"), "assets/dictionaries"),
+        vio.join(this.onlyOfficeRel, "sdkjs/common/spell/spell"),
+        vio.join(pluginDirRel, "assets/dictionaries"),
       ],
       onSave: async (filePath, docxBytes) => {
         const f = this.app.vault.getAbstractFileByPath(filePath);
@@ -1989,8 +2056,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.bridge.attach(window);
 
     this.registerView(VIEW_TYPE, (leaf) => new DocxView(leaf, this));
+    // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
-      elog("registerExtensions failed (probably already registered by another plugin):", e.message);
+      elog("registerExtensions failed:", e.message);
     }
 
     this.addSettingTab(new SettingsTab(this.app, this));
