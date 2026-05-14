@@ -2595,16 +2595,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   //
   // payload: { docKey, pages: [{dataUrl, text, w, h}], basename }
   async _exportPdfToVault(payload) {
-    if (!this.pluginAbs) {
-      new obsidian.Notice("PDF export: plugin not initialised");
-      return;
-    }
+    // Note: no longer guarded on this.pluginAbs — Phase 10 baked pdf-lib
+    // inline as PDFLIB_UMD_SOURCE, so loadPdfLib() needs no path. The old
+    // guard returned silently on mobile (pluginAbs=null per Phase 14
+    // hotfix) and left the iframe's "Generating PDF..." overlay stuck.
     const lib = loadPdfLib();
     const { PDFDocument, StandardFonts, rgb } = lib;
 
     const pages = payload.pages || [];
     if (pages.length === 0) {
       new obsidian.Notice("PDF export: no pages");
+      this._notifyPdfDone(null);  // hide overlay even on bail
       return;
     }
 
