@@ -2591,23 +2591,30 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     // Resolve target path: <docDir>/<basename>.pdf next to the .docx.
     // Prefer docFilePath sent from the iframe; fall back to docKey lookup via bridge.
+    // For transient print-via-PDF (Capacitor — window.print() is a no-op),
+    // suffix with -print-<timestamp> so we can clean it up unambiguously and
+    // avoid clobbering any user-generated PDF of the same basename.
+    const isTransient = !!payload.transientPrint;
     const basename = (payload.basename || "document").replace(/\.docx$/i, "");
     const docPath = payload.docFilePath || this._lookupDocFilePath(payload.docKey) || "";
     const docDir = docPath ? docPath.split("/").slice(0, -1).join("/") : "";
-    const targetPath = (docDir ? docDir + "/" : "") + basename + ".pdf";
+    const targetBasename = isTransient ? (basename + "-print-" + Date.now()) : basename;
+    const targetPath = (docDir ? docDir + "/" : "") + targetBasename + ".pdf";
 
     await this.app.vault.adapter.writeBinary(targetPath, pdfBytes);
     const ms = Date.now() - t0;
-    dlog("PDF exported:", targetPath, "(" + (pdfBytes.byteLength / 1024).toFixed(1) + " KB) in", ms, "ms");
+    dlog("PDF exported:", targetPath, "(" + (pdfBytes.byteLength / 1024).toFixed(1) + " KB) in", ms, "ms",
+         isTransient ? "[transient print]" : "");
 
     // Open the produced PDF in a new Obsidian tab. Wait one tick for the
     // vault to register the new file before resolving its TFile.
+    let openedLeaf = null;
     try {
       await new Promise((r) => setTimeout(r, 100));
       const file = this.app.vault.getAbstractFileByPath(targetPath);
       if (file instanceof obsidian.TFile) {
-        const leaf = this.app.workspace.getLeaf("tab");
-        await leaf.openFile(file);
+        openedLeaf = this.app.workspace.getLeaf("tab");
+        await openedLeaf.openFile(file);
       } else {
         dlog("PDF written but TFile not yet resolvable for", targetPath);
       }
@@ -2618,7 +2625,40 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // Notify all editor iframes to hide their PDF loading overlay.
     this._notifyPdfDone(targetPath);
 
-    new obsidian.Notice("PDF exported");
+    if (isTransient) {
+      // User has ~60s to invoke iOS share sheet → AirPrint from the PDF
+      // viewer. After the timeout, detach the leaf + delete the file so
+      // the vault doesn't accumulate print-artifact PDFs.
+      this._scheduleTransientPdfCleanup(targetPath, openedLeaf);
+      new obsidian.Notice("Tap share → Print to AirPrint. PDF auto-deletes in 60s.", 8000);
+    } else {
+      new obsidian.Notice("PDF exported");
+    }
+  }
+
+  _scheduleTransientPdfCleanup(pdfPath, leaf) {
+    const TIMEOUT_MS = 60 * 1000;
+    setTimeout(async () => {
+      try {
+        // Detach the tab if still attached (no harm if user already closed it).
+        if (leaf) {
+          let stillAttached = false;
+          this.app.workspace.iterateAllLeaves((l) => { if (l === leaf) stillAttached = true; });
+          if (stillAttached) {
+            try { leaf.detach(); } catch (e) {}
+          }
+        }
+        const f = this.app.vault.getAbstractFileByPath(pdfPath);
+        if (f && f instanceof obsidian.TFile) {
+          await this.app.vault.delete(f);
+          dlog("transient print PDF cleaned up:", pdfPath);
+        } else {
+          dlog("transient print PDF already gone:", pdfPath);
+        }
+      } catch (e) {
+        elog("transient PDF cleanup failed:", e && e.message ? e.message : e);
+      }
+    }, TIMEOUT_MS);
   }
 
   _notifyPdfDone(targetPath) {

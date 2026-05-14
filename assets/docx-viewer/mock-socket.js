@@ -433,6 +433,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     "body.menu-opened #docx-print-btn { opacity: 0 !important; pointer-events: none; }";
   document.head.appendChild(printBtnStyle);
 
+  // Are we running inside an Obsidian mobile (Capacitor) WebView? Editor
+  // iframe's HTML/JS lives in the plugin's assets dir, so document.baseURI
+  // starts with "capacitor://" on iOS/Android and "app://" / "file://" on
+  // Electron desktop. Used to route print through a transient PDF +
+  // share-sheet AirPrint on iPad — window.print() is a silent no-op in
+  // Capacitor WKWebView (verified 2026-05-07).
+  var IS_CAPACITOR = (function () {
+    try { return !!document.baseURI && document.baseURI.indexOf("capacitor://") === 0; }
+    catch (e) { return false; }
+  })();
+
   var printBtn = document.createElement("button");
   printBtn.id = "docx-print-btn";
   printBtn.title = "Print (Ctrl+P)";
@@ -440,10 +451,22 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   printBtn.addEventListener("click", function (e) {
     e.preventDefault();
     e.stopPropagation();
-    _slog("Print button pressed");
-    setOverlayLabel("Preparing print…");
-    pdfOverlay.style.display = "flex";
-    setTimeout(function () { captureAndExportPdf("print"); }, 50);
+    _slog("Print button pressed (capacitor=" + IS_CAPACITOR + ")");
+    if (IS_CAPACITOR) {
+      // iOS Capacitor: window.print() is a no-op. Route through the export
+      // pipeline with the transientPrint flag — main.js writes
+      // <basename>-print-<ts>.pdf, opens it in a new tab so the user can
+      // AirPrint via Obsidian's PDF-viewer share menu, then auto-deletes
+      // the file + closes the tab after 60s.
+      setOverlayLabel("Generating PDF for printing…");
+      pdfOverlay.style.display = "flex";
+      setTimeout(function () { captureAndExportPdf("export", true); }, 50);
+    } else {
+      // Desktop: direct iframe.contentWindow.print() works under Electron.
+      setOverlayLabel("Preparing print…");
+      pdfOverlay.style.display = "flex";
+      setTimeout(function () { captureAndExportPdf("print"); }, 50);
+    }
   });
   document.body.appendChild(printBtn);
 
@@ -478,10 +501,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
-      _slog("Ctrl+P intercepted — printing");
-      setOverlayLabel("Preparing print…");
-      pdfOverlay.style.display = "flex";
-      setTimeout(function () { captureAndExportPdf("print"); }, 50);
+      _slog("Ctrl+P intercepted — printing (capacitor=" + IS_CAPACITOR + ")");
+      if (IS_CAPACITOR) {
+        setOverlayLabel("Generating PDF for printing…");
+        pdfOverlay.style.display = "flex";
+        setTimeout(function () { captureAndExportPdf("export", true); }, 50);
+      } else {
+        setOverlayLabel("Preparing print…");
+        pdfOverlay.style.display = "flex";
+        setTimeout(function () { captureAndExportPdf("print"); }, 50);
+      }
     }
   }, true);
 
@@ -534,9 +563,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   //   mode "print": skip the text/searchability work (~100-300ms per page
   //     saved) and post just the page images to the parent for direct
   //     iframe-print.
-  async function captureAndExportPdf(mode) {
+  async function captureAndExportPdf(mode, transientPrint) {
     mode = (mode === "print") ? "print" : "export";
-    var tag = (mode === "print") ? "Print" : "PDF export";
+    var tag = (mode === "print") ? "Print" : (transientPrint ? "Print via PDF" : "PDF export");
     if (!window.Asc || !window.Asc.editor) {
       _slog(tag + ": editor not ready");
       return;
@@ -724,14 +753,18 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       _slog(tag + ": posted " + images.length + " page images to parent");
     } else {
       // Export payload: full pages array (image + text + textRuns + size).
+      // transientPrint flag distinguishes a real export (user wants the PDF)
+      // from a print-via-PDF (iPad path: route through export pipeline, then
+      // schedule cleanup after 60s).
       window.parent.postMessage({
         type: "obsidi-office-pdf-export",
         docKey: docKey,
         docFilePath: docFilePath,
         basename: basename,
-        pages: pages
+        pages: pages,
+        transientPrint: !!transientPrint
       }, "*");
-      _slog(tag + ": posted " + pages.length + " pages to parent (basename=" + basename + ")");
+      _slog(tag + ": posted " + pages.length + " pages to parent (basename=" + basename + ", transient=" + !!transientPrint + ")");
     }
   }
 
