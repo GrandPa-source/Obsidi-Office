@@ -5,7 +5,7 @@
 // fails on iPad. Inlining keeps the plugin self-contained — main.js +
 // manifest.json are the only files Obsidian Sync needs to transfer.
 //
-// Run from onlyobsidian-test/. Idempotent — running twice produces the
+// Run from obsidi-office/. Idempotent — running twice produces the
 // same output (the regex matches both fresh-insert and previously-inlined
 // forms).
 //

@@ -1,6 +1,6 @@
 /* eslint-disable */
 /*
- * OnlyObsidian Test plugin
+ * Obsidi-Office plugin
  *
  * Localhost-free OnlyOffice integration for Obsidian. Replaces the
  * loopback HTTP server (DocxServer) in the original obsidian-docx-viewer
@@ -141,8 +141,8 @@ const vioAbs = {
 // Constants
 // ===========================================================================
 
-const VIEW_TYPE = "onlyobsidian-test-docx";
-const SHIM_SENTINEL = "<!-- onlyobsidian-test-shim-injected -->";
+const VIEW_TYPE = "obsidi-office-docx";
+const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
 // Only documenteditor/main/* is required for .docx desktop editing.
@@ -357,12 +357,12 @@ async function initDebugLog(plugin) {
 
 function dlog() {
   if (DEBUG) {
-    try { console.log.apply(console, ["[OnlyObsidian Test]"].concat([].slice.call(arguments))); } catch (e) {}
+    try { console.log.apply(console, ["[obsidi-office]"].concat([].slice.call(arguments))); } catch (e) {}
   }
   _enqueueDebugLog("LOG", arguments);
 }
 function elog() {
-  try { console.error.apply(console, ["[OnlyObsidian Test]"].concat([].slice.call(arguments))); } catch (e) {}
+  try { console.error.apply(console, ["[obsidi-office]"].concat([].slice.call(arguments))); } catch (e) {}
   _enqueueDebugLog("ERR", arguments);
 }
 
@@ -1311,13 +1311,6 @@ class DocxView extends obsidian.FileView {
   }
 
   async _onLoadFileInner(file) {
-    // Auto-migrate leaves to onlyobsidian-test on DESKTOP only. The test
-    // plugin is isDesktopOnly:true so it can never load on mobile — but
-    // its id can still appear in enabledPlugins (community-plugins.json
-    // sync from desktop). Without the !isMobile guard, mobile would
-    // migrate the leaf to a view-type with no registered handler, leaving
-    // the landing page stuck on screen until the leaf is destroyed.
-
     // Check if another leaf already has this file open
     const existingLeaf = this._findExistingLeaf(file);
     if (existingLeaf && existingLeaf !== this.leaf) {
@@ -1800,7 +1793,7 @@ class SettingsTab extends obsidian.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "OnlyObsidian Test" });
+    containerEl.createEl("h2", { text: "ObsidiOffice" });
     containerEl.createEl("p", {
       text: "Test build of OnlyOffice in Obsidian without a localhost HTTP server. " +
             "All editor traffic is routed via in-process postMessage.",
@@ -2035,6 +2028,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     DEBUG = !!this.settings.debugLogging;
     // Set up file-based logging BEFORE the first dlog so onload start is captured.
     await initDebugLog(this);
+    // Phase 13 reverse migration. Rewrites legacy workspace state +
+    // settings.assetZipSource filename to the obsidi-office form.
+    // Idempotent — self-no-ops after first onload post-rename.
+    await this._migrateLegacyState();
     dlog("onload");
 
     const adapter = this.app.vault.adapter;
@@ -2042,7 +2039,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.pluginDirRel = pluginDirRel;  // for vio access from method scope (zip install, etc.)
     const basePath = adapter.getBasePath ? adapter.getBasePath() : null;
     if (!basePath) {
-      new obsidian.Notice("OnlyObsidian Test: cannot resolve vault base path (desktop only).");
+      new obsidian.Notice("Obsidi-Office: cannot resolve vault base path (desktop only).");
       return;
     }
 
@@ -2258,6 +2255,58 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
   }
+
+  // Phase 13 reverse migration helper. Two jobs, both idempotent:
+  //
+  //   1. Workspace state: any leaf currently using a pre-rename docx
+  //      view-type ("onlyobsidian-test-docx" or "onlyobsidian-mobile-docx")
+  //      is rewritten via setViewState to the new view-type, preserving
+  //      the file path. Existing .docx tabs survive the rename without
+  //      manual close/reopen.
+  //   2. Settings: if settings.assetZipSource still references the
+  //      pre-decision-#4 zip filename ("obsidi-office-mobile-assets-
+  //      v9.3.1.zip"), rewrite it to the dropped-suffix form
+  //      ("obsidi-office-assets-v9.3.1.zip") so the Phase B3 install
+  //      flow doesn't fail with "zip not found" on the renamed asset.
+  //
+  // Called early in onload (after loadSettings + initDebugLog) so the
+  // migration finishes before any DocxView leaf factory runs.
+  async _migrateLegacyState() {
+    const OLD_VIEW_TYPES = ["onlyobsidian-test-docx", "onlyobsidian-mobile-docx"];
+    const migrations = [];
+    try {
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        try {
+          const state = leaf.getViewState && leaf.getViewState();
+          if (state && OLD_VIEW_TYPES.indexOf(state.type) !== -1 &&
+              state.state && state.state.file) {
+            migrations.push({ leaf, file: state.state.file });
+          }
+        } catch (e) { /* ignore individual-leaf failures */ }
+      });
+    } catch (e) { /* ignore iterate failures */ }
+    for (const { leaf, file } of migrations) {
+      try {
+        await leaf.setViewState({ type: VIEW_TYPE, state: { file } });
+        dlog("migrated leaf view-type to", VIEW_TYPE, "for", file);
+      } catch (e) {
+        elog("leaf view-type migration failed:", e && e.message ? e.message : e);
+      }
+    }
+
+    const zip = this.settings && this.settings.assetZipSource;
+    if (typeof zip === "string" && /obsidi-office-mobile-assets-v9\.3\.1\.zip$/.test(zip)) {
+      this.settings.assetZipSource =
+        zip.replace(/obsidi-office-mobile-assets-v9\.3\.1\.zip$/, "obsidi-office-assets-v9.3.1.zip");
+      try {
+        await this.saveSettings();
+        dlog("migrated settings.assetZipSource: dropped 'mobile' qualifier");
+      } catch (e) {
+        elog("assetZipSource migration save failed:", e && e.message ? e.message : e);
+      }
+    }
+  }
+
   async saveSettings() {
     await this.saveData(this.settings);
     DEBUG = !!this.settings.debugLogging;

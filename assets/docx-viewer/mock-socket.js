@@ -1,6 +1,6 @@
 /* eslint-disable */
 /*
- * OnlyObsidian Test — mock socket.io stand-in
+ * Obsidi-Office — mock socket.io stand-in
  *
  * Replaces web-apps/vendor/socketio/socket.io.min.js inside the OnlyOffice
  * tree. Provides a fake io() factory whose returned socket completes the

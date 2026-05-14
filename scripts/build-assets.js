@@ -5,7 +5,7 @@
 // assets bundle for the Obsidi-Office plugin.
 //
 // Inputs (full 455 MB bundle, expected to contain onlyoffice/ + x2t/):
-//   --src <path>     source assets dir (default: deployed onlyobsidian-test)
+//   --src <path>     source assets dir (default: deployed obsidi-office)
 //   --shim <path>    path to transport-shim.js to inline (default: this plugin's)
 //   --mock <path>    path to mock-socket.js to substitute for socket.io (default: this plugin's)
 //   --out <path>     output dir (default: ./dist/assets)
@@ -219,6 +219,7 @@ function prepatchHtml(srcContent, htmlRel) {
 // so the build is deterministic regardless of source dev state.
 function stripRuntimePatches(html) {
   const sentinels = [
+    "<!-- obsidi-office-shim-injected -->",
     "<!-- onlyobsidian-test-shim-injected -->",
     "<!-- onlyobsidian-mobile-shim-injected -->",
   ];
@@ -467,10 +468,10 @@ function main() {
 
   // Defaults pinned to this dev environment
   const here = path.resolve(__dirname);
-  const pluginRoot = path.dirname(here); // onlyobsidian-test/
+  const pluginRoot = path.dirname(here); // obsidi-office/
   const projectRoot = path.dirname(pluginRoot); // P21_OnlyOffice/
   if (!args.src) {
-    args.src = "C:\\Obsidian\\OB_Testing\\.obsidian\\plugins\\onlyobsidian-test\\assets";
+    args.src = "C:\\Obsidian\\OB_Testing\\.obsidian\\plugins\\obsidi-office\\assets";
   }
   if (!args.shim) {
     args.shim = path.join(pluginRoot, "assets", "docx-viewer", "transport-shim.js");

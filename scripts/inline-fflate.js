@@ -4,7 +4,7 @@
 // self-contained — no separate file needed for Obsidian Sync to transfer
 // (sync of plugin sub-folders/lib/ is unreliable on iOS).
 //
-// Run from onlyobsidian-test/. Idempotent — running twice produces the
+// Run from obsidi-office/. Idempotent — running twice produces the
 // same output (the regex matches both the disk-loading and inlined forms).
 
 "use strict";
