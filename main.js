@@ -39,6 +39,105 @@ const path     = isMobile ? null : require("path");
 const crypto   = isMobile ? null : require("crypto");
 
 // ===========================================================================
+// Phase B — Platform-IO shim
+// ===========================================================================
+// All vault-relative I/O routes through Obsidian's vault adapter, which works
+// identically on desktop and mobile. Absolute-path I/O (system fonts, tmp
+// files, etc.) is desktop-only and stays sync via fs.
+//
+// vio.* helpers all take an Obsidian `Plugin` instance (for adapter access)
+// and forward-slash vault-relative paths. The desktop adapter will translate
+// these to absolute paths internally; mobile uses them as-is.
+//
+// vioAbs.* helpers take absolute filesystem paths and are sync (existing
+// fs API surface). Throw on mobile to surface incorrect routing during dev.
+// ===========================================================================
+
+const vio = {
+  exists(plugin, relPath) {
+    return plugin.app.vault.adapter.exists(relPath);
+  },
+  readBinary(plugin, relPath) {
+    return plugin.app.vault.adapter.readBinary(relPath);
+  },
+  readText(plugin, relPath) {
+    return plugin.app.vault.adapter.read(relPath);
+  },
+  writeBinary(plugin, relPath, data) {
+    return plugin.app.vault.adapter.writeBinary(relPath, data);
+  },
+  writeText(plugin, relPath, data) {
+    return plugin.app.vault.adapter.write(relPath, data);
+  },
+  list(plugin, relPath) {
+    // Returns { files: string[], folders: string[] } — paths are vault-relative.
+    return plugin.app.vault.adapter.list(relPath);
+  },
+  mkdir(plugin, relPath) {
+    return plugin.app.vault.adapter.mkdir(relPath);
+  },
+  // Forward-slash join, collapse repeats. Vault-relative paths are
+  // platform-agnostic; never use OS-native separators.
+  join(...parts) {
+    return parts.filter(Boolean).join("/").replace(/\/+/g, "/");
+  },
+  // Posix-style dirname — last segment stripped, no trailing slash.
+  dirname(p) {
+    const i = p.lastIndexOf("/");
+    return i < 0 ? "" : p.slice(0, i);
+  },
+  // Resolve `rel` against `base` (both forward-slash). Handles `..`/`.`.
+  // Stays vault-relative; doesn't go above the vault root.
+  resolve(base, rel) {
+    if (!rel) return base;
+    if (rel.startsWith("/")) return rel.replace(/^\/+/, "");
+    const segs = base.split("/").filter(Boolean);
+    for (const s of rel.split("/")) {
+      if (s === "" || s === ".") continue;
+      if (s === "..") segs.pop();
+      else segs.push(s);
+    }
+    return segs.join("/");
+  },
+  // Relative path from `from` directory to `to` (file or dir). Both vault-relative.
+  relative(from, to) {
+    const f = from.split("/").filter(Boolean);
+    const t = to.split("/").filter(Boolean);
+    let i = 0;
+    while (i < f.length && i < t.length && f[i] === t[i]) i++;
+    const ups = new Array(f.length - i).fill("..");
+    return [...ups, ...t.slice(i)].join("/");
+  },
+};
+
+const vioAbs = {
+  exists(absPath) {
+    if (isMobile) throw new Error("vioAbs.exists called on mobile: " + absPath);
+    return fs.existsSync(absPath);
+  },
+  readBinary(absPath) {
+    if (isMobile) throw new Error("vioAbs.readBinary called on mobile: " + absPath);
+    return fs.readFileSync(absPath);
+  },
+  readText(absPath) {
+    if (isMobile) throw new Error("vioAbs.readText called on mobile: " + absPath);
+    return fs.readFileSync(absPath, "utf-8");
+  },
+  writeBinary(absPath, data) {
+    if (isMobile) throw new Error("vioAbs.writeBinary called on mobile: " + absPath);
+    return fs.writeFileSync(absPath, data);
+  },
+  writeText(absPath, data) {
+    if (isMobile) throw new Error("vioAbs.writeText called on mobile: " + absPath);
+    return fs.writeFileSync(absPath, data, "utf-8");
+  },
+  readdir(absPath) {
+    if (isMobile) throw new Error("vioAbs.readdir called on mobile: " + absPath);
+    return fs.readdirSync(absPath, { withFileTypes: true });
+  },
+};
+
+// ===========================================================================
 // Constants
 // ===========================================================================
 
@@ -217,9 +316,16 @@ function loadPdfLib(pluginAbs) {
 // ===========================================================================
 
 class X2tConverter {
-  constructor(x2tDir, fontsDir) {
-    this.x2tDir   = x2tDir;
-    this.fontsDir = fontsDir;
+  // x2tRel  — vault-relative path to the x2t/ assets dir (x2t.js + x2t.wasm)
+  // fontsRel — vault-relative path to a shipped font subset (mobile + future)
+  // fontsAbs — absolute system fonts dir (desktop only; null on mobile)
+  // x2tAbs  — absolute path to x2t dir (desktop only; needed for Emscripten locateFile)
+  constructor(plugin, opts) {
+    this.plugin   = plugin;
+    this.x2tRel   = opts.x2tRel;
+    this.x2tAbs   = opts.x2tAbs || null;
+    this.fontsRel = opts.fontsRel || null;
+    this.fontsAbs = opts.fontsAbs || null;
     this.module   = null;
     this.initP    = null;
   }
@@ -230,83 +336,141 @@ class X2tConverter {
     await this.initP;
   }
 
-  _init() {
+  async _init() {
+    const x2tJsRel   = vio.join(this.x2tRel, "x2t.js");
+    const x2tWasmRel = vio.join(this.x2tRel, "x2t.wasm");
+
+    const [jsOk, wasmOk] = await Promise.all([
+      vio.exists(this.plugin, x2tJsRel),
+      vio.exists(this.plugin, x2tWasmRel),
+    ]);
+    if (!jsOk || !wasmOk) {
+      throw new Error("x2t assets missing. Expected at: " + this.x2tRel);
+    }
+
+    const [wasmBinary, x2tCode] = await Promise.all([
+      vio.readBinary(this.plugin, x2tWasmRel),
+      vio.readText(this.plugin, x2tJsRel),
+    ]);
+
     return new Promise((resolve, reject) => {
-      const x2tJsPath   = path.join(this.x2tDir, "x2t.js");
-      const x2tWasmPath = path.join(this.x2tDir, "x2t.wasm");
-      if (!fs.existsSync(x2tJsPath) || !fs.existsSync(x2tWasmPath)) {
-        reject(new Error("x2t assets missing. Expected at: " + this.x2tDir));
-        return;
-      }
-      const wasmBinary = fs.readFileSync(x2tWasmPath);
+      const x2tAbs = this.x2tAbs;
       globalThis.Module = {
         noInitialRun:   true,
         noExitRuntime:  true,
-        wasmBinary:     wasmBinary.buffer.slice(wasmBinary.byteOffset, wasmBinary.byteOffset + wasmBinary.byteLength),
+        wasmBinary:     wasmBinary, // already an ArrayBuffer from adapter.readBinary
+        // locateFile returns absolute paths on desktop (where Emscripten uses
+        // fs to load auxiliary files). On mobile this currently echoes the
+        // input — auxiliary loads aren't expected since wasmBinary is set
+        // directly and our VFS is preloaded before main1() runs.
         locateFile: (file) => {
-          if (file.endsWith(".wasm")) return x2tWasmPath;
-          return path.join(this.x2tDir, file);
+          if (x2tAbs) {
+            return file.endsWith(".wasm") ? path.join(x2tAbs, "x2t.wasm") : path.join(x2tAbs, file);
+          }
+          return file;
         },
         onRuntimeInitialized: () => {
           this.module = globalThis.Module;
-          try { this._setupVFS(); resolve(); }
-          catch (err) { reject(err); }
+          this._setupVFS()
+            .then(resolve)
+            .catch(reject);
         },
       };
       try {
-        const code = fs.readFileSync(x2tJsPath, "utf-8");
         // eslint-disable-next-line no-eval
-        (0, eval)(code);
+        (0, eval)(x2tCode);
       } catch (err) {
         reject(new Error("Failed to load x2t.js: " + err.message));
       }
     });
   }
 
-  _setupVFS() {
+  async _setupVFS() {
     const FS = this.module.FS;
     if (!FS) throw new Error("x2t FS missing after init");
     this._mkdir(FS, "/working");
     this._mkdir(FS, "/working/media");
     this._mkdir(FS, "/working/fonts");
     this._mkdir(FS, "/working/themes");
-    this._loadFonts(FS);
+    await this._loadFonts(FS);
   }
 
   _mkdir(FS, dir) {
     try { FS.mkdir(dir); } catch (e) { /* ignore EEXIST */ }
   }
 
-  _loadFonts(FS) {
-    if (!fs.existsSync(this.fontsDir)) {
-      dlog("fonts dir not present, skipping:", this.fontsDir);
-      return;
-    }
+  async _loadFonts(FS) {
+    // Two sources, in order:
+    //   1. Shipped font subset (vault-relative, both platforms) — primary on mobile
+    //   2. System fonts dir (absolute, desktop only) — primary on desktop
+    // Skip silently if not present.
     let loaded = 0;
-    const limit = 150; // System font dirs have ~130 .ttf/.ttc files on Windows
-    const walk = (real, vfs) => {
-      if (loaded >= limit) return;
-      let entries;
-      try { entries = fs.readdirSync(real, { withFileTypes: true }); }
-      catch (e) { return; }
-      for (const entry of entries) {
-        if (loaded >= limit) return;
-        const r = path.join(real, entry.name);
-        const v = vfs + "/" + entry.name;
-        if (entry.isDirectory()) {
-          this._mkdir(FS, v);
-          walk(r, v);
-        } else if (/\.tt[fc]$/i.test(entry.name)) {
-          try {
-            const data = fs.readFileSync(r);
-            FS.writeFile(v, new Uint8Array(data));
-            loaded++;
-          } catch (e) { /* skip */ }
-        }
+    const limit = 150;
+
+    if (this.fontsRel && (await vio.exists(this.plugin, this.fontsRel))) {
+      loaded += await this._walkRel(FS, this.fontsRel, "/working/fonts", limit - loaded);
+      dlog("loaded", loaded, "fonts from shipped subset:", this.fontsRel);
+    }
+
+    if (this.fontsAbs && !isMobile && vioAbs.exists(this.fontsAbs)) {
+      const before = loaded;
+      loaded += this._walkAbs(FS, this.fontsAbs, "/working/fonts", limit - loaded);
+      dlog("loaded", loaded - before, "fonts from system dir:", this.fontsAbs);
+    }
+
+    if (loaded === 0) {
+      dlog("no fonts loaded — fontsRel:", this.fontsRel, "fontsAbs:", this.fontsAbs);
+    }
+  }
+
+  async _walkRel(FS, rel, vfs, budget) {
+    if (budget <= 0) return 0;
+    let loaded = 0;
+    let entries;
+    try { entries = await vio.list(this.plugin, rel); }
+    catch (e) { return 0; }
+    for (const folder of entries.folders || []) {
+      if (loaded >= budget) break;
+      const name = folder.split("/").pop();
+      const v = vfs + "/" + name;
+      this._mkdir(FS, v);
+      loaded += await this._walkRel(FS, folder, v, budget - loaded);
+    }
+    for (const file of entries.files || []) {
+      if (loaded >= budget) break;
+      const name = file.split("/").pop();
+      if (!/\.tt[fc]$/i.test(name)) continue;
+      try {
+        const data = await vio.readBinary(this.plugin, file);
+        FS.writeFile(vfs + "/" + name, new Uint8Array(data));
+        loaded++;
+      } catch (e) { /* skip */ }
+    }
+    return loaded;
+  }
+
+  _walkAbs(FS, real, vfs, budget) {
+    if (budget <= 0) return 0;
+    let loaded = 0;
+    let entries;
+    try { entries = vioAbs.readdir(real); }
+    catch (e) { return 0; }
+    for (const entry of entries) {
+      if (loaded >= budget) break;
+      const r = path.join(real, entry.name);
+      const v = vfs + "/" + entry.name;
+      if (entry.isDirectory()) {
+        this._mkdir(FS, v);
+        loaded += this._walkAbs(FS, r, v, budget - loaded);
+      } else if (/\.tt[fc]$/i.test(entry.name)) {
+        try {
+          const data = vioAbs.readBinary(r);
+          FS.writeFile(v, new Uint8Array(data));
+          loaded++;
+        } catch (e) { /* skip */ }
       }
-    };
-    walk(this.fontsDir, "/working/fonts");
-    dlog("loaded", loaded, "fonts into VFS");
+    }
+    return loaded;
   }
 
   async docxToEditorBin(docxBytes) {
@@ -1670,6 +1834,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.x2tDir        = path.join(pluginAbs, "assets", "x2t");
     this.shimAbs       = path.join(pluginAbs, "assets", "docx-viewer", "transport-shim.js");
     this.mockSocketAbs = path.join(pluginAbs, "assets", "docx-viewer", "mock-socket.js");
+    this.x2tRel        = vio.join(pluginDirRel, "assets/x2t");
 
     // x2t converter uses system fonts for accurate text metrics during conversion.
     // The numbered files in assets/onlyoffice/fonts/ are for editor canvas rendering
@@ -1710,8 +1875,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (r.errors.length) elog("patcher errors:", r.errors);
     }
 
-    // x2t + bridge
-    this.converter = new X2tConverter(this.x2tDir, this.fontsDir);
+    // x2t + bridge. The converter accepts both relative + absolute paths
+    // so it can route via vio (vault adapter, mobile-safe) for the assets
+    // shipped inside the plugin and via vioAbs (fs sync) for system fonts.
+    this.converter = new X2tConverter(this, {
+      x2tRel:   this.x2tRel,
+      x2tAbs:   this.x2tDir,
+      fontsRel: null,            // Phase 8: set to this.x2tFontsRel when font subset ships
+      fontsAbs: this.fontsDir,   // C:\Windows\Fonts on desktop
+    });
     this.bridge = new TransportBridge({
       adapter,                                   // for spell-asset path resolution
       converter: this.converter,
