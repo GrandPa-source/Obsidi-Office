@@ -2086,6 +2086,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.assetBaseUrl = adapter.getResourcePath(this.onlyOfficeRel).replace(/\?.*$/, "");
     dlog("assetBaseUrl:", this.assetBaseUrl);
 
+    // Register Settings tab BEFORE the asset check. If assets are missing
+    // and no assetZipSource is configured, onload bails with a notice —
+    // the Settings tab needs to be available so the user can configure
+    // the zip source and trigger install. Otherwise it's chicken-and-egg.
+    this.addSettingTab(new SettingsTab(this.app, this));
+
     // Check assets — vio-based existence checks (mobile-safe). Same four
     // canaries as the previous fs-based version (onlyoffice tree + x2t
     // binaries) so existing desktop installs without the Phase-8 font
@@ -2194,7 +2200,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       elog("registerExtensions failed:", e.message);
     }
 
-    this.addSettingTab(new SettingsTab(this.app, this));
+    // (Settings tab registered earlier — see comment near assetBaseUrl.)
 
     this.addCommand({
       id: "onlyobsidian-open-current",
