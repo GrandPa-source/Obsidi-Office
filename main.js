@@ -142,6 +142,7 @@ const vioAbs = {
 // ===========================================================================
 
 const VIEW_TYPE = "obsidi-office-docx";
+const VIEW_TYPE_PPTX = "obsidi-office-pptx";
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -1841,6 +1842,24 @@ class DocxView extends OfficeEditorView {
 }
 
 // ===========================================================================
+// PptxView — concrete subclass for .pptx files (Presentation editor).
+// All behavior is inherited from OfficeEditorView; this class only binds
+// the 7 static hooks. Phase 3 will add the slide engine to the asset bundle;
+// Phase 4 will make .pptx files actually open end-to-end. In Phase 2,
+// opening a .pptx routes here and fails at editor-asset loading — expected.
+// ===========================================================================
+
+class PptxView extends OfficeEditorView {
+  static get VIEW_TYPE()        { return "obsidi-office-pptx"; }
+  static get fileExtension()    { return "pptx"; }
+  static get engineAppPath()    { return "web-apps/apps/presentationeditor/main/"; }
+  static get engineSdkPath()    { return "sdkjs/slide/"; }
+  static get documentType()     { return "presentation"; }
+  static get editorType()       { return 3; }
+  static get sidecarExtension() { return ".pptx.md"; }
+}
+
+// ===========================================================================
 // Settings tab
 // ===========================================================================
 
@@ -2251,9 +2270,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.bridge.attach(window);
 
     this.registerView(VIEW_TYPE, (leaf) => new DocxView(leaf, this));
+    this.registerView(VIEW_TYPE_PPTX, (leaf) => new PptxView(leaf, this));
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
+    }
+    try { this.registerExtensions(["pptx"], VIEW_TYPE_PPTX); } catch (e) {
+      elog("registerExtensions for pptx failed:", e.message);
     }
 
     // (Settings tab registered earlier — see comment near assetBaseUrl.)
@@ -2356,6 +2379,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     dlog("onunload");
     if (this.bridge) this.bridge.detach(window);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_PPTX);
   }
 
   async loadSettings() {
