@@ -574,9 +574,12 @@ class X2tConverter {
     return loaded;
   }
 
-  async docxToEditorBin(docxBytes) {
+  // Format-neutral input-to-Editor.bin conversion. x2t infers conversion
+  // direction from the input filename extension — no format codes needed
+  // in paramsXml (Phase 0 confirmed this for both .docx and .pptx).
+  async toEditorBin(sourceBytes, extension) {
     await this.ensureInit();
-    return this._convert("doc.docx", docxBytes, "Editor.bin");
+    return this._convert("in." + extension, sourceBytes, "Editor.bin");
   }
   async editorBinToDocx(editorBin, mediaMap) {
     await this.ensureInit();
@@ -1144,25 +1147,45 @@ function escapeRe(s) {
 }
 
 // ===========================================================================
-// DocxView — opens .docx files
+// OfficeEditorView — format-neutral base class for Office document editors.
+// Subclasses (DocxView, future PptxView) override 7 static getters to bind to
+// a specific OnlyOffice editor (Word / Slide / Cell).
 // ===========================================================================
 
-class DocxView extends obsidian.FileView {
+class OfficeEditorView extends obsidian.FileView {
+  // --- Abstract contract: subclasses MUST override these static getters ---
+  static get VIEW_TYPE()         { throw new Error("Subclass must override VIEW_TYPE"); }
+  static get fileExtension()     { throw new Error("Subclass must override fileExtension"); }
+  static get engineAppPath()     { throw new Error("Subclass must override engineAppPath"); }
+  static get engineSdkPath()     { throw new Error("Subclass must override engineSdkPath"); }
+  static get documentType()      { throw new Error("Subclass must override documentType"); }
+  static get editorType()        { throw new Error("Subclass must override editorType"); }
+  static get sidecarExtension()  { throw new Error("Subclass must override sidecarExtension"); }
+
+  // --- Instance proxies: let method bodies write this.fileExtension etc. ---
+  get VIEW_TYPE()        { return this.constructor.VIEW_TYPE; }
+  get fileExtension()    { return this.constructor.fileExtension; }
+  get engineAppPath()    { return this.constructor.engineAppPath; }
+  get engineSdkPath()    { return this.constructor.engineSdkPath; }
+  get documentType()     { return this.constructor.documentType; }
+  get editorType()       { return this.constructor.editorType; }
+  get sidecarExtension() { return this.constructor.sidecarExtension; }
+
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
     this.docKey = "doc-" + randomHex(6);
     this.placeholderId = this.docKey;
     this._autoSaveTimer = null;
-    dlog("DocxView constructed, docKey:", this.docKey);
+    dlog(this.constructor.name + " constructed, docKey:", this.docKey);
   }
 
-  getViewType() { return VIEW_TYPE; }
-  getDisplayText() { return this.file ? this.file.basename : "DOCX"; }
+  getViewType() { return this.VIEW_TYPE; }
+  getDisplayText() { return this.file ? this.file.basename : this.fileExtension.toUpperCase(); }
   getIcon() { return "file-text"; }
 
   async onOpen() {
-    dlog("DocxView onOpen, hasFile:", !!this.file, "filePath:", this.file ? this.file.path : "(none)");
+    dlog(this.constructor.name + " onOpen, hasFile:", !!this.file, "filePath:", this.file ? this.file.path : "(none)");
     try {
       this.containerEl.empty();
       this.containerEl.style.padding = "0";
@@ -1170,7 +1193,7 @@ class DocxView extends obsidian.FileView {
         this._renderLandingPage();
       }
     } catch (err) {
-      elog("DocxView onOpen threw:", err && err.stack || err);
+      elog(this.constructor.name + " onOpen threw:", err && err.stack || err);
     }
   }
 
@@ -1181,23 +1204,25 @@ class DocxView extends obsidian.FileView {
 
   _renderLandingPage() {
     const container = this.containerEl;
+    const ext = this.fileExtension;
+    const cls = ext + "-landing";
     container.empty();
-    const wrapper = container.createEl("div", { cls: "docx-landing" });
+    const wrapper = container.createEl("div", { cls: cls });
 
     const style = wrapper.createEl("style");
     style.textContent =
-      ".docx-landing { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
-      ".docx-landing h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
-      ".docx-landing .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }" +
-      ".docx-landing .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
-      ".docx-landing .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
-      ".docx-landing .template-card .icon { font-size: 32px; margin-bottom: 8px; }" +
-      ".docx-landing .template-card .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" +
-      ".docx-landing .recent-table { width: 100%; border-collapse: collapse; }" +
-      ".docx-landing .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
-      ".docx-landing .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
-      ".docx-landing .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
-      ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
+      "." + cls + " { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
+      "." + cls + " h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
+      "." + cls + " .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }" +
+      "." + cls + " .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
+      "." + cls + " .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
+      "." + cls + " .template-card .icon { font-size: 32px; margin-bottom: 8px; }" +
+      "." + cls + " .template-card .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" +
+      "." + cls + " .recent-table { width: 100%; border-collapse: collapse; }" +
+      "." + cls + " .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
+      "." + cls + " .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
+      "." + cls + " .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
+      "." + cls + " .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
 
     // --- NEW section ---
     wrapper.createEl("h2", { text: "New" });
@@ -1207,7 +1232,7 @@ class DocxView extends obsidian.FileView {
     const templates = [];
     const files = this.app.vault.getFiles();
     for (const f of files) {
-      if (f.path.startsWith(templateDir + "/") && f.extension === "docx") {
+      if (f.path.startsWith(templateDir + "/") && f.extension === ext) {
         templates.push({ name: f.basename, path: f.path });
       }
     }
@@ -1230,12 +1255,12 @@ class DocxView extends obsidian.FileView {
     // --- RECENT section ---
     wrapper.createEl("h2", { text: "Recent" });
     const recentFiles = this.app.vault.getFiles()
-      .filter((f) => DOCX_EXTENSIONS.includes(f.extension) && !f.path.startsWith(templateDir + "/"))
+      .filter((f) => f.extension === ext && !f.path.startsWith(templateDir + "/"))
       .sort((a, b) => b.stat.mtime - a.stat.mtime)
       .slice(0, 20);
 
     if (recentFiles.length === 0) {
-      wrapper.createEl("p", { text: "No recent .docx files found." });
+      wrapper.createEl("p", { text: `No recent .${ext} files found.` });
     } else {
       const table = wrapper.createEl("table", { cls: "recent-table" });
       const thead = table.createEl("thead");
@@ -1251,15 +1276,17 @@ class DocxView extends obsidian.FileView {
           text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
           cls: "date",
         });
-        row.addEventListener("click", () => this._openDocxFile(f));
+        row.addEventListener("click", () => this._openFile(f));
       }
     }
   }
 
   async _createFromTemplate(templatePath, templateName) {
+    const ext = this.fileExtension;
+    const dotExt = "." + ext;
     const modal = new FileNameModal(this.app, templateName, async (filename) => {
       if (!filename) return;
-      if (!filename.endsWith(".docx")) filename += ".docx";
+      if (!filename.endsWith(dotExt)) filename += dotExt;
       if (await this.app.vault.adapter.exists(filename)) {
         new obsidian.Notice('File "' + filename + '" already exists.');
         return;
@@ -1267,25 +1294,29 @@ class DocxView extends obsidian.FileView {
       if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
         await this.app.vault.adapter.copy(templatePath, filename);
       } else {
+        // NOTE: BLANK_DOCX_BASE64 is still referenced directly here. Phase 2
+        // PptxView will override _createFromTemplate to use BLANK_PPTX_BASE64.
+        // (See RF-7 in 04-phase1-analysis.md.)
         const bytes = Uint8Array.from(atob(BLANK_DOCX_BASE64), (c) => c.charCodeAt(0));
         await this.app.vault.adapter.writeBinary(filename, bytes);
       }
       new obsidian.Notice("Created: " + filename);
       const f = this.app.vault.getAbstractFileByPath(filename);
-      if (f && f instanceof obsidian.TFile) this._openDocxFile(f);
+      if (f && f instanceof obsidian.TFile) this._openFile(f);
     });
     modal.open();
   }
 
-  _openDocxFile(file) {
+  _openFile(file) {
     this.file = file;
     this.onLoadFile(file);
   }
 
   _findExistingLeaf(file) {
     let found = null;
+    const myViewType = this.VIEW_TYPE;
     this.app.workspace.iterateAllLeaves((leaf) => {
-      if (leaf.view && leaf.view.getViewType() === VIEW_TYPE &&
+      if (leaf.view && leaf.view.getViewType() === myViewType &&
           leaf.view !== this && leaf.view.file &&
           leaf.view.file.path === file.path) {
         found = leaf;
@@ -1295,11 +1326,11 @@ class DocxView extends obsidian.FileView {
   }
 
   async onLoadFile(file) {
-    dlog("DocxView onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
+    dlog(this.constructor.name + " onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
     try {
       await this._onLoadFileInner(file);
     } catch (err) {
-      elog("DocxView onLoadFile top-level threw:", err && err.stack || err);
+      elog(this.constructor.name + " onLoadFile top-level threw:", err && err.stack || err);
       try {
         this.containerEl.empty();
         this.containerEl.createEl("pre", {
@@ -1337,10 +1368,10 @@ class DocxView extends obsidian.FileView {
     });
 
     try {
-      const docxBytes = await this.app.vault.adapter.readBinary(file.path);
-      dlog("read", docxBytes.byteLength, "bytes from", file.path);
+      const sourceBytes = await this.app.vault.adapter.readBinary(file.path);
+      dlog("read", sourceBytes.byteLength, "bytes from", file.path);
 
-      const result = await this.plugin.converter.docxToEditorBin(new Uint8Array(docxBytes));
+      const result = await this.plugin.converter.toEditorBin(new Uint8Array(sourceBytes), this.fileExtension);
       dlog("x2t produced", result.editorBin.byteLength, "Editor.bin bytes,",
            result.media.size, "media files");
 
@@ -1374,16 +1405,18 @@ class DocxView extends obsidian.FileView {
 
     const plugin = this.plugin;
     const baseUrl = plugin.assetBaseUrl;
+    const engineRel = this.engineAppPath;            // e.g. "web-apps/apps/documenteditor/main/"
+    const engineRelNoSlash = engineRel.replace(/\/$/, "");  // for path.join / iframe src match
     const apiSrc = baseUrl + "/web-apps/apps/api/documents/api.js";
     dlog("loading api.js from:", apiSrc);
 
     // --- Pre-load all asset files via vio ---
     const onlyRel = plugin.onlyOfficeRel;
-    const htmlRel = vio.join(onlyRel, "web-apps/apps/documenteditor/main/index.html");
+    const htmlRel = vio.join(onlyRel, engineRelNoSlash + "/index.html");
     const apiRel  = vio.join(onlyRel, "web-apps/apps/api/documents/api.js");
     const shimRel = plugin.shimRel;
     const spellJsRel = vio.join(onlyRel, "sdkjs/common/spell/spell/spell.js");
-    const htmlDirRel = vio.join(onlyRel, "web-apps/apps/documenteditor/main");
+    const htmlDirRel = vio.join(onlyRel, engineRelNoSlash);
     const svgPathsRel = [
       vio.join(htmlDirRel, "resources/img/iconssmall@2.5x.svg"),
       vio.join(htmlDirRel, "resources/img/iconsbig@2.5x.svg"),
@@ -1480,13 +1513,16 @@ class DocxView extends obsidian.FileView {
     // --- MutationObserver: transform iframe HTML using cached values ---
     const filePath = this.file ? this.file.path : "";
     const placeholderId = this.placeholderId;
+    // Iframe src guard — substring unique per editor (e.g. "documenteditor/main/index"
+    // for Word; "presentationeditor/main/index" for Slide). Derived from engineAppPath.
+    const iframeSrcGuard = engineRelNoSlash + "/index";
 
     const iframeObserver = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
         for (const node of mutation.addedNodes) {
           if (!node || node.tagName !== "IFRAME") continue;
           const src = node.getAttribute("src") || "";
-          if (!src.includes("documenteditor/main/index")) continue;
+          if (!src.includes(iframeSrcGuard)) continue;
 
           // Race fix: kill original src load synchronously before any work.
           node.src = "about:blank";
@@ -1507,7 +1543,7 @@ class DocxView extends obsidian.FileView {
           params.enablePrint = !isMobile || !!this.plugin.settings.enableMobilePrint;
 
           let html = htmlTemplate;
-          const baseHref = baseUrl + "/web-apps/apps/documenteditor/main/";
+          const baseHref = baseUrl + "/" + engineRelNoSlash + "/";
 
           // Replace getUrlParams() since blob iframes have no query string
           const qs = Object.entries(params)
@@ -1729,7 +1765,7 @@ class DocxView extends obsidian.FileView {
 
     return {
       document: {
-        fileType: "docx",
+        fileType: this.fileExtension,
         key: editorKey,
         title: filename,
         url: "/document?docKey=" + encodeURIComponent(this.docKey),
@@ -1738,7 +1774,7 @@ class DocxView extends obsidian.FileView {
           edit: true, copy: true, comment: true, review: false
         }
       },
-      documentType: "word",
+      documentType: this.documentType,
       frameEditorId: this.docKey,
       editorConfig: {
         mode: this.plugin.settings.defaultMode,
@@ -1767,6 +1803,10 @@ class DocxView extends obsidian.FileView {
               // Send save command to the iframe via postMessage
               const iframe = this.containerEl.querySelector("iframe");
               if (iframe && iframe.contentWindow) {
+                // RF-5: postMessage type strings are still docx-prefixed —
+                // mock-socket.js listens for these exact names. For Phase 1
+                // (docx-only refactor) they remain hardcoded. Phase 4 will
+                // either rename or add a saveMessageType hook.
                 iframe.contentWindow.postMessage({ type: "docx-viewer-show-saving" }, "*");
                 setTimeout(() => {
                   iframe.contentWindow.postMessage({ type: "docx-viewer-save" }, "*");
@@ -1782,6 +1822,22 @@ class DocxView extends obsidian.FileView {
       height: "100%"
     };
   }
+}
+
+// ===========================================================================
+// DocxView — concrete subclass for .docx files (Word editor).
+// All behavior is inherited from OfficeEditorView; this class only binds
+// the 7 static hooks.
+// ===========================================================================
+
+class DocxView extends OfficeEditorView {
+  static get VIEW_TYPE()        { return "obsidi-office-docx"; }
+  static get fileExtension()    { return "docx"; }
+  static get engineAppPath()    { return "web-apps/apps/documenteditor/main/"; }
+  static get engineSdkPath()    { return "sdkjs/word/"; }
+  static get documentType()     { return "word"; }
+  static get editorType()       { return 2; }
+  static get sidecarExtension() { return ".docx.md"; }
 }
 
 // ===========================================================================
