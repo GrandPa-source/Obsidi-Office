@@ -2174,7 +2174,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const assetsNeeded = !(await vio.exists(this, this.onlyOfficeRel)) ||
       !(await vio.exists(this, this.x2tRel)) ||
       !(await vio.exists(this, vio.join(this.x2tRel, "x2t.js"))) ||
-      !(await vio.exists(this, vio.join(this.x2tRel, "x2t.wasm")));
+      !(await vio.exists(this, vio.join(this.x2tRel, "x2t.wasm"))) ||
+      !(await vio.exists(this, vio.join(this.onlyOfficeRel, "sdkjs/slide/sdk-all.js")));
 
     if (assetsNeeded) {
       dlog("assets missing — starting install");
