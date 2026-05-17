@@ -604,30 +604,105 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     _slog(tag + ": " + pageCount + " pages");
 
     // 2. Page geometry — used by parent for PDF/page sizing.
+    // Docx engine: asc_getPageSize(0) -> {W, H} in mm.
+    // Slide engine: asc_getPageSize is absent; use get_PresentationWidth/Height
+    // (both return EMU, divide by 36000 for mm). Fallback to 16:9 widescreen
+    // (338.7 x 190.5 mm) per spec — engine's hardcoded 4:3 default is rare in
+    // modern .pptx files.
+    var isSlide = (typeof editor.get_PresentationWidth === "function" &&
+                   typeof editor.asc_getPageSize !== "function");
     var pageMm = null;
     try {
-      if (editor.asc_getPageSize) pageMm = editor.asc_getPageSize(0);
+      if (isSlide) {
+        var wEmu = editor.get_PresentationWidth();
+        var hEmu = editor.get_PresentationHeight();
+        if (wEmu > 0 && hEmu > 0) {
+          pageMm = { W: wEmu / 36000, H: hEmu / 36000 };
+        } else {
+          pageMm = { W: 338.7, H: 190.5 };  // 16:9 fallback
+        }
+      } else if (editor.asc_getPageSize) {
+        pageMm = editor.asc_getPageSize(0);
+      }
     } catch (e) {}
-    _slog(tag + ": page size (mm):", pageMm ? (pageMm.W + "x" + pageMm.H) : "unknown");
+    _slog(tag + ": engine=" + (isSlide ? "slide" : "doc") + " page size (mm):",
+          pageMm ? (pageMm.W.toFixed(1) + "x" + pageMm.H.toFixed(1)) : "unknown");
 
-    // 3. Extract full document text + heading-anchor split — only needed
-    //    for the searchable-PDF text overlay. Skip in print mode.
+    // 3. Extract per-page text for the searchable-PDF text overlay. Skip in
+    //    print mode.
+    //    Docx engine: SelectAll + asc_GetSelectedText returns whole-doc text;
+    //      splitTextByHeadingAnchors maps to per-page chunks.
+    //    Slide engine: asc_GetSelectedText is per-active-slide. Strategy B
+    //      (Phase 5 triage decision): private path editor.ra.Ea.He[i].an(true, {})
+    //      gets slide-i text directly with no navigation. Falls back to
+    //      whole-deck SelectAll (Strategy A — text dumped at slide 1) if the
+    //      private path errors out (minified-name stability concern).
     var perPageText = [];
     if (mode === "export") {
-      var allText = "";
-      try {
-        if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
-        else if (editor.asc_SelectAll) editor.asc_SelectAll();
-        await new Promise(function (r) { setTimeout(r, 200); });
-        if (editor.asc_GetSelectedText) {
-          allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+      if (isSlide) {
+        // Strategy B — per-slide via private path.
+        var slideTexts = null;
+        try {
+          var pres = editor.ra && editor.ra.Ea;
+          var slides = pres && pres.He;
+          if (slides && slides.length) {
+            slideTexts = [];
+            for (var si = 0; si < slides.length; si++) {
+              try {
+                slideTexts.push(slides[si].an(true, {}) || "");
+              } catch (e1) {
+                slideTexts.push("");
+              }
+            }
+          }
+        } catch (e) {
+          _slog(tag + ": Strategy B private path threw:", e.message);
+          slideTexts = null;
         }
-      } catch (e) {
-        _slog(tag + ": text extraction failed:", e.message);
+
+        if (slideTexts) {
+          // Pad/truncate to pageCount so downstream indexing is safe.
+          perPageText = new Array(pageCount);
+          for (var pi = 0; pi < pageCount; pi++) {
+            perPageText[pi] = slideTexts[pi] || "";
+          }
+          var totalChars = slideTexts.reduce(function (a, t) { return a + t.length; }, 0);
+          _slog(tag + ": Strategy B per-slide text: " + slideTexts.length +
+                " slides, " + totalChars + " chars total");
+        } else {
+          // Strategy A fallback — whole-deck text on slide 1.
+          var allText = "";
+          try {
+            if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
+            await new Promise(function (r) { setTimeout(r, 200); });
+            if (editor.asc_GetSelectedText) {
+              allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+            }
+          } catch (e2) {
+            _slog(tag + ": Strategy A fallback also failed:", e2.message);
+          }
+          perPageText = new Array(pageCount);
+          perPageText[0] = allText;
+          for (var pj = 1; pj < pageCount; pj++) perPageText[pj] = "";
+          _slog(tag + ": Strategy A fallback: " + allText.length + " chars dumped on slide 1");
+        }
+      } else {
+        // Docx path — unchanged.
+        var allText = "";
+        try {
+          if (editor.asc_EditSelectAll) editor.asc_EditSelectAll();
+          else if (editor.asc_SelectAll) editor.asc_SelectAll();
+          await new Promise(function (r) { setTimeout(r, 200); });
+          if (editor.asc_GetSelectedText) {
+            allText = editor.asc_GetSelectedText({ NewLineSeparator: "\n", TableLineSeparator: "\n", TableCellSeparator: "\t" }) || "";
+          }
+        } catch (e) {
+          _slog(tag + ": text extraction failed:", e.message);
+        }
+        _slog(tag + ": extracted", allText.length, "chars of text");
+        try { if (editor.MoveCursorToStartPos) editor.MoveCursorToStartPos(); } catch (e) {}
+        perPageText = splitTextByHeadingAnchors(editor, allText, pageCount);
       }
-      _slog(tag + ": extracted", allText.length, "chars of text");
-      try { if (editor.MoveCursorToStartPos) editor.MoveCursorToStartPos(); } catch (e) {}
-      perPageText = splitTextByHeadingAnchors(editor, allText, pageCount);
     }
 
     // 4. Use OnlyOffice's print-preview API for clean per-page renders.
@@ -644,11 +719,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (existing) existing.remove();
     var host = document.createElement("div");
     host.id = hostId;
-    // Letter at ~144 DPI: 8.5" * 144 = 1224, 11" * 144 = 1584. Aspect-correct
-    // for any page size since canvas inside takes whatever shape host has.
+    // Aspect-derived host sizing — longest side = 1584 px (~144 DPI on Letter).
+    // Docs are portrait (aspect < 1, e.g. Letter 0.77); slides are landscape
+    // (aspect > 1, e.g. 16:9 = 1.78). Without this branch, slides squish into
+    // the docx Letter-portrait host.
+    var aspect = pageMm ? (pageMm.W / pageMm.H) : 0.77;  // fallback = Letter
+    var maxPx = 1584;
+    var hostW, hostH;
+    if (aspect > 1) {  // landscape — slides
+      hostW = maxPx;
+      hostH = Math.round(maxPx / aspect);
+    } else {  // portrait — docs
+      hostH = maxPx;
+      hostW = Math.round(maxPx * aspect);
+    }
     host.style.cssText =
       "position: fixed; top: -10000px; left: 0; " +
-      "width: 1224px; height: 1584px; " +
+      "width: " + hostW + "px; height: " + hostH + "px; " +
       "visibility: hidden; pointer-events: none;";
     document.body.appendChild(host);
 
@@ -684,9 +771,13 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       var CROP_T = Math.max(15, Math.round(15 * dpr));
       var CROP_B = Math.max(15, Math.round(15 * dpr));
 
+      // Slide engine's asc_drawPrintPreview requires a paperSize [w_mm, h_mm]
+      // 2nd arg (presentationeditor's UI passes _paperSize from its combo).
+      // Docx engine tolerates the 2nd arg, so unconditional pass is safe.
+      var paperSize = pageMm ? [pageMm.W, pageMm.H] : undefined;
       for (var p = 0; p < pageCount; p++) {
         try {
-          editor.asc_drawPrintPreview(p);
+          editor.asc_drawPrintPreview(p, paperSize);
           // Two animation frames + a small timeout so the canvas finishes painting.
           await new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); });
           await new Promise(function (r) { setTimeout(r, 80); });
@@ -760,7 +851,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     // 5. Send to parent.
     var docKey = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
     var docFilePath = (window.__oo_params && window.__oo_params.docFilePath) || "";
-    var basename = docFilePath ? docFilePath.split("/").pop().replace(/\.docx$/i, "") : "document";
+    var basename = docFilePath ? docFilePath.split("/").pop().replace(/\.(docx|pptx)$/i, "") : "document";
 
     if (mode === "print") {
       // Print payload: just the per-page image dataUrls + page geometry.
