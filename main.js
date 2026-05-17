@@ -582,9 +582,11 @@ class X2tConverter {
     await this.ensureInit();
     return this._convert("in." + extension, sourceBytes, "Editor.bin");
   }
-  async editorBinToDocx(editorBin, mediaMap) {
+  // Format-neutral Editor.bin-to-source conversion. Mirrors toEditorBin —
+  // x2t infers direction from the output filename extension (Phase 0).
+  async toSourceFormat(editorBin, extension, mediaMap) {
     await this.ensureInit();
-    const r = this._convert("Editor.bin", editorBin, "output.docx", mediaMap);
+    const r = this._convert("Editor.bin", editorBin, "out." + extension, mediaMap);
     return r.editorBin;
   }
 
@@ -671,9 +673,9 @@ class TransportBridge {
     this.attached = false;
   }
 
-  registerDocument(docKey, filePath, editorBin, media) {
-    this.docs.set(docKey, { filePath, editorBin, media: media || new Map() });
-    dlog("registered docKey:", docKey, "filePath:", filePath, "bin bytes:", editorBin.byteLength);
+  registerDocument(docKey, filePath, editorBin, media, extension) {
+    this.docs.set(docKey, { filePath, editorBin, media: media || new Map(), extension });
+    dlog("registered docKey:", docKey, "filePath:", filePath, "bin bytes:", editorBin.byteLength, "ext:", extension);
   }
   removeDocument(docKey) {
     this.docs.delete(docKey);
@@ -916,11 +918,12 @@ class TransportBridge {
     }
 
     try {
-      const docxBytes = await this.converter.editorBinToDocx(editorBin, doc.media);
-      if (!docxBytes || docxBytes.length === 0) return { reply: { error: 1 } };
-      await this.onSave(doc.filePath, docxBytes);
+      const ext = doc.extension || "docx"; // legacy-safe fallback
+      const outBytes = await this.converter.toSourceFormat(editorBin, ext, doc.media);
+      if (!outBytes || outBytes.length === 0) return { reply: { error: 1 } };
+      await this.onSave(doc.filePath, outBytes);
       doc.editorBin = editorBin;
-      dlog("saved", docxBytes.length, "bytes to", doc.filePath);
+      dlog("saved", outBytes.length, "bytes to", doc.filePath, "(ext:", ext, ")");
       return { reply: { status: "ok", type: "save", data: saveKey || randomHex(8) } };
     } catch (err) {
       elog("save conversion failed:", err);
@@ -1377,7 +1380,7 @@ class OfficeEditorView extends obsidian.FileView {
            result.media.size, "media files");
 
       this.plugin.bridge.registerDocument(
-        this.docKey, file.path, result.editorBin, result.media
+        this.docKey, file.path, result.editorBin, result.media, this.fileExtension
       );
 
       await this._renderEditor();
@@ -1854,7 +1857,9 @@ class PptxView extends OfficeEditorView {
   static get fileExtension()    { return "pptx"; }
   static get engineAppPath()    { return "web-apps/apps/presentationeditor/main/"; }
   static get engineSdkPath()    { return "sdkjs/slide/"; }
-  static get documentType()     { return "presentation"; }
+  // Engine accepts word/cell/slide/pdf/diagram. "presentation" warns and is
+  // remapped internally; "slide" is the canonical value.
+  static get documentType()     { return "slide"; }
   static get editorType()       { return 3; }
   static get sidecarExtension() { return ".pptx.md"; }
 }
@@ -2219,6 +2224,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         return;
       }
     }
+
+    // Phase 4 — write the two slide-engine stub files that the OnlyOffice
+    // DocumentServer would generate at startup but aren't in the static zip.
+    // Idempotent; safe to run every load. Mobile-safe (uses vio).
+    await this._ensureThemesStubs();
 
     // Patch the tree (idempotent) — DESKTOP ONLY.
     // Runtime AssetPatcher uses fs.readFileSync/writeFileSync to inject the
@@ -2594,6 +2604,29 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       notice.setMessage("Obsidi-Office: Asset install failed: " + (err && err.message || err));
       setTimeout(() => notice.hide(), 10000);
       return false;
+    }
+  }
+
+  // OnlyOffice DocumentServer generates themes.json + sdkjs/slide/themes/themes.js
+  // at startup; the Docker image doesn't ship them. Without them the slide engine
+  // 404s on every load and the Design/Layout pickers stay empty. Both files
+  // satisfy their consumers when present-and-trivial: themes.json parser accepts
+  // { "themes": [] }; slide themes.js loader's success callback fires on any 2xx
+  // (even 0 bytes). Idempotent — re-runs on every load but no-ops once present.
+  async _ensureThemesStubs() {
+    try {
+      const themesJsonRel = vio.join(this.onlyOfficeRel, "themes.json");
+      if (!(await vio.exists(this, themesJsonRel))) {
+        await vio.writeText(this, themesJsonRel, '{ "themes": [] }\n');
+        dlog("wrote stub themes.json");
+      }
+      const slideThemesJsRel = vio.join(this.onlyOfficeRel, "sdkjs/slide/themes/themes.js");
+      if (!(await vio.exists(this, slideThemesJsRel))) {
+        await vio.writeText(this, slideThemesJsRel, "// Stub: DocumentServer-generated, intentionally empty in static bundle.\n");
+        dlog("wrote stub sdkjs/slide/themes/themes.js");
+      }
+    } catch (err) {
+      elog("ensureThemesStubs failed (non-fatal):", err);
     }
   }
 
