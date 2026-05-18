@@ -604,13 +604,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     _slog(tag + ": " + pageCount + " pages");
 
     // 2. Page geometry — used by parent for PDF/page sizing.
+    // Slide engine: get_PresentationWidth/Height return EMU, divide by 36000 for mm.
     // Docx engine: asc_getPageSize(0) -> {W, H} in mm.
-    // Slide engine: asc_getPageSize is absent; use get_PresentationWidth/Height
-    // (both return EMU, divide by 36000 for mm). Fallback to 16:9 widescreen
-    // (338.7 x 190.5 mm) per spec — engine's hardcoded 4:3 default is rare in
-    // modern .pptx files.
-    var isSlide = (typeof editor.get_PresentationWidth === "function" &&
-                   typeof editor.asc_getPageSize !== "function");
+    // Detect by get_PresentationWidth presence only — iPad's slide engine
+    // ALSO exposes asc_getPageSize (returns docx-shaped defaults), so the
+    // earlier `&& !asc_getPageSize` exclusion misclassified slide → doc on
+    // iPad and produced portrait Letter PDFs. Fallback to 16:9 widescreen
+    // (338.7 x 190.5 mm) if get_PresentationWidth returns 0.
+    var hasSlideAPI = (typeof editor.get_PresentationWidth === "function");
+    var hasDocAPI = (typeof editor.asc_getPageSize === "function");
+    var isSlide = hasSlideAPI;
     var pageMm = null;
     try {
       if (isSlide) {
@@ -621,12 +624,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         } else {
           pageMm = { W: 338.7, H: 190.5 };  // 16:9 fallback
         }
-      } else if (editor.asc_getPageSize) {
+      } else if (hasDocAPI) {
         pageMm = editor.asc_getPageSize(0);
       }
     } catch (e) {}
     _slog(tag + ": engine=" + (isSlide ? "slide" : "doc") + " page size (mm):",
-          pageMm ? (pageMm.W.toFixed(1) + "x" + pageMm.H.toFixed(1)) : "unknown");
+          pageMm ? (pageMm.W.toFixed(1) + "x" + pageMm.H.toFixed(1)) : "unknown",
+          " hasSlideAPI=" + hasSlideAPI + " hasDocAPI=" + hasDocAPI);
+    // Surface engine detection to parent debug log (iframe console doesn't propagate).
+    try {
+      parent.postMessage({
+        __pdfEngine: true,
+        isSlide: isSlide,
+        hasSlideAPI: hasSlideAPI,
+        hasDocAPI: hasDocAPI,
+        pageMm: pageMm ? { W: Math.round(pageMm.W * 10) / 10, H: Math.round(pageMm.H * 10) / 10 } : null
+      }, "*");
+    } catch (e) {}
 
     // 3. Extract per-page text for the searchable-PDF text overlay. Skip in
     //    print mode.

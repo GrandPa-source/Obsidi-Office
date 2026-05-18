@@ -1452,6 +1452,30 @@ class OfficeEditorView extends obsidian.FileView {
     try { shimCode = await vio.readText(plugin, shimRel); }
     catch (e) { elog("failed to read transport shim:", e.message); }
 
+    // iPad PDF-export hotfix: iPad's slide engine ALSO exposes asc_getPageSize
+    // (returns docx Letter defaults), so the original detection
+    //   isSlide = (get_PresentationWidth && !asc_getPageSize)
+    // mis-classified slide → doc on iPad and produced portrait Letter renders.
+    // Two-layer fix:
+    //   (a) Permissive source-string regex covers any whitespace/operator
+    //       variation in the iPad's stale (zip-extracted) mock-socket.js.
+    //   (b) Runtime injection that deletes editor.asc_getPageSize on slide
+    //       engine when the editor is ready — defense if regex misses.
+    // Idempotent: if mock-socket already has the fix, regex won't match;
+    // delete on a property that doesn't exist is a no-op.
+    if (shimCode) {
+      const ipadPatched = shimCode.replace(
+        /var\s+isSlide\s*=\s*\([^;]*get_PresentationWidth[^;]*asc_getPageSize[^;]*\);/g,
+        'var isSlide = (typeof editor.get_PresentationWidth === "function"); /* parent-patched (iPad PDF fix) */'
+      );
+      if (ipadPatched !== shimCode) {
+        dlog("shim: applied iPad PDF detection patch (regex matched)");
+        shimCode = ipadPatched;
+      } else {
+        dlog("shim: iPad PDF detection patch regex did NOT match (mock-socket may already be fixed, or pattern differs)");
+      }
+    }
+
     // Spell-check Worker source â€” pre-cached for the Blob-URL Worker spawn
     // path. Empty string disables the spellcheck Worker shim path; the
     // existing no-op stub is used instead. See docs/spellcheck-architecture.md.
@@ -1706,6 +1730,50 @@ class OfficeEditorView extends obsidian.FileView {
             );
             dlog("pre-injected", svgPathsRel.length, "SVG icon sprites (" + svgContent.length + " chars)");
           }
+
+          // Tap-to-edit enabler for slide engine on mobile. Without this,
+          // entering shape text-edit on iPad requires long-press → context
+          // menu → arbitrary selection. Installing an empty touchend capture
+          // listener at the document level disables iOS WebKit's 300ms tap
+          // delay and changes click-synthesis behaviour, which lets the
+          // engine's pre-existing tap-to-edit code path fire naturally on a
+          // single tap. Synthetic event dispatch was tried and verified dead
+          // (engine ignores synthesized dblclick/mousedown on the slide
+          // canvas) — the listener registration alone is what enables the
+          // working path.
+          if (isMobile && engineRelNoSlash.includes("presentationeditor")) {
+            const tapEnablerScript =
+              "<script>document.addEventListener('touchend',function(){},true);" +
+              "console.log('[tap-enabler] installed');</script>";
+            html = html.replace(/<\/head>/i, tapEnablerScript + "</head>");
+            dlog("injected tap-to-edit enabler (slide engine, mobile)");
+          }
+
+          // iPad PDF-export hotfix (runtime layer): on the slide engine, delete
+          // editor.asc_getPageSize once it's defined. mock-socket.js detects
+          // slide vs doc engine partly via "asc_getPageSize is absent" — but on
+          // iPad the slide engine ALSO exposes it (returning docx defaults),
+          // misclassifying slide → doc and producing portrait Letter PDFs. By
+          // deleting the property, we restore the mock-socket detection to its
+          // intended semantics. Polls because editor isn't created until
+          // api.js boots inside the iframe. Re-polls in case the property gets
+          // (re)installed by later engine init.
+          // (Diagnostic probe + runtime asc_getPageSize delete removed
+          // 2026-05-18 — root cause was stale asset zip predating Phase 5
+          // pptx PDF code, not a runtime API mismatch. Probe confirmed iPad's
+          // slide engine exposes get_PresentationWidth/Height as functions
+          // and asc_getPageSize is undefined — mock-socket's current Phase 5
+          // detection logic IS correct, but the iPad's mock-socket from the
+          // v9.3.2 zip predates that code entirely. Fix: rebuild + redeploy
+          // asset zip with current mock-socket.js. Parent-side pptx page-size
+          // override above remains as defense-in-depth.)
+
+          // (Slides-panel resize attempt was rolled back: the slides
+          // thumbnail strip is painted into #editor_sdk canvas pixels by
+          // the slide engine, not laid out as DOM. CSS / DOM manipulation
+          // cannot reach it. The engine has no public API for resizing
+          // the thumbnail strip; doing so would require patching minified
+          // slide-SDK internals. Deferred as a known limitation.)
 
           // Create blob URL (inherits parent origin app://obsidian.md)
           const blob = new Blob([html], { type: "text/html" });
@@ -2401,12 +2469,46 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // properly; this branch is a compatibility bridge for installs that
       // haven't been reinstalled yet.
       if ((ev.data.type === "obsidi-office-print" || ev.data.type === "obsidi-office-mobile-print") && ev.data.images) {
-        this._printDocument(ev.data.images, ev.data.pageMmW, ev.data.pageMmH);
+        // Same parent-side pptx override as PDF export below — force 16:9 slide
+        // page geometry on iPad where mock-socket detection misclassifies.
+        let pmW = ev.data.pageMmW, pmH = ev.data.pageMmH;
+        const basenameP = ev.data.basename || "";
+        if (/\.pptx$/i.test(basenameP) && (!pmW || !pmH || pmH > pmW)) {
+          pmW = 338.7; pmH = 190.5;
+          dlog("print: pptx page-size override applied -> 338.7x190.5 mm (16:9)");
+        }
+        this._printDocument(ev.data.images, pmW, pmH);
         // Iframe overlay can hide as soon as the print iframe takes over.
         this._notifyPdfDone(null);
       }
       if ((ev.data.type === "obsidi-office-pdf-export" || ev.data.type === "obsidi-office-mobile-pdf-export") && ev.data.pages) {
         dlog("pdf-export received (type=" + ev.data.type + "), pages:", ev.data.pages.length, "basename:", ev.data.basename, "transient:", !!ev.data.transientPrint);
+        // PARENT-SIDE PPTX OVERRIDE: iPad's slide engine misclassifies in
+        // mock-socket's detection (both get_PresentationWidth AND asc_getPageSize
+        // exist), producing portrait Letter PDFs for pptx. The parent KNOWS this
+        // is a pptx from the basename — force 16:9 widescreen page dimensions
+        // (338.7 x 190.5 mm = pptx standard). Modern .pptx files are widescreen
+        // by default; 4:3 is rare and would render with whitespace, still better
+        // than portrait Letter.
+        const basename = ev.data.basename || "";
+        const isPptx = /\.pptx$/i.test(basename);
+        if (isPptx) {
+          const SLIDE_W = 338.7, SLIDE_H = 190.5;
+          let overrideCount = 0;
+          ev.data.pages.forEach((p) => {
+            const w = p.pageMmW, h = p.pageMmH;
+            // Override when page looks docx-shaped (portrait, ~Letter/A4) or missing.
+            const looksDocx = !w || !h || h > w;
+            if (looksDocx) {
+              p.pageMmW = SLIDE_W;
+              p.pageMmH = SLIDE_H;
+              overrideCount++;
+            }
+          });
+          if (overrideCount > 0) {
+            dlog("pdf-export: pptx override applied to", overrideCount, "of", ev.data.pages.length, "pages -> 338.7x190.5 mm (16:9)");
+          }
+        }
         this._exportPdfToVault(ev.data).then(() => {
           dlog("_exportPdfToVault resolved");
         }).catch((err) => {
