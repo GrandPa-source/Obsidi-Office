@@ -113,6 +113,10 @@ const DROP_PATHS = [
   "onlyoffice/web-apps/apps/presentationeditor/main/ie",
   "onlyoffice/web-apps/apps/presentationeditor/forms",
   "onlyoffice/web-apps/apps/presentationeditor/embed",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/main/resources/help",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/main/ie",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/forms",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/embed",
   "onlyoffice/web-apps/apps/visioeditor",
   "onlyoffice/web-apps/vendor/monaco",
   "onlyoffice/sdkjs/visio",
@@ -121,6 +125,7 @@ const DROP_PATHS = [
 
 const LOCALE_PARENT = "onlyoffice/web-apps/apps/documenteditor/main/locale";
 const LOCALE_PARENT_PPTX = "onlyoffice/web-apps/apps/presentationeditor/main/locale";
+const LOCALE_PARENT_XLSX = "onlyoffice/web-apps/apps/spreadsheeteditor/main/locale";
 
 const FONTS_DIR = "onlyoffice/fonts";
 
@@ -129,6 +134,8 @@ const HTML_TO_PATCH = [
   "onlyoffice/web-apps/apps/documenteditor/main/index_loader.html",
   "onlyoffice/web-apps/apps/presentationeditor/main/index.html",
   "onlyoffice/web-apps/apps/presentationeditor/main/index_loader.html",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/main/index.html",
+  "onlyoffice/web-apps/apps/spreadsheeteditor/main/index_loader.html",
 ];
 
 const SOCKET_IO_REL = "onlyoffice/web-apps/vendor/socketio/socket.io.min.js";
@@ -319,6 +326,15 @@ function build(args) {
         const localeName = firstSeg.replace(/\.json$/i, "");
         if (!args.keepLocales.includes(localeName)) {
           dropReason = "locale-pptx:" + localeName;
+        }
+      }
+      // 2c. Same locale filter for spreadsheeteditor (xlsx parallel).
+      if (!dropReason && isUnder(relPath, LOCALE_PARENT_XLSX) && relPath !== LOCALE_PARENT_XLSX) {
+        const after = relPath.slice(LOCALE_PARENT_XLSX.length + 1);
+        const firstSeg = after.split("/")[0];
+        const localeName = firstSeg.replace(/\.json$/i, "");
+        if (!args.keepLocales.includes(localeName)) {
+          dropReason = "locale-xlsx:" + localeName;
         }
       }
 
