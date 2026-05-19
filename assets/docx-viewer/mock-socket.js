@@ -1586,6 +1586,20 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       }
       _slog("Injected File > Export to PDF with Layout menu item");
     }
+
+    // Visibility: only the slide engine exposes get_PresentationWidth, so the
+    // layout chooser is pptx-only. Hide on docx (the standard "Export to PDF"
+    // sibling above already covers docx). Re-evaluated on every observer pass
+    // so the right state lands whenever the editor finishes loading.
+    var layoutItemEl = document.getElementById("fm-btn-obsidi-export-pdf-layout");
+    if (layoutItemEl) {
+      var isPptx = false;
+      try {
+        isPptx = !!(window.Asc && window.Asc.editor &&
+          typeof window.Asc.editor.get_PresentationWidth === "function");
+      } catch (e) {}
+      layoutItemEl.style.display = isPptx ? "" : "none";
+    }
   }
 
   // Try immediately and watch for DOM changes (File panel populates lazily).
