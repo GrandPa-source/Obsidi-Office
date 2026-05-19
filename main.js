@@ -1488,8 +1488,39 @@ class OfficeEditorView extends obsidian.FileView {
   }
 
   async onClose() {
-    if (this._autoSaveTimer) clearTimeout(this._autoSaveTimer);
+    // Phase 4 hotfix: flush pending autosave before close. If the user edits
+    // a document and closes the tab within the 10s autosave debounce window,
+    // the prior code cleared the timer without firing — silently losing the
+    // edit. Now we fire the save synchronously and wait for the round-trip
+    // (postMessage → engine asc_DownloadAs → mock-socket rpc → bridge.onSave)
+    // to complete before tearing down. Typical round-trip is <200ms; we wait
+    // up to 800ms as a generous cap.
+    if (this._autoSaveTimer) {
+      clearTimeout(this._autoSaveTimer);
+      this._autoSaveTimer = null;
+      try { await this._flushPendingSave(); } catch (err) {
+        elog("flushPendingSave on close failed (non-fatal):", err);
+      }
+    }
     if (this.plugin.bridge) this.plugin.bridge.removeDocument(this.docKey);
+  }
+
+  // Synchronous-blocking save trigger used by onClose. Mirrors the body of
+  // the autosave setTimeout callback at the editorConfig.onDocumentStateChange
+  // site, but returns a Promise that resolves after the round-trip likely
+  // completed. Save is best-effort: if the iframe is gone or the save fails
+  // upstream, the file stays in its prior state (no corruption).
+  async _flushPendingSave() {
+    const iframe = this.containerEl.querySelector("iframe");
+    if (!iframe || !iframe.contentWindow) return;
+    dlog("flushPendingSave firing for", this.docKey);
+    iframe.contentWindow.postMessage({ type: "docx-viewer-show-saving" }, "*");
+    // 50ms delay mirrors the existing autosave timer pattern at line ~2185
+    await new Promise(r => setTimeout(r, 50));
+    iframe.contentWindow.postMessage({ type: "docx-viewer-save" }, "*");
+    // 800ms cap covers the postMessage → engine → rpc → toSourceFormat → onSave
+    // round-trip. Empirical save time per existing logs: 30-150ms.
+    await new Promise(r => setTimeout(r, 800));
   }
 
   _renderLandingPage() {
