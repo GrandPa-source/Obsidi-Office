@@ -143,6 +143,7 @@ const vioAbs = {
 
 const VIEW_TYPE = "obsidi-office-docx";
 const VIEW_TYPE_PPTX = "obsidi-office-pptx";
+const VIEW_TYPE_XLSX = "obsidi-office-xlsx";
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -1643,6 +1644,18 @@ class OfficeEditorView extends obsidian.FileView {
 
     this.file = file;
 
+    // Phase 2 (xlsx): warn on large workbooks. Cell engine round-trips slow
+    // proportionally with row × column count; iPad WKWebView memory is the
+    // hard constraint. Non-blocking — user can dismiss and the engine still
+    // loads.
+    if (this.fileExtension === "xlsx" && file.stat && file.stat.size > 10 * 1024 * 1024) {
+      const sizeMb = (file.stat.size / 1024 / 1024).toFixed(1);
+      new obsidian.Notice(
+        `Large xlsx (${sizeMb} MB). Initial render may take 10-30 seconds.`,
+        8000
+      );
+    }
+
     // Collapse left sidebar to maximize editor space (delayed to run after
     // Obsidian's file explorer finishes its reveal-active-file action)
     setTimeout(() => {
@@ -2144,7 +2157,11 @@ class OfficeEditorView extends obsidian.FileView {
           // Spellcheck re-enabled 2026-04-27 via Blob-URL Worker + Worker-side
           // fetch/XHR shim + en_US/en_CA Hunspell dictionaries (MPL-2.0).
           // See docs/spellcheck-architecture.md for the layered design.
-          features: { spellcheck: { mode: true, change: true } }
+          // Spell check disabled for xlsx (Phase 2) — cell content is short
+          // (numeric + brief labels); spell-check overhead not worth the value.
+          features: { spellcheck: this.fileExtension === "xlsx"
+            ? { mode: false, change: false }
+            : { mode: true, change: true } }
         }
       },
       events: {
@@ -2215,6 +2232,25 @@ class PptxView extends OfficeEditorView {
   static get documentType()     { return "slide"; }
   static get editorType()       { return 3; }
   static get sidecarExtension() { return ".pptx.md"; }
+}
+
+// ===========================================================================
+// XlsxView — concrete subclass for .xlsx files (Cell / Spreadsheet editor).
+// documentType "cell" + editorType 4 are the OnlyOffice contract for the
+// spreadsheet engine. x2t round-trips xlsx files that use sharedStrings
+// canonically (Excel + LibreOffice authored files); inline-string xlsx
+// (openpyxl-default and similar) is lossy on round-trip — x2t silently
+// drops row-1 cells beyond column A and entire inline-string-only columns.
+// ===========================================================================
+
+class XlsxView extends OfficeEditorView {
+  static get VIEW_TYPE()        { return VIEW_TYPE_XLSX; }
+  static get fileExtension()    { return "xlsx"; }
+  static get engineAppPath()    { return "web-apps/apps/spreadsheeteditor/main/"; }
+  static get engineSdkPath()    { return "sdkjs/cell/"; }
+  static get documentType()     { return "cell"; }   // Phase 0 verified
+  static get editorType()       { return 4; }        // standard OnlyOffice cell editorType
+  static get sidecarExtension() { return ".xlsx.md"; }
 }
 
 // ===========================================================================
@@ -2667,12 +2703,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     this.registerView(VIEW_TYPE, (leaf) => new DocxView(leaf, this));
     this.registerView(VIEW_TYPE_PPTX, (leaf) => new PptxView(leaf, this));
+    this.registerView(VIEW_TYPE_XLSX, (leaf) => new XlsxView(leaf, this));
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
     }
     try { this.registerExtensions(["pptx"], VIEW_TYPE_PPTX); } catch (e) {
       elog("registerExtensions for pptx failed:", e.message);
+    }
+    try { this.registerExtensions(["xlsx"], VIEW_TYPE_XLSX); } catch (e) {
+      elog("registerExtensions for xlsx failed:", e.message);
     }
 
     // (Settings tab registered earlier â€” see comment near assetBaseUrl.)
@@ -2826,6 +2866,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     if (this.bridge) this.bridge.detach(window);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PPTX);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
   }
 
   async loadSettings() {
