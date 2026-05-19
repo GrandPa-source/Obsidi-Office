@@ -573,6 +573,25 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       pdfOverlay.style.display = "flex";
       captureAndExportPdf("export");
     }
+    if (e.data.type === "obsidi-office-pdf-export-with-layout") {
+      // Phase 9: parent's PrintLayoutModal posted layout choices. Run the
+      // existing capture loop and propagate layout opts to the parent in
+      // the resulting pdf-export message.
+      setOverlayLabel("Generating PDF…");
+      pdfOverlay.style.display = "flex";
+      var layoutOpts = {
+        layout:      e.data.layout,
+        paperSize:   e.data.paperSize,
+        frameSlides: e.data.frameSlides,
+        scaleToFit:  e.data.scaleToFit,
+        noteLines:   e.data.noteLines
+      };
+      captureAndExportPdf({
+        mode: "export",
+        transientPrint: !!e.data.transientPrint,
+        layoutOpts: layoutOpts
+      });
+    }
     if (e.data.type === "docx-viewer-pdf-done") {
       pdfOverlay.style.display = "none";
     }
@@ -585,7 +604,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   //   mode "print": skip the text/searchability work (~100-300ms per page
   //     saved) and post just the page images to the parent for direct
   //     iframe-print.
-  async function captureAndExportPdf(mode, transientPrint) {
+  async function captureAndExportPdf(modeOrOpts, transientPrintArg) {
+    // Backwards-compat: Phase 5 callers pass (mode, transientPrint) as strings/bools.
+    // Phase 9 callers pass an options object: {layoutOpts, mode?, transientPrint?}.
+    var opts = (typeof modeOrOpts === "object" && modeOrOpts !== null)
+      ? modeOrOpts
+      : { mode: modeOrOpts, transientPrint: transientPrintArg };
+    var mode = opts.mode;
+    var transientPrint = opts.transientPrint;
+    var layoutOpts = opts.layoutOpts || null;
     mode = (mode === "print") ? "print" : "export";
     var tag = (mode === "print") ? "Print" : (transientPrint ? "Print via PDF" : "PDF export");
     if (!window.Asc || !window.Asc.editor) {
@@ -889,9 +916,15 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         docFilePath: docFilePath,
         basename: basename,
         pages: pages,
-        transientPrint: !!transientPrint
+        transientPrint: !!transientPrint,
+        // Phase 9 additions — undefined for legacy callers (no layout chosen).
+        layout:      layoutOpts && layoutOpts.layout,
+        paperSize:   layoutOpts && layoutOpts.paperSize,
+        frameSlides: layoutOpts && layoutOpts.frameSlides,
+        scaleToFit:  layoutOpts && layoutOpts.scaleToFit,
+        noteLines:   layoutOpts && layoutOpts.noteLines
       }, "*");
-      _slog(tag + ": posted " + pages.length + " pages to parent (basename=" + basename + ", transient=" + !!transientPrint + ")");
+      _slog(tag + ": posted " + pages.length + " pages to parent (basename=" + basename + ", transient=" + !!transientPrint + ", layout=" + (layoutOpts && layoutOpts.layout || "none") + ")");
     }
   }
 
@@ -1508,6 +1541,51 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       info.parentNode.appendChild(item);
     }
     _slog("Injected File > Export to PDF menu item");
+
+    // Phase 9: sibling "Export to PDF with Layout..." menu item.
+    // Mirrors the clone/strip/innerHTML-replace pattern above (the same
+    // "nested wrappers vary across builds" caveat applies). Click posts
+    // obsidi-office-pdf-layout-request to the parent; main.js opens the
+    // PrintLayoutModal in response.
+    if (!document.getElementById("fm-btn-obsidi-export-pdf-layout")) {
+      var anchor = document.getElementById("fm-btn-obsidi-export-pdf") || info;
+      var layoutItem = info.cloneNode(true);
+      layoutItem.id = "fm-btn-obsidi-export-pdf-layout";
+      layoutItem.classList.remove("active");
+      Array.from(layoutItem.attributes).forEach(function (a) {
+        if (a.name.indexOf("data-") === 0 || a.name.indexOf("aria-") === 0) {
+          layoutItem.removeAttribute(a.name);
+        }
+      });
+      layoutItem.innerHTML = '<span class="caption">Export to PDF with Layout...</span>';
+      if (layoutItem.hasAttribute("title")) layoutItem.setAttribute("title", "Export to PDF with Layout...");
+
+      layoutItem.addEventListener("click", function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        _slog("File > Export to PDF with Layout clicked");
+        // Close the File panel so the modal is visible.
+        var back = document.getElementById("fm-btn-back");
+        if (back) { try { back.click(); } catch (err) {} }
+        try {
+          var dk = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
+          window.parent.postMessage({
+            type: "obsidi-office-pdf-layout-request",
+            docKey: dk
+          }, "*");
+        } catch (err) {
+          console.error("[obsidi-office] failed to post pdf-layout-request:", err);
+        }
+      }, true);  // capture phase, ahead of OnlyOffice's delegated handlers
+
+      if (anchor.nextSibling) {
+        anchor.parentNode.insertBefore(layoutItem, anchor.nextSibling);
+      } else {
+        anchor.parentNode.appendChild(layoutItem);
+      }
+      _slog("Injected File > Export to PDF with Layout menu item");
+    }
   }
 
   // Try immediately and watch for DOM changes (File panel populates lazily).

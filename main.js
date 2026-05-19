@@ -417,6 +417,286 @@ function loadPdfLib() {
   return lib;
 }
 
+// mm -> PDF points: 1 inch = 25.4 mm = 72 points.
+// Promoted to module scope from _exportPdfToVault for Phase 9 helpers.
+const MM_TO_PT = 72 / 25.4;
+
+// Phase 9 - Print Layout constants. All dimensions in mm unless noted.
+const PAPER = {
+  Letter:  { W: 215.9, H: 279.4 },   // 8.5x11 in portrait
+  A4:      { W: 210,   H: 297 },     // 210x297 mm portrait
+  Legal:   { W: 215.9, H: 355.6 },   // 8.5x14 in portrait
+  Tabloid: { W: 279.4, H: 431.8 },   // 11x17 in portrait
+};
+const PAGE_MARGIN = 14;             // mm, all four sides
+const LINE_PITCH = 8;               // mm between successive note lines
+const LINE_STROKE_MM = 0.3;         // note line thickness
+const FRAME_STROKE_MM = 0.5;        // slide frame thickness
+const DECO_FONT_PT = 8;             // date / page / slide number text size
+const SLIDE_ASPECT_DEFAULT = 16 / 9;
+
+// Phase 9 helper: browser-safe base64 -> Uint8Array. atob is universally
+// available; Buffer is Node-only and breaks on iPad (Capacitor WKWebView).
+function base64ToUint8Array(b64) {
+  const bin = atob(b64);
+  const arr = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+  return arr;
+}
+
+// Phase 9 helper: embed slide PNG at mm coords, with optional frame border.
+// pdf-lib origin is bottom-left, so we convert top-left mm -> bottom-left pt.
+async function drawSlideThumb(pdfDoc, page, pngBase64, xMm, yMm, wMm, hMm, frame) {
+  const { rgb } = loadPdfLib();
+  const bytes = base64ToUint8Array(pngBase64);
+  const png = await pdfDoc.embedPng(bytes);
+  const xPt = xMm * MM_TO_PT;
+  const yPtTop = page.getHeight() - (yMm + hMm) * MM_TO_PT;
+  const wPt = wMm * MM_TO_PT;
+  const hPt = hMm * MM_TO_PT;
+  page.drawImage(png, { x: xPt, y: yPtTop, width: wPt, height: hPt });
+  if (frame) {
+    page.drawRectangle({
+      x: xPt, y: yPtTop, width: wPt, height: hPt,
+      borderWidth: FRAME_STROKE_MM * MM_TO_PT,
+      borderColor: rgb(0.4, 0.4, 0.4),
+    });
+  }
+}
+
+// Phase 9 helper: "M/D/YYYY" date stamp, top-right of paper.
+function drawDateStamp(page, font, paper) {
+  const { rgb } = loadPdfLib();
+  const now = new Date();
+  const s = (now.getMonth() + 1) + "/" + now.getDate() + "/" + now.getFullYear();
+  const w = font.widthOfTextAtSize(s, DECO_FONT_PT);
+  page.drawText(s, {
+    x: (paper.W - PAGE_MARGIN) * MM_TO_PT - w,
+    y: page.getHeight() - PAGE_MARGIN * MM_TO_PT - DECO_FONT_PT,
+    size: DECO_FONT_PT, font, color: rgb(0.3, 0.3, 0.3),
+  });
+}
+
+// Phase 9 helper: page number string, bottom-right of paper.
+function drawPageNumber(page, font, paper, n) {
+  const { rgb } = loadPdfLib();
+  const s = String(n);
+  const w = font.widthOfTextAtSize(s, DECO_FONT_PT);
+  page.drawText(s, {
+    x: (paper.W - PAGE_MARGIN) * MM_TO_PT - w,
+    y: PAGE_MARGIN * MM_TO_PT,
+    size: DECO_FONT_PT, font, color: rgb(0.3, 0.3, 0.3),
+  });
+}
+
+// Phase 9 helper: slide number ("1", "2"...) centered below a thumbnail.
+function drawSlideNumber(page, font, n, thumbXMm, thumbYBottomMm, thumbWMm) {
+  const { rgb } = loadPdfLib();
+  const s = String(n);
+  const w = font.widthOfTextAtSize(s, DECO_FONT_PT);
+  page.drawText(s, {
+    x: (thumbXMm + thumbWMm / 2) * MM_TO_PT - w / 2,
+    y: page.getHeight() - (thumbYBottomMm + 3) * MM_TO_PT,
+    size: DECO_FONT_PT, font, color: rgb(0.3, 0.3, 0.3),
+  });
+}
+
+// Phase 9 helper: horizontal note lines filling a rectangle, spaced LINE_PITCH apart.
+function drawNoteLines(page, xMm, yMm, wMm, hMm) {
+  const numLines = Math.max(1, Math.floor(hMm / LINE_PITCH));
+  const pitch = hMm / (numLines + 1);
+  for (let i = 1; i <= numLines; i++) {
+    drawHorizontalLine(page, xMm, yMm + i * pitch, wMm);
+  }
+}
+
+// Phase 9 helper: one horizontal line of LINE_STROKE_MM thickness.
+// Pure black for note-line writing visibility (matches PowerPoint handouts);
+// other decorations use rgb(0.3) soft grey for visual subordination.
+function drawHorizontalLine(page, xMm, yMm, lengthMm) {
+  const { rgb } = loadPdfLib();
+  page.drawLine({
+    start: { x: xMm * MM_TO_PT,
+             y: page.getHeight() - yMm * MM_TO_PT },
+    end:   { x: (xMm + lengthMm) * MM_TO_PT,
+             y: page.getHeight() - yMm * MM_TO_PT },
+    thickness: LINE_STROKE_MM * MM_TO_PT,
+    color: rgb(0, 0, 0),
+  });
+}
+
+// Phase 9 helper: strip the "data:image/png;base64," prefix from a data URL.
+// payload.pages[i].dataUrl is the captured slide PNG as a data URL; the
+// drawSlideThumb helper expects raw base64 (it calls atob). Mirrors the
+// prefix-stripping pattern used in the fullpage path.
+function dataUrlToBase64(dataUrl) {
+  if (!dataUrl) return "";
+  const comma = dataUrl.indexOf(",");
+  return comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+}
+
+// Phase 9 - Notes Page layout: 1 slide per PDF page, slide centered in the
+// top half at ~40% scale, note lines fill bottom half. Decorations: date
+// stamp top-right, page number bottom-right, slide number below thumbnail.
+async function composeNotesPage(pdfDoc, font, slides, paper, opts) {
+  for (let i = 0; i < slides.length; i++) {
+    const slide = slides[i];
+    const slideAspect = (slide.pageMmW && slide.pageMmH)
+      ? slide.pageMmW / slide.pageMmH : SLIDE_ASPECT_DEFAULT;
+
+    const page = pdfDoc.addPage([paper.W * MM_TO_PT, paper.H * MM_TO_PT]);
+
+    // Slide centered in top half. Width = content width * (scaleToFit ? 1.0 : 0.8).
+    const widthScale = opts.scaleToFit ? 1.0 : 0.8;
+    let thumbW = (paper.W - 2 * PAGE_MARGIN) * widthScale;
+    let thumbH = thumbW / slideAspect;
+    // Constrain to half-page height with margin.
+    const halfH = paper.H / 2 - PAGE_MARGIN;
+    if (thumbH > halfH * 0.95) { thumbH = halfH * 0.95; thumbW = thumbH * slideAspect; }
+    const thumbX = (paper.W - thumbW) / 2;
+    const thumbY = (paper.H / 2 - thumbH) / 2 + PAGE_MARGIN;
+
+    const pngBase64 = dataUrlToBase64(slide.dataUrl);
+    await drawSlideThumb(pdfDoc, page, pngBase64, thumbX, thumbY, thumbW, thumbH, opts.frameSlides);
+
+    // Slide number directly below thumbnail.
+    drawSlideNumber(page, font, i + 1, thumbX, thumbY + thumbH, thumbW);
+
+    // Note lines fill the bottom half from (paper.H/2 + 4) down to (paper.H - PAGE_MARGIN).
+    const linesY = paper.H / 2 + 4;
+    const linesH = paper.H - PAGE_MARGIN - linesY;
+    drawNoteLines(page, PAGE_MARGIN, linesY, paper.W - 2 * PAGE_MARGIN, linesH);
+
+    // Decorations.
+    drawDateStamp(page, font, paper);
+    drawPageNumber(page, font, paper, i + 1);
+  }
+}
+
+// Phase 9 - 2 Slides layout: 2 stacked slides per portrait page, optional
+// note lines below each slide within their respective half-page band.
+async function compose2Slides(pdfDoc, font, slides, paper, opts) {
+  const slideAspect = (slides[0] && slides[0].pageMmW && slides[0].pageMmH)
+    ? slides[0].pageMmW / slides[0].pageMmH : SLIDE_ASPECT_DEFAULT;
+
+  if (opts.noteLines) {
+    // With Note Lines: mirror 3 Slides layout — 2 slides in LEFT column,
+    // 6 horizontal note lines next to each slide in RIGHT column.
+    const contentW = paper.W - 2 * PAGE_MARGIN;
+    const contentH = paper.H - 2 * PAGE_MARGIN;
+    const widthScale = opts.scaleToFit ? 1.0 : 0.85;
+    const leftColW = contentW * 0.45 * widthScale;
+    const gutter = 8;
+    const rightColX = PAGE_MARGIN + leftColW + gutter;
+    const rightColW = paper.W - PAGE_MARGIN - rightColX;
+    const rowH = contentH / 2;  // 2 rows instead of 3
+    let thumbW = leftColW;
+    let thumbH = thumbW / slideAspect;
+    if (thumbH > rowH * 0.85) { thumbH = rowH * 0.85; thumbW = thumbH * slideAspect; }
+
+    for (let i = 0; i < slides.length; i += 2) {
+      const page = pdfDoc.addPage([paper.W * MM_TO_PT, paper.H * MM_TO_PT]);
+
+      for (let r = 0; r < 2; r++) {
+        const rowYTop = PAGE_MARGIN + r * rowH;
+        const thumbY = rowYTop + (rowH - thumbH) / 2;
+        const slide = slides[i + r];
+
+        if (slide) {
+          await drawSlideThumb(pdfDoc, page, dataUrlToBase64(slide.dataUrl),
+                               PAGE_MARGIN, thumbY, thumbW, thumbH, opts.frameSlides);
+          drawSlideNumber(page, font, i + r + 1, PAGE_MARGIN, thumbY + thumbH, thumbW);
+        }
+
+        // 6 horizontal note lines in right column for this row (always drawn).
+        const numLines = 6;
+        const linePitch = (rowH - 8) / (numLines + 1);
+        for (let l = 1; l <= numLines; l++) {
+          drawHorizontalLine(page, rightColX, rowYTop + 4 + l * linePitch, rightColW);
+        }
+      }
+
+      drawDateStamp(page, font, paper);
+      drawPageNumber(page, font, paper, Math.floor(i / 2) + 1);
+    }
+    return;
+  }
+
+  // Note Lines OFF: original centered layout — 2 stacked slides, no lines.
+  const halfH = paper.H / 2 - PAGE_MARGIN;
+  const halfW = paper.W - 2 * PAGE_MARGIN;
+  const widthScale = opts.scaleToFit ? 0.85 : 0.70;
+  let thumbW = halfW * widthScale;
+  let thumbH = thumbW / slideAspect;
+  if (thumbH > halfH * 0.85) {
+    thumbH = halfH * 0.85;
+    thumbW = thumbH * slideAspect;
+  }
+  const thumbX = (paper.W - thumbW) / 2;
+  const topThumbY = (paper.H / 2 - thumbH) / 2 + PAGE_MARGIN;
+  const botThumbY = paper.H / 2 + (paper.H / 2 - thumbH) / 2;
+
+  for (let i = 0; i < slides.length; i += 2) {
+    const page = pdfDoc.addPage([paper.W * MM_TO_PT, paper.H * MM_TO_PT]);
+
+    await drawSlideThumb(pdfDoc, page, dataUrlToBase64(slides[i].dataUrl),
+                         thumbX, topThumbY, thumbW, thumbH, opts.frameSlides);
+    drawSlideNumber(page, font, i + 1, thumbX, topThumbY + thumbH, thumbW);
+
+    if (slides[i + 1]) {
+      await drawSlideThumb(pdfDoc, page, dataUrlToBase64(slides[i + 1].dataUrl),
+                           thumbX, botThumbY, thumbW, thumbH, opts.frameSlides);
+      drawSlideNumber(page, font, i + 2, thumbX, botThumbY + thumbH, thumbW);
+    }
+
+    drawDateStamp(page, font, paper);
+    drawPageNumber(page, font, paper, Math.floor(i / 2) + 1);
+  }
+}
+
+async function compose3Slides(pdfDoc, font, slides, paper, opts) {
+  const slideAspect = (slides[0] && slides[0].pageMmW && slides[0].pageMmH)
+    ? slides[0].pageMmW / slides[0].pageMmH : SLIDE_ASPECT_DEFAULT;
+
+  const contentW = paper.W - 2 * PAGE_MARGIN;
+  const contentH = paper.H - 2 * PAGE_MARGIN;
+  const widthScale = opts.scaleToFit ? 1.0 : 0.85;
+  const leftColW = contentW * 0.45 * widthScale;
+  const gutter = 8;
+  const rightColX = PAGE_MARGIN + leftColW + gutter;
+  const rightColW = paper.W - PAGE_MARGIN - rightColX;
+  const rowH = contentH / 3;
+  let thumbW = leftColW;
+  let thumbH = thumbW / slideAspect;
+  if (thumbH > rowH * 0.85) { thumbH = rowH * 0.85; thumbW = thumbH * slideAspect; }
+
+  for (let i = 0; i < slides.length; i += 3) {
+    const page = pdfDoc.addPage([paper.W * MM_TO_PT, paper.H * MM_TO_PT]);
+
+    for (let r = 0; r < 3; r++) {
+      const rowYTop = PAGE_MARGIN + r * rowH;
+      const thumbY = rowYTop + (rowH - thumbH) / 2;
+      const slide = slides[i + r];
+
+      if (slide) {
+        await drawSlideThumb(pdfDoc, page, dataUrlToBase64(slide.dataUrl),
+                             PAGE_MARGIN, thumbY, thumbW, thumbH, opts.frameSlides);
+        drawSlideNumber(page, font, i + r + 1, PAGE_MARGIN, thumbY + thumbH, thumbW);
+      }
+
+      // 6 horizontal note lines in right column for THIS row (always drawn).
+      const numLines = 6;
+      const linePitch = (rowH - 8) / (numLines + 1);
+      for (let l = 1; l <= numLines; l++) {
+        drawHorizontalLine(page, rightColX, rowYTop + 4 + l * linePitch, rightColW);
+      }
+    }
+
+    drawDateStamp(page, font, paper);
+    drawPageNumber(page, font, paper, Math.floor(i / 3) + 1);
+  }
+}
+
 // ===========================================================================
 // X2tConverter â€” WASM DOCX <-> Editor.bin
 // (Adapted minimally from obsidian-docx-viewer to run in-process)
@@ -2424,6 +2704,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // Sidecar metadata: hide *.docx.md from file explorer
     this._injectSidecarCSS();
 
+    // Phase 9 — Print Layout chooser modal styles
+    this._injectPrintLayoutCSS();
+
     // Sidecar metadata: auto-rename/delete sidecars when .docx/.pptx files
     // change. Path concat (`file.path + ".md"`) works for both extensions —
     // the sidecar is just `<original-filename>.md`, regardless of source.
@@ -2480,6 +2763,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         this._printDocument(ev.data.images, pmW, pmH);
         // Iframe overlay can hide as soon as the print iframe takes over.
         this._notifyPdfDone(null);
+      }
+      // Phase 9: layout chooser request from File menu.
+      if (ev.data.type === "obsidi-office-pdf-layout-request") {
+        dlog("pdf-layout-request received, docKey:", ev.data.docKey);
+        const docKey = ev.data.docKey;
+        const sourceWindow = ev.source;  // the iframe contentWindow
+        const modal = new PrintLayoutModal(this, docKey, sourceWindow);
+        modal.open();
+        return;
       }
       if ((ev.data.type === "obsidi-office-pdf-export" || ev.data.type === "obsidi-office-mobile-pdf-export") && ev.data.pages) {
         dlog("pdf-export received (type=" + ev.data.type + "), pages:", ev.data.pages.length, "basename:", ev.data.basename, "transient:", !!ev.data.transientPrint);
@@ -2905,8 +3197,89 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const pdfDoc = await PDFDocument.create();
     const helvetica = await pdfDoc.embedFont(StandardFonts.Helvetica);
 
-    // mm â†’ PDF points: 1 inch = 25.4 mm = 72 points.
-    const MM_TO_PT = 72 / 25.4;
+    // MM_TO_PT is module-scope (promoted in Phase 9 for shared helpers).
+
+    // Phase 9: layout dispatch. Full Page falls through to existing
+    // single-slide-per-page composition (no change). Other layouts call
+    // dedicated compose functions, then share the same save+notify tail
+    // as the fullpage path (writeBinary -> open tab -> _notifyPdfDone ->
+    // Notice; transient print still honored via _scheduleTransientPdfCleanup).
+    if (payload.layout && payload.layout !== "fullpage") {
+      const paper = PAPER[payload.paperSize] || PAPER.Letter;
+      const layoutOpts = {
+        frameSlides: !!payload.frameSlides,
+        scaleToFit: payload.scaleToFit !== false,  // default true
+        noteLines: !!payload.noteLines,
+      };
+      dlog("Phase 9 compose:", payload.layout, "paper:", payload.paperSize,
+           "frame:", layoutOpts.frameSlides, "scale:", layoutOpts.scaleToFit,
+           "lines:", layoutOpts.noteLines);
+      try {
+        switch (payload.layout) {
+          case "notes-page": await composeNotesPage(pdfDoc, helvetica, payload.pages, paper, layoutOpts); break;
+          case "2-slides":   await compose2Slides(pdfDoc, helvetica, payload.pages, paper, layoutOpts);   break;
+          case "3-slides":   await compose3Slides(pdfDoc, helvetica, payload.pages, paper, layoutOpts);   break;
+          default:
+            dlog("unknown layout, falling through to fullpage:", payload.layout);
+            // Fall through to existing fullpage loop below by NOT returning.
+            // Break out of the try and skip the save+notify tail here.
+            throw new Error("__FALLTHROUGH__");
+        }
+        const pdfBytes = await pdfDoc.save();
+
+        // Mirror the fullpage save+notify tail (lines 3121-3165). Same
+        // basename / docDir / transient-print logic, same writeBinary call,
+        // same open-in-tab, same _notifyPdfDone, same Notice text, same
+        // _scheduleTransientPdfCleanup when transientPrint is set.
+        const isTransient = !!payload.transientPrint;
+        const basename = (payload.basename || "document").replace(/\.(docx|pptx)$/i, "");
+        const docPath = payload.docFilePath || this._lookupDocFilePath(payload.docKey) || "";
+        const docDir = docPath ? docPath.split("/").slice(0, -1).join("/") : "";
+        const targetBasename = isTransient ? (basename + "-print-" + Date.now()) : basename;
+        const targetPath = (docDir ? docDir + "/" : "") + targetBasename + ".pdf";
+
+        await this.app.vault.adapter.writeBinary(targetPath, pdfBytes);
+        const ms = Date.now() - t0;
+        dlog("Phase 9 PDF exported:", targetPath, "(" + (pdfBytes.byteLength / 1024).toFixed(1) + " KB) in", ms, "ms",
+             isTransient ? "[transient print]" : "");
+
+        let openedLeaf = null;
+        try {
+          await new Promise((r) => setTimeout(r, 100));
+          const file = this.app.vault.getAbstractFileByPath(targetPath);
+          if (file instanceof obsidian.TFile) {
+            openedLeaf = this.app.workspace.getLeaf("tab");
+            await openedLeaf.openFile(file);
+          } else {
+            dlog("PDF written but TFile not yet resolvable for", targetPath);
+          }
+        } catch (err) {
+          elog("Failed to open exported PDF:", err);
+        }
+
+        this._notifyPdfDone(targetPath);
+
+        if (isTransient) {
+          this._scheduleTransientPdfCleanup(targetPath, openedLeaf);
+          new obsidian.Notice("Tap share → Print to AirPrint. PDF auto-deletes in 60s.", 8000);
+        } else {
+          new obsidian.Notice("PDF exported");
+        }
+        return;
+      } catch (e) {
+        if (e && e.message === "__FALLTHROUGH__") {
+          // Unknown layout sentinel: drop through to fullpage code below.
+          // (Do nothing here; control continues past the if-block.)
+        } else {
+          elog("Phase 9 compose failed:", e && e.stack || e);
+          new obsidian.Notice("PDF export failed: " + (e && e.message ? e.message : String(e)));
+          this._notifyPdfDone(null);
+          return;
+        }
+      }
+    }
+
+    // FALL-THROUGH: existing fullpage / docx logic below this line, unchanged.
 
     for (const p of pages) {
       const dataUrl = p.dataUrl || "";
@@ -3144,6 +3517,34 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     style.textContent =
       '.nav-file-title[data-path$=".docx.md"], ' +
       '.nav-file-title[data-path$=".pptx.md"] { display: none !important; }';
+  }
+
+  _injectPrintLayoutCSS() {
+    // Phase 9 — PrintLayoutModal scoped styling.
+    const styleId = "obsidi-office-print-layout";
+    let style = document.getElementById(styleId);
+    if (!style) {
+      style = document.createElement("style");
+      style.id = styleId;
+      document.head.appendChild(style);
+    }
+    style.textContent = [
+      '.obsidi-office-print-layout-modal { min-width: 480px; padding: 20px; }',
+      '.obsidi-office-print-layout-modal h3 { margin: 12px 0 6px; font-size: 11px; text-transform: uppercase; color: var(--text-muted); }',
+      '.obsidi-office-print-layout-modal .pl-card-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }',
+      '.obsidi-office-print-layout-modal .pl-card { border: 2px solid var(--background-modifier-border); border-radius: 6px; padding: 10px; cursor: pointer; text-align: center; }',
+      '.obsidi-office-print-layout-modal .pl-card.selected { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }',
+      '.obsidi-office-print-layout-modal .pl-card-preview { height: 80px; display: flex; align-items: center; justify-content: center; }',
+      '.obsidi-office-print-layout-modal .pl-options { margin-top: 16px; display: grid; gap: 8px; }',
+      '.obsidi-office-print-layout-modal .pl-options label { display: flex; align-items: center; gap: 8px; }',
+      '.obsidi-office-print-layout-modal .pl-options input[disabled] + span { opacity: 0.4; }',
+      '.obsidi-office-print-layout-modal .pl-buttons { margin-top: 20px; display: flex; justify-content: flex-end; gap: 8px; }',
+      '.modal:has(.obsidi-office-print-layout-modal) .modal-close-button { display: none; }',
+      '@media (max-width: 640px) {',
+      '  .obsidi-office-print-layout-modal { min-width: unset; }',
+      '  .obsidi-office-print-layout-modal .pl-card-grid { grid-template-columns: 1fr; }',
+      '}'
+    ].join("\n");
   }
 
   async _openInView(file) {
@@ -3467,6 +3868,191 @@ class FileNameModal extends obsidian.Modal {
     });
   }
   onClose() { this.contentEl.empty(); }
+}
+
+// ===========================================================================
+// PrintLayoutModal — Phase 9 Print Layout chooser
+// ===========================================================================
+// Opened from File menu "Export to PDF with Layout...".
+// On Export, posts an obsidi-office-pdf-export-with-layout message to the iframe.
+class PrintLayoutModal extends obsidian.Modal {
+  constructor(plugin, docKey, sourceWindow) {
+    super(plugin.app);
+    this.plugin = plugin;
+    this.docKey = docKey;
+    // sourceWindow: iframe contentWindow that should receive the
+    // obsidi-office-pdf-export-with-layout postMessage on Export click.
+    this.sourceWindow = sourceWindow;
+    this.state = {
+      layout: "fullpage",   // "fullpage" | "notes-page" | "2-slides" | "3-slides"
+      paperSize: "Letter",  // "Letter" | "A4" | "Legal"
+      frameSlides: false,
+      scaleToFit: true,
+      noteLines: false,
+    };
+  }
+
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText("Export to PDF with Layout");
+    contentEl.empty();
+    contentEl.addClass("obsidi-office-print-layout-modal");
+    // Sections are populated in subsequent tasks.
+    this._renderLayoutCards(contentEl);
+    this._renderOptions(contentEl);
+    this._renderButtons(contentEl);
+  }
+
+  _renderLayoutCards(parent) {
+    const h = parent.createEl("h3");
+    h.setText("Print Layout");
+    const grid = parent.createDiv({ cls: "pl-card-grid" });
+
+    const cards = [
+      { id: "fullpage",    label: "Full Page",   svg: this._svgFullPage()   },
+      { id: "notes-page",  label: "Notes Page",  svg: this._svgNotesPage()  },
+      { id: "2-slides",    label: "2 Slides",    svg: this._svg2Slides()    },
+      { id: "3-slides",    label: "3 Slides",    svg: this._svg3Slides()    },
+    ];
+
+    this._cardEls = {};
+    for (const c of cards) {
+      const el = grid.createDiv({ cls: "pl-card" });
+      if (this.state.layout === c.id) el.addClass("selected");
+      el.createDiv({ cls: "pl-card-preview" }).innerHTML = c.svg;
+      el.createDiv({ text: c.label });
+      el.addEventListener("click", () => this._selectLayout(c.id));
+      this._cardEls[c.id] = el;
+    }
+  }
+
+  _selectLayout(id) {
+    this.state.layout = id;
+    for (const cardId in this._cardEls) {
+      this._cardEls[cardId].toggleClass("selected", cardId === id);
+    }
+    // Re-render options panel so toggle disabled states update.
+    this._refreshOptionsState();
+  }
+
+  // Tiny SVG previews for each layout card.
+  _svgFullPage() {
+    return '<svg width="80" height="60" viewBox="0 0 80 60"><rect x="6" y="14" width="68" height="32" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+  }
+  _svgNotesPage() {
+    return '<svg width="60" height="80" viewBox="0 0 60 80"><rect x="8" y="6" width="44" height="28" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="8" y1="46" x2="52" y2="46" stroke="currentColor" stroke-width="1"/><line x1="8" y1="54" x2="52" y2="54" stroke="currentColor" stroke-width="1"/><line x1="8" y1="62" x2="52" y2="62" stroke="currentColor" stroke-width="1"/><line x1="8" y1="70" x2="52" y2="70" stroke="currentColor" stroke-width="1"/></svg>';
+  }
+  _svg2Slides() {
+    return '<svg width="60" height="80" viewBox="0 0 60 80"><rect x="8" y="6" width="44" height="28" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="8" y="46" width="44" height="28" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>';
+  }
+  _svg3Slides() {
+    return '<svg width="60" height="80" viewBox="0 0 60 80"><rect x="6" y="6" width="22" height="14" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6" y="32" width="22" height="14" fill="none" stroke="currentColor" stroke-width="1.5"/><rect x="6" y="58" width="22" height="14" fill="none" stroke="currentColor" stroke-width="1.5"/><line x1="34" y1="9" x2="56" y2="9" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="13" x2="56" y2="13" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="17" x2="56" y2="17" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="35" x2="56" y2="35" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="39" x2="56" y2="39" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="43" x2="56" y2="43" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="61" x2="56" y2="61" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="65" x2="56" y2="65" stroke="currentColor" stroke-width="0.8"/><line x1="34" y1="69" x2="56" y2="69" stroke="currentColor" stroke-width="0.8"/></svg>';
+  }
+
+  _renderOptions(parent) {
+    const optsDiv = parent.createDiv({ cls: "pl-options" });
+
+    // Paper size dropdown
+    const paperRow = optsDiv.createDiv();
+    paperRow.createSpan({ text: "Paper size: " });
+    const sel = paperRow.createEl("select");
+    ["Letter", "A4", "Legal", "Tabloid"].forEach(p => {
+      const opt = sel.createEl("option", { text: p, value: p });
+      if (p === this.state.paperSize) opt.selected = true;
+    });
+    sel.addEventListener("change", () => { this.state.paperSize = sel.value; });
+    this._paperSel = sel;
+
+    // Frame Slides toggle
+    this._frameLabel = optsDiv.createEl("label");
+    this._frameCb = this._frameLabel.createEl("input", { type: "checkbox" });
+    this._frameCb.checked = this.state.frameSlides;
+    this._frameLabel.createSpan({ text: "Frame Slides" });
+    this._frameCb.addEventListener("change", () => { this.state.frameSlides = this._frameCb.checked; });
+
+    // Scale to Fit Paper toggle
+    this._scaleLabel = optsDiv.createEl("label");
+    this._scaleCb = this._scaleLabel.createEl("input", { type: "checkbox" });
+    this._scaleCb.checked = this.state.scaleToFit;
+    this._scaleLabel.createSpan({ text: "Scale to Fit Paper" });
+    this._scaleCb.addEventListener("change", () => { this.state.scaleToFit = this._scaleCb.checked; });
+
+    // Note Lines toggle
+    this._notesLabel = optsDiv.createEl("label");
+    this._notesCb = this._notesLabel.createEl("input", { type: "checkbox" });
+    this._notesCb.checked = this.state.noteLines;
+    this._notesLabel.createSpan({ text: "Note Lines" });
+    this._notesCb.addEventListener("change", () => { this.state.noteLines = this._notesCb.checked; });
+
+    this._refreshOptionsState();
+  }
+
+  _refreshOptionsState() {
+    if (!this._paperSel) return;  // not yet rendered
+
+    // Full Page: paper + scale + frame + note-lines all N/A
+    const isFullPage = this.state.layout === "fullpage";
+    this._paperSel.disabled = isFullPage;
+    this._frameCb.disabled = isFullPage;
+    this._scaleCb.disabled = isFullPage;
+
+    // Notes Page and 3 Slides: note lines locked ON (definitional)
+    const linesLocked = this.state.layout === "notes-page" || this.state.layout === "3-slides";
+    if (linesLocked) {
+      this._notesCb.checked = true;
+      this.state.noteLines = true;
+      this._notesCb.disabled = true;
+    } else if (isFullPage) {
+      this._notesCb.checked = false;
+      this.state.noteLines = false;
+      this._notesCb.disabled = true;
+    } else {
+      // 2 Slides: user-selectable
+      this._notesCb.disabled = false;
+    }
+  }
+
+  _renderButtons(parent) {
+    const btnRow = parent.createDiv({ cls: "pl-buttons" });
+
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => this.close());
+
+    const exportBtn = btnRow.createEl("button", { text: "Export PDF", cls: "mod-cta" });
+    exportBtn.addEventListener("click", () => this._onExport());
+  }
+
+  _onExport() {
+    if (!this.sourceWindow) {
+      new obsidian.Notice("Editor window not available — cannot start export.");
+      this.close();
+      return;
+    }
+    this.sourceWindow.postMessage({
+      type: "obsidi-office-pdf-export-with-layout",
+      docKey: this.docKey,
+      layout: this.state.layout,
+      paperSize: this.state.paperSize,
+      frameSlides: this.state.frameSlides,
+      scaleToFit: this.state.scaleToFit,
+      noteLines: this.state.noteLines,
+    }, "*");
+    this.close();
+  }
+
+  close() {
+    try { super.close(); } catch (e) {
+      // Obsidian Modal.close() throws "n.instanceOf is not a function" deep in
+      // minified app.js when our DOM is fully cleared via empty()/removeClass
+      // before the parent's instanceof check. Modal visually closes regardless.
+      // Same workaround used in MetadataModal (Phase 8).
+      console.debug("[obsidi-office] PrintLayoutModal close() swallowed:", e && e.message);
+    }
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
 }
 
 module.exports = OnlyObsidianTestPlugin;
