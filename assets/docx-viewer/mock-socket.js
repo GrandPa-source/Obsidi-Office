@@ -685,6 +685,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     // (338.7 x 190.5 mm) if get_PresentationWidth returns 0.
     var hasSlideAPI = (typeof editor.get_PresentationWidth === "function");
     var hasDocAPI = (typeof editor.asc_getPageSize === "function");
+    var hasCellAPI = (typeof editor.asc_nativePrintPagesCount === "function");
     var isSlide = hasSlideAPI;
     var pageMm = null;
     try {
@@ -696,19 +697,29 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         } else {
           pageMm = { W: 338.7, H: 190.5 };  // 16:9 fallback
         }
+      } else if (hasCellAPI) {
+        // Cell engine: per-sheet page setup varies. Extracting it requires
+        // decoding minified asc_getPageOptions(sheetIdx) return values
+        // (keys are minified). For V1 (spec Section 7), use Letter portrait
+        // as a universal fallback — asc_drawPrintPreview(p, [w,h]) paginates
+        // workbook content to fit this paper size. Per-sheet geometry is a
+        // future enhancement.
+        pageMm = { W: 215.9, H: 279.4 };  // Letter portrait
       } else if (hasDocAPI) {
         pageMm = editor.asc_getPageSize(0);
       }
     } catch (e) {}
-    _slog(tag + ": engine=" + (isSlide ? "slide" : "doc") + " page size (mm):",
+    var engineLabel = isSlide ? "slide" : (hasCellAPI ? "cell" : "doc");
+    _slog(tag + ": engine=" + engineLabel + " page size (mm):",
           pageMm ? (pageMm.W.toFixed(1) + "x" + pageMm.H.toFixed(1)) : "unknown",
-          " hasSlideAPI=" + hasSlideAPI + " hasDocAPI=" + hasDocAPI);
+          " hasSlideAPI=" + hasSlideAPI + " hasCellAPI=" + hasCellAPI + " hasDocAPI=" + hasDocAPI);
     // Surface engine detection to parent debug log (iframe console doesn't propagate).
     try {
       parent.postMessage({
         __pdfEngine: true,
         isSlide: isSlide,
         hasSlideAPI: hasSlideAPI,
+        hasCellAPI: hasCellAPI,
         hasDocAPI: hasDocAPI,
         pageMm: pageMm ? { W: Math.round(pageMm.W * 10) / 10, H: Math.round(pageMm.H * 10) / 10 } : null
       }, "*");
@@ -725,7 +736,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     //      private path errors out (minified-name stability concern).
     var perPageText = [];
     if (mode === "export") {
-      if (isSlide) {
+      if (hasCellAPI) {
+        // Cell engine: skip text extraction. Workbook text is cell-keyed,
+        // not page-flow; the existing heading-anchor / SelectAll approaches
+        // don't map cleanly. V1 PDF is visual-only (not searchable). Future
+        // enhancement: iterate sheets, walk cells, build per-page text by
+        // mapping cells to print-preview pages.
+        _slog(tag + ": cell engine — skipping text extraction (V1 visual-only PDF)");
+        perPageText = new Array(pageCount);
+        for (var ci = 0; ci < pageCount; ci++) perPageText[ci] = "";
+      } else if (isSlide) {
         // Strategy B — per-slide via private path.
         var slideTexts = null;
         try {
@@ -846,6 +866,23 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
       var previewCanvas = host.querySelector("canvas");
       if (!previewCanvas) throw new Error("print-preview canvas not created");
       _slog("PDF export: preview canvas " + previewCanvas.width + "x" + previewCanvas.height);
+
+      // Cell engine: getCountPages() is undefined; the real paginated count
+      // is exposed via asc_nativePrintPagesCount() — but only AFTER
+      // asc_initPrintPreview has set up the print preview state. Re-fetch
+      // here and update pageCount in place. (Slide + doc engines' counts
+      // from getCountPages() above are already correct pre-init.)
+      if (hasCellAPI) {
+        try {
+          var cellPageCount = editor.asc_nativePrintPagesCount();
+          if (cellPageCount && cellPageCount > 0) {
+            pageCount = cellPageCount;
+            _slog("PDF export: cell engine post-init pageCount=" + pageCount);
+          }
+        } catch (cellErr) {
+          _slog("PDF export: asc_nativePrintPagesCount threw (using pre-init count " + pageCount + "):", cellErr.message);
+        }
+      }
 
       // OnlyOffice's print preview draws a page-edge stroke at the canvas
       // perimeter. The stroke + AA fuzz is heavier on top/bottom than on

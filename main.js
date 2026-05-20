@@ -3305,7 +3305,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         // same open-in-tab, same _notifyPdfDone, same Notice text, same
         // _scheduleTransientPdfCleanup when transientPrint is set.
         const isTransient = !!payload.transientPrint;
-        const basename = (payload.basename || "document").replace(/\.(docx|pptx)$/i, "");
+        const basename = (payload.basename || "document").replace(/\.(docx|pptx|xlsx)$/i, "");
         const docPath = payload.docFilePath || this._lookupDocFilePath(payload.docKey) || "";
         const docDir = docPath ? docPath.split("/").slice(0, -1).join("/") : "";
         const targetBasename = isTransient ? (basename + "-print-" + Date.now()) : basename;
@@ -3452,7 +3452,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // suffix with -print-<timestamp> so we can clean it up unambiguously and
     // avoid clobbering any user-generated PDF of the same basename.
     const isTransient = !!payload.transientPrint;
-    const basename = (payload.basename || "document").replace(/\.(docx|pptx)$/i, "");
+    const basename = (payload.basename || "document").replace(/\.(docx|pptx|xlsx)$/i, "");
     const docPath = payload.docFilePath || this._lookupDocFilePath(payload.docKey) || "";
     const docDir = docPath ? docPath.split("/").slice(0, -1).join("/") : "";
     const targetBasename = isTransient ? (basename + "-print-" + Date.now()) : basename;
