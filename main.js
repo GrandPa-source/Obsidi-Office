@@ -2750,10 +2750,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     this.addCommand({
       id: "onlyobsidian-open-current",
-      name: "Open current .docx/.pptx in Obsidi-Office",
+      name: "Open current .docx/.pptx/.xlsx in Obsidi-Office",
       checkCallback: (checking) => {
         const f = this.app.workspace.getActiveFile();
-        if (!f || !/\.(docx|pptx)$/i.test(f.path)) return false;
+        if (!f || !/\.(docx|pptx|xlsx)$/i.test(f.path)) return false;
         if (!checking) this._openInView(f);
         return true;
       }
@@ -2779,11 +2779,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // Phase 9 — Print Layout chooser modal styles
     this._injectPrintLayoutCSS();
 
-    // Sidecar metadata: auto-rename/delete sidecars when .docx/.pptx files
-    // change. Path concat (`file.path + ".md"`) works for both extensions —
+    // Sidecar metadata: auto-rename/delete sidecars when .docx/.pptx/.xlsx files
+    // change. Path concat (`file.path + ".md"`) works for all extensions —
     // the sidecar is just `<original-filename>.md`, regardless of source.
     const isSidecarParent = (f) => f instanceof obsidian.TFile &&
-      (f.extension === "docx" || f.extension === "pptx");
+      (f.extension === "docx" || f.extension === "pptx" || f.extension === "xlsx");
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       if (isSidecarParent(file)) {
         const oldSidecar = oldPath + ".md";
@@ -3591,11 +3591,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       style.id = styleId;
       document.head.appendChild(style);
     }
-    // Hide *.docx.md and *.pptx.md files from file explorer (Phase 8 — both
-    // sidecar variants indexed for graph/tags but shouldn't clutter the tree)
+    // Hide *.docx.md, *.pptx.md, and *.xlsx.md files from file explorer
+    // (Phase 8 + 6 — all sidecar variants indexed for graph/tags but shouldn't
+    // clutter the tree)
     style.textContent =
       '.nav-file-title[data-path$=".docx.md"], ' +
-      '.nav-file-title[data-path$=".pptx.md"] { display: none !important; }';
+      '.nav-file-title[data-path$=".pptx.md"], ' +
+      '.nav-file-title[data-path$=".xlsx.md"] { display: none !important; }';
   }
 
   _injectPrintLayoutCSS() {
@@ -3627,8 +3629,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   async _openInView(file) {
-    // Phase 8 — route by extension. .docx → DocxView, .pptx → PptxView.
-    const viewType = (file && file.extension === "pptx") ? VIEW_TYPE_PPTX : VIEW_TYPE;
+    // Phase 8 + 6 — route by extension. .docx → DocxView, .pptx → PptxView,
+    // .xlsx → XlsxView. Unknown extension falls back to DocxView (legacy
+    // behavior; Obsidian's registerExtensions ensures only known extensions
+    // reach this function).
+    let viewType = VIEW_TYPE;  // docx default
+    if (file && file.extension === "pptx") viewType = VIEW_TYPE_PPTX;
+    else if (file && file.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: viewType, active: true });
     const view = leaf.view;
@@ -3726,7 +3733,8 @@ class MetadataModal extends obsidian.Modal {
       if (!q) { linkSuggest.style.display = "none"; return; }
       const allNotes = this.app.vault.getMarkdownFiles()
         .filter(f => f.basename.toLowerCase().includes(q) &&
-                     !f.path.endsWith(".docx.md") && !f.path.endsWith(".pptx.md"))
+                     !f.path.endsWith(".docx.md") && !f.path.endsWith(".pptx.md") &&
+                     !f.path.endsWith(".xlsx.md"))
         .map(f => f.basename)
         .filter(n => !this.links.includes("[[" + n + "]]"))
         .slice(0, 10);
