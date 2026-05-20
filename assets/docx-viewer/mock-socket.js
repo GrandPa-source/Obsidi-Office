@@ -531,6 +531,31 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
   }, true);
 
+  // --- Cell-engine idle autosave (Phase 4 hotfix 3) ---
+  // The cell engine does NOT fire onDocumentStateChange while a cell is in
+  // edit mode (only after the cell editor commits via Enter/Tab/click-away).
+  // Without this fallback, the parent's onDocumentStateChange-driven autosave
+  // never schedules, and a user typing-and-pausing-without-committing has no
+  // safety net — close the tab and lose the work. This 10s debounce on
+  // keystrokes fires triggerSaveToVault (which already commits the pending
+  // cell edit via asc_closeCellEditor before asc_DownloadAs, per hotfix 2),
+  // so the typed value is committed and saved without user action.
+  // Guard on asc_closeCellEditor presence — undefined on word/slide engines,
+  // so docx + pptx are unaffected.
+  var _cellEngineKeystrokeTimer = null;
+  window.addEventListener("keydown", function (e) {
+    if (!window.Asc || !window.Asc.editor) return;
+    if (typeof window.Asc.editor.asc_closeCellEditor !== "function") return;
+    // Skip our own Ctrl+S / Ctrl+P (handled above) so they don't double-schedule.
+    if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "p" || e.key === "P")) return;
+    if (_cellEngineKeystrokeTimer) clearTimeout(_cellEngineKeystrokeTimer);
+    _cellEngineKeystrokeTimer = setTimeout(function () {
+      _cellEngineKeystrokeTimer = null;
+      _slog("cell-engine idle autosave firing (10s after last keystroke)");
+      triggerSaveToVault();
+    }, 10000);
+  }, true);
+
   // --- Ctrl+P interceptor (print) ---
   // Capture phase + stopImmediatePropagation so OnlyOffice's own Ctrl+P
   // (which would open its in-editor print modal) doesn't fire.
