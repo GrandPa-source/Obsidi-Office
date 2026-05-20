@@ -552,7 +552,11 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     _cellEngineKeystrokeTimer = setTimeout(function () {
       _cellEngineKeystrokeTimer = null;
       _slog("cell-engine idle autosave firing (10s after last keystroke)");
-      triggerSaveToVault();
+      // Show the toolbar saving indicator so the user gets visual feedback
+      // — same pattern as the Ctrl+S path. Without this, the file saves
+      // silently and the user has no idea their work was persisted.
+      showSaving();
+      setTimeout(triggerSaveToVault, 50);
     }, 10000);
   }, true);
 
