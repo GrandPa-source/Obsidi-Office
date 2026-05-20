@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "1.0.0",
   "description": "Localhost-free OnlyOffice DOCX viewer + editor. Uses an in-iframe transport shim + postMessage RPC instead of binding 127.0.0.1.",
-  "author": "Baycrest SecOps",
+  "author": "GrandPa-source",
   "authorUrl": "",
   "fundingUrl": "",
   "isDesktopOnly": false
