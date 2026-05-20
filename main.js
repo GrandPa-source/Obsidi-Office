@@ -2816,6 +2816,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           modal.open();
         }
       }
+      // Phase 5 (xlsx) — iframe-to-parent Notice channel. Used by the cell
+      // engine PDF/print deferral message; can be reused for other
+      // iframe-originated user-visible messages in future phases.
+      if (ev.data.type === "obsidi-office-notice" && typeof ev.data.text === "string") {
+        new obsidian.Notice(ev.data.text, 6000);
+      }
       // Accept both the post-Phase-13 message type and the pre-Phase-13
       // "obsidi-office-mobile-*" variant. iPad's mock-socket.js comes from
       // the asset zip, which was built from the mobile fork BEFORE the

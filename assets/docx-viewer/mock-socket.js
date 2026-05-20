@@ -666,6 +666,40 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
     var editor = window.Asc.editor;
 
+    // Phase 5 (xlsx): cell engine PDF + print deferred to Phase 5b.
+    // asc_initPrintPreview triggers onApiChangePreviewSheet in
+    // spreadsheeteditor/main/app.js, which reads this.printSettings.cmbSheet.store
+    // — but this.printSettings is the print-settings Backbone view, only
+    // created when the user opens the print dialog through the normal UI
+    // flow. Our programmatic asc_initPrintPreview call skips that setup,
+    // so this.printSettings is undefined → TypeError → engine puts itself
+    // into changesError state (warningCode -25).
+    //
+    // Future Phase 5b: implement via asc_DownloadAs(513) direct PDF download
+    // path, bypassing print preview entirely (engine produces native vector
+    // PDF, no canvas capture loop needed).
+    if (typeof editor.asc_nativePrintPagesCount === "function") {
+      _slog(tag + ": cell engine path deferred to Phase 5b " +
+            "(asc_initPrintPreview depends on printSettings Backbone view)");
+      try {
+        parent.postMessage({
+          __shim: "docx-viewer",
+          type: "obsidi-office-notice",
+          text: "PDF export and print for xlsx files is coming in a future release."
+        }, "*");
+      } catch (e) {}
+      // Tell parent the PDF flow is done (no PDF produced) so any overlay
+      // gets hidden — same teardown path as a failed PDF export.
+      try {
+        parent.postMessage({
+          __shim: "docx-viewer",
+          type: "obsidi-office-pdf-done",
+          path: null
+        }, "*");
+      } catch (e) {}
+      return;
+    }
+
     // 1. Page count — print-preview path doesn't depend on event-driven
     // pagination tracking; the polled getter is reliable in current builds.
     var pageCount = 1;
