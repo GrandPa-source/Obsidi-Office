@@ -279,6 +279,22 @@ MockSocket.prototype.close = MockSocket.prototype.disconnect;
 function triggerSaveToVault() {
   if (typeof window !== "undefined" && window.Asc && window.Asc.editor) {
     try {
+      // Phase 4 hotfix 2 (xlsx): commit any in-progress cell edit before
+      // asc_DownloadAs reads the workbook state. In a spreadsheet, typing
+      // into a cell stays in the cell-editor's local state until the user
+      // presses Enter/Tab/clicks-away (commit). Without this call, a save
+      // triggered while typing produces a workbook snapshot that excludes
+      // the in-progress edit. asc_closeCellEditor is cell-engine-specific
+      // (undefined on word/slide engines), so the typeof guard keeps
+      // docx + pptx behavior identical.
+      if (typeof window.Asc.editor.asc_closeCellEditor === "function") {
+        try {
+          window.Asc.editor.asc_closeCellEditor();
+          _slog("triggerSaveToVault — committed pending cell edit");
+        } catch (commitEx) {
+          _slog("triggerSaveToVault — asc_closeCellEditor threw (continuing):", commitEx.message);
+        }
+      }
       _slog("triggerSaveToVault — asc_DownloadAs(65)");
       window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(65));
     } catch (ex) { console.error("[mock-socket] save error:", ex); }
