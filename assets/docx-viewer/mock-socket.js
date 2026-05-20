@@ -681,20 +681,17 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     if (typeof editor.asc_nativePrintPagesCount === "function") {
       _slog(tag + ": cell engine path deferred to Phase 5b " +
             "(asc_initPrintPreview depends on printSettings Backbone view)");
+      // Hide the iframe-side "Generating PDF…" overlay (created at line 408,
+      // shown by the File-menu click handler before postMessage fires).
+      // Without this the overlay stays visible after the early bail.
+      try {
+        if (typeof window.__hidePdfOverlay === "function") window.__hidePdfOverlay();
+      } catch (e) {}
       try {
         parent.postMessage({
           __shim: "docx-viewer",
           type: "obsidi-office-notice",
           text: "PDF export and print for xlsx files is coming in a future release."
-        }, "*");
-      } catch (e) {}
-      // Tell parent the PDF flow is done (no PDF produced) so any overlay
-      // gets hidden — same teardown path as a failed PDF export.
-      try {
-        parent.postMessage({
-          __shim: "docx-viewer",
-          type: "obsidi-office-pdf-done",
-          path: null
         }, "*");
       } catch (e) {}
       return;
