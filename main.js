@@ -279,9 +279,16 @@ const DEFAULT_SETTINGS = {
   defaultMode: "edit",
   debugLogging: true,
   autoSaveDelayMs: 1500,
-  templateDir: "_docx-templates",
-  pptxTemplateDir: "_pptx-templates",
-  xlsxTemplateDir: "_xlsx-templates",
+  // Phase 7.5 — consolidated templates root with per-format subdirs:
+  //   <templatesRoot>/docx/Blank Document.docx
+  //   <templatesRoot>/pptx/Blank Presentation.pptx
+  //   <templatesRoot>/xlsx/Blank Spreadsheet.xlsx
+  // Legacy per-format settings (templateDir/pptxTemplateDir/xlsxTemplateDir)
+  // are auto-migrated on onload by `_migrateLegacyTemplateDirs`.
+  templatesRoot: "_obsidi-office-templates",
+  // Phase 7.5 — remember last-selected tab on the standalone landing page
+  // ("docx" | "pptx" | "xlsx"). Restored on next launch.
+  lastLandingTab: "docx",
   // Phase B3 â€” runtime asset delivery.
   // Either an http(s) URL (production / iPad â€” fetched via obsidian.requestUrl)
   // or a vault-relative path to a zip already in the vault (dev â€” read via
@@ -1555,7 +1562,12 @@ class OfficeEditorView extends obsidian.FileView {
     wrapper.createEl("h2", { text: "New" });
     const grid = wrapper.createEl("div", { cls: "template-grid" });
 
-    const templateDir = this.plugin.settings.templateDir || "_docx-templates";
+    // Phase 7.5 — consolidated templates root with per-format subdir.
+    const templatesRoot = this.plugin.settings.templatesRoot || "_obsidi-office-templates";
+    const templateDir = templatesRoot + "/" + ext;
+    const blankNameFor = ({ docx: "Blank Document", pptx: "Blank Presentation", xlsx: "Blank Spreadsheet" })[ext] || "Blank Document";
+    const blankIconFor = ({ docx: "\u{1F4C4}", pptx: "\u{1F4FD}️", xlsx: "\u{1F4CA}" })[ext] || "\u{1F4C4}";
+    const tmplIconFor  = ({ docx: "\u{1F4DD}", pptx: "\u{1F39E}️", xlsx: "\u{1F9EE}" })[ext] || "\u{1F4DD}";
     const templates = [];
     const files = this.app.vault.getFiles();
     for (const f of files) {
@@ -1564,17 +1576,17 @@ class OfficeEditorView extends obsidian.FileView {
       }
     }
     templates.sort((a, b) => {
-      if (a.name === "Blank Document") return -1;
-      if (b.name === "Blank Document") return 1;
+      if (a.name === blankNameFor) return -1;
+      if (b.name === blankNameFor) return 1;
       return a.name.localeCompare(b.name);
     });
     if (templates.length === 0) {
-      templates.push({ name: "Blank Document", path: "" });
+      templates.push({ name: blankNameFor, path: "" });
     }
 
     for (const tmpl of templates) {
       const card = grid.createEl("div", { cls: "template-card" });
-      card.createEl("div", { cls: "icon", text: tmpl.name === "Blank Document" ? "\u{1F4C4}" : "\u{1F4DD}" });
+      card.createEl("div", { cls: "icon", text: tmpl.name === blankNameFor ? blankIconFor : tmplIconFor });
       card.createEl("div", { cls: "label", text: tmpl.name });
       card.addEventListener("click", () => this._createFromTemplate(tmpl.path, tmpl.name));
     }
@@ -1582,7 +1594,7 @@ class OfficeEditorView extends obsidian.FileView {
     // --- RECENT section ---
     wrapper.createEl("h2", { text: "Recent" });
     const recentFiles = this.app.vault.getFiles()
-      .filter((f) => f.extension === ext && !f.path.startsWith(templateDir + "/"))
+      .filter((f) => f.extension === ext && !f.path.startsWith(templatesRoot + "/"))
       .sort((a, b) => b.stat.mtime - a.stat.mtime)
       .slice(0, 20);
 
@@ -2327,34 +2339,12 @@ class SettingsTab extends obsidian.PluginSettingTab {
         }));
 
     new obsidian.Setting(containerEl)
-      .setName("Template directory (.docx)")
-      .setDesc("Folder for .docx templates (hidden from file explorer).")
+      .setName("Templates root")
+      .setDesc("Single folder for all templates. Per-format templates live under docx/, pptx/, xlsx/ subfolders. Hidden from file explorer.")
       .addText(t => t
-        .setValue(this.plugin.settings.templateDir || "_docx-templates")
+        .setValue(this.plugin.settings.templatesRoot || "_obsidi-office-templates")
         .onChange(async v => {
-          this.plugin.settings.templateDir = v;
-          await this.plugin.saveSettings();
-          this.plugin._injectTemplateDirCSS();
-        }));
-
-    new obsidian.Setting(containerEl)
-      .setName("Template directory (.pptx)")
-      .setDesc("Folder for .pptx templates (hidden from file explorer).")
-      .addText(t => t
-        .setValue(this.plugin.settings.pptxTemplateDir || "_pptx-templates")
-        .onChange(async v => {
-          this.plugin.settings.pptxTemplateDir = v;
-          await this.plugin.saveSettings();
-          this.plugin._injectTemplateDirCSS();
-        }));
-
-    new obsidian.Setting(containerEl)
-      .setName("Template directory (.xlsx)")
-      .setDesc("Folder for .xlsx templates (hidden from file explorer).")
-      .addText(t => t
-        .setValue(this.plugin.settings.xlsxTemplateDir || "_xlsx-templates")
-        .onChange(async v => {
-          this.plugin.settings.xlsxTemplateDir = v;
+          this.plugin.settings.templatesRoot = v;
           await this.plugin.saveSettings();
           this.plugin._injectTemplateDirCSS();
         }));
@@ -2447,60 +2437,90 @@ class SettingsTab extends obsidian.PluginSettingTab {
 // Standalone landing page â€” rendered without a FileView
 // ===========================================================================
 
+// Phase 7.5 — tabbed landing page with vertical scroll and per-tab search.
+// Tabs at top (Document / Presentation / Spreadsheet); each tab renders its
+// own template grid + searchable Recent table. Last-used tab is persisted
+// via plugin.settings.lastLandingTab. Recent search filters on basename +
+// sidecar (.docx.md/.pptx.md/.xlsx.md) frontmatter tags.
 function renderStandaloneLandingPage(containerEl, plugin) {
   containerEl.empty();
-  const wrapper = containerEl.createEl("div", { cls: "docx-landing" });
+  // Outer wrapper handles vertical scroll (fills the leaf, scrolls on
+  // overflow). Inner content keeps the max-width / centered layout.
+  const scrollEl = containerEl.createEl("div", { cls: "docx-landing-scroll" });
+  const wrapper = scrollEl.createEl("div", { cls: "docx-landing" });
 
   const style = wrapper.createEl("style");
   style.textContent =
+    ".docx-landing-scroll { height: 100%; overflow-y: auto; }" +
     ".docx-landing { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
     ".docx-landing h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
-    ".docx-landing h3 { font-size: 13px; font-weight: 600; margin: 0 0 8px; color: var(--text-muted); }" +
+    ".docx-landing .tab-strip { display: flex; gap: 4px; border-bottom: 1px solid var(--background-modifier-border); margin: 0 0 24px; }" +
+    ".docx-landing .tab { padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s, border-color 0.15s; }" +
+    ".docx-landing .tab:hover { color: var(--text-normal); }" +
+    ".docx-landing .tab.active { color: var(--text-normal); border-bottom-color: var(--interactive-accent); }" +
     ".docx-landing .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }" +
     ".docx-landing .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
     ".docx-landing .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
     ".docx-landing .template-card .icon { font-size: 32px; margin-bottom: 8px; }" +
     ".docx-landing .template-card .label { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }" +
+    ".docx-landing .recent-search { width: 100%; box-sizing: border-box; padding: 6px 10px; margin: 0 0 12px; border: 1px solid var(--background-modifier-border); border-radius: 4px; background: var(--background-primary); color: var(--text-normal); font-size: 13px; }" +
+    ".docx-landing .recent-search:focus { outline: none; border-color: var(--interactive-accent); }" +
     ".docx-landing .recent-table { width: 100%; border-collapse: collapse; }" +
     ".docx-landing .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
     ".docx-landing .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
     ".docx-landing .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
-    ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }" +
-    ".docx-landing .recent-table .ext { color: var(--text-muted); white-space: nowrap; width: 60px; font-family: var(--font-monospace); font-size: 11px; }";
+    ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
 
   const app = plugin.app;
-  const docxDir = plugin.settings.templateDir || "_docx-templates";
-  const pptxDir = plugin.settings.pptxTemplateDir || "_pptx-templates";
-  const xlsxDir = plugin.settings.xlsxTemplateDir || "_xlsx-templates";
+  const templatesRoot = plugin.settings.templatesRoot || "_obsidi-office-templates";
+  const FORMATS = [
+    { ext: "docx", label: "Document",     blankB64: BLANK_DOCX_BASE64, blankName: "Blank Document",     blankIcon: "\u{1F4C4}", tmplIcon: "\u{1F4DD}" },
+    { ext: "pptx", label: "Presentation", blankB64: BLANK_PPTX_BASE64, blankName: "Blank Presentation", blankIcon: "\u{1F4FD}️", tmplIcon: "\u{1F39E}️" },
+    { ext: "xlsx", label: "Spreadsheet",  blankB64: BLANK_XLSX_BASE64, blankName: "Blank Spreadsheet",  blankIcon: "\u{1F4CA}", tmplIcon: "\u{1F9EE}" },
+  ];
 
-  // Phase 8 — Per-format template renderer. Picks templates from `dir`,
-  // sorts blanks first, renders a grid, wires each card to FileNameModal
-  // with the right extension + blank-base64 fallback.
-  function renderTemplateSection(headingText, dir, ext, blankBase64, blankName) {
-    wrapper.createEl("h3", { text: headingText });
-    const grid = wrapper.createEl("div", { cls: "template-grid" });
+  // Tab strip + content area.
+  const tabStrip = wrapper.createEl("div", { cls: "tab-strip" });
+  const content = wrapper.createEl("div", { cls: "tab-content" });
+  const tabEls = {};
+
+  // Sidecar tag lookup — handles both array (`tags: [a, b]`) and
+  // string (`tags: "a b"`) frontmatter forms per Obsidian conventions.
+  // Strips the leading `#` if a user wrote inline-tag form.
+  function sidecarTagText(file) {
+    const sidecar = app.vault.getAbstractFileByPath(file.path + ".md");
+    if (!sidecar || !(sidecar instanceof obsidian.TFile)) return "";
+    const cache = app.metadataCache.getFileCache(sidecar);
+    const tags = cache && cache.frontmatter && cache.frontmatter.tags;
+    if (Array.isArray(tags)) return tags.map((t) => String(t).replace(/^#/, "")).join(" ");
+    if (typeof tags === "string") return tags.replace(/#/g, "");
+    return "";
+  }
+
+  function renderTab(fmt) {
+    content.empty();
+    const dir = templatesRoot + "/" + fmt.ext;
+    const dotExt = "." + fmt.ext;
+
+    // --- NEW (per-format templates) ---
+    content.createEl("h2", { text: "New" });
+    const grid = content.createEl("div", { cls: "template-grid" });
     const templates = [];
     for (const f of app.vault.getFiles()) {
-      if (f.path.startsWith(dir + "/") && f.extension === ext) {
+      if (f.path.startsWith(dir + "/") && f.extension === fmt.ext) {
         templates.push({ name: f.basename, path: f.path });
       }
     }
     templates.sort((a, b) => {
-      if (a.name === blankName) return -1;
-      if (b.name === blankName) return 1;
+      if (a.name === fmt.blankName) return -1;
+      if (b.name === fmt.blankName) return 1;
       return a.name.localeCompare(b.name);
     });
-    if (templates.length === 0) templates.push({ name: blankName, path: "" });
-
-    const dotExt = "." + ext;
-    // Phase 7 — 3-way map (docx/pptx/xlsx). Falls back to docx icons for any
-    // unknown extension (defensive; renderTemplateSection callers are static).
-    const blankIcon = ({ docx: "\u{1F4C4}", pptx: "\u{1F4FD}️", xlsx: "\u{1F4CA}" })[ext] || "\u{1F4C4}";  // page / film projector / bar chart
-    const tmplIcon  = ({ docx: "\u{1F4DD}", pptx: "\u{1F39E}️", xlsx: "\u{1F9EE}" })[ext] || "\u{1F4DD}";  // pencil / film frames / abacus
+    if (templates.length === 0) templates.push({ name: fmt.blankName, path: "" });
 
     for (const tmpl of templates) {
       const card = grid.createEl("div", { cls: "template-card" });
-      card.createEl("div", { cls: "icon", text: tmpl.name === blankName ? blankIcon : tmplIcon });
+      card.createEl("div", { cls: "icon", text: tmpl.name === fmt.blankName ? fmt.blankIcon : fmt.tmplIcon });
       card.createEl("div", { cls: "label", text: tmpl.name });
       card.addEventListener("click", () => {
         const modal = new FileNameModal(app, tmpl.name, async (filename) => {
@@ -2513,7 +2533,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
           if (tmpl.path && await app.vault.adapter.exists(tmpl.path)) {
             await app.vault.adapter.copy(tmpl.path, filename);
           } else {
-            const bytes = Uint8Array.from(atob(blankBase64), (c) => c.charCodeAt(0));
+            const bytes = Uint8Array.from(atob(fmt.blankB64), (c) => c.charCodeAt(0));
             await app.vault.adapter.writeBinary(filename, bytes);
           }
           new obsidian.Notice("Created: " + filename);
@@ -2526,49 +2546,81 @@ function renderStandaloneLandingPage(containerEl, plugin) {
         modal.open();
       });
     }
-  }
 
-  // --- NEW section ---
-  wrapper.createEl("h2", { text: "New" });
-  renderTemplateSection("Document", docxDir, "docx", BLANK_DOCX_BASE64, "Blank Document");
-  renderTemplateSection("Presentation", pptxDir, "pptx", BLANK_PPTX_BASE64, "Blank Presentation");
-  renderTemplateSection("Spreadsheet", xlsxDir, "xlsx", BLANK_XLSX_BASE64, "Blank Spreadsheet");
+    // --- RECENT (per-format, with search) ---
+    content.createEl("h2", { text: "Recent" });
+    const allRecent = app.vault.getFiles()
+      .filter((f) => f.extension === fmt.ext && !f.path.startsWith(templatesRoot + "/"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 100);  // wider window than Phase 7 (was 20) — search makes the longer list useful
 
-  // --- RECENT section (merged, sorted by mtime) ---
-  wrapper.createEl("h2", { text: "Recent" });
-  const recentFiles = app.vault.getFiles()
-    .filter((f) => (f.extension === "docx" || f.extension === "pptx" || f.extension === "xlsx") &&
-                   !f.path.startsWith(docxDir + "/") &&
-                   !f.path.startsWith(pptxDir + "/") &&
-                   !f.path.startsWith(xlsxDir + "/"))
-    .sort((a, b) => b.stat.mtime - a.stat.mtime)
-    .slice(0, 20);
+    if (allRecent.length === 0) {
+      content.createEl("p", { text: "No recent ." + fmt.ext + " files found." });
+      return;
+    }
 
-  if (recentFiles.length === 0) {
-    wrapper.createEl("p", { text: "No recent .docx, .pptx, or .xlsx files found." });
-  } else {
-    const table = wrapper.createEl("table", { cls: "recent-table" });
+    // Search input + pre-computed searchable text per file (basename +
+    // sidecar tags lower-cased).
+    const searchInput = content.createEl("input", { type: "text", cls: "recent-search", attr: { placeholder: "Filter by name or tag…" } });
+    const rowMeta = allRecent.map((f) => ({
+      file: f,
+      searchText: (f.basename + " " + sidecarTagText(f)).toLowerCase(),
+    }));
+
+    const table = content.createEl("table", { cls: "recent-table" });
     const thead = table.createEl("thead");
     const headerRow = thead.createEl("tr");
     headerRow.createEl("th", { text: "File" });
-    headerRow.createEl("th", { text: "Type", cls: "ext" });
     headerRow.createEl("th", { text: "Modified", cls: "date" });
     const tbody = table.createEl("tbody");
-    for (const f of recentFiles) {
+    const rows = [];
+    for (const m of rowMeta) {
       const row = tbody.createEl("tr");
-      row.createEl("td", { text: f.basename });
-      row.createEl("td", { text: "." + f.extension, cls: "ext" });
-      const date = new Date(f.stat.mtime);
+      row.createEl("td", { text: m.file.basename });
+      const date = new Date(m.file.stat.mtime);
       row.createEl("td", {
         text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
         cls: "date",
       });
       row.addEventListener("click", async () => {
         const leaf = app.workspace.getLeaf(true);
-        await leaf.openFile(f);  // Obsidian routes by registered extension
+        await leaf.openFile(m.file);  // Obsidian routes by registered extension
       });
+      rows.push({ row, meta: m });
     }
+
+    function applyFilter() {
+      const q = searchInput.value.trim().toLowerCase();
+      for (const r of rows) {
+        const hit = !q || r.meta.searchText.includes(q);
+        r.row.style.display = hit ? "" : "none";
+      }
+    }
+    searchInput.addEventListener("input", applyFilter);
+    searchInput.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { searchInput.value = ""; applyFilter(); }
+    });
   }
+
+  // Build tabs.
+  for (const fmt of FORMATS) {
+    const tab = tabStrip.createEl("div", { cls: "tab", text: fmt.label });
+    tab.addEventListener("click", async () => {
+      for (const t of Object.values(tabEls)) t.classList.remove("active");
+      tab.classList.add("active");
+      plugin.settings.lastLandingTab = fmt.ext;
+      await plugin.saveSettings();
+      renderTab(fmt);
+    });
+    tabEls[fmt.ext] = tab;
+  }
+
+  // Initial render — restore last-used tab, fall back to first format if
+  // the persisted setting is invalid.
+  const initialExt = plugin.settings.lastLandingTab || "docx";
+  const initialFmt = FORMATS.find((f) => f.ext === initialExt) || FORMATS[0];
+  tabEls[initialFmt.ext].classList.add("active");
+  renderTab(initialFmt);
 }
 
 // ===========================================================================
@@ -2792,6 +2844,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     });
 
     // Template directory setup
+    // Phase 7.5 — migrate legacy per-format folders (_docx-templates/
+    // _pptx-templates/_xlsx-templates) into the consolidated tree before
+    // seeding. Idempotent.
+    await this._migrateLegacyTemplateDirs();
     await this._initTemplateDir();
     this._injectTemplateDirCSS();
 
@@ -3165,37 +3221,77 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  // Phase 7.5 — consolidated template tree.
+  // Layout: <templatesRoot>/{docx,pptx,xlsx}/Blank *.{docx,pptx,xlsx}
   async _initTemplateDir() {
     const adapter = this.app.vault.adapter;
-    // Docx template dir + Blank Document.docx
-    const docxDir = this.settings.templateDir || "_docx-templates";
-    if (!(await adapter.exists(docxDir))) {
-      await adapter.mkdir(docxDir);
+    const root = this.settings.templatesRoot || "_obsidi-office-templates";
+    const specs = [
+      { sub: "docx", blankName: "Blank Document.docx",   b64: BLANK_DOCX_BASE64 },
+      { sub: "pptx", blankName: "Blank Presentation.pptx", b64: BLANK_PPTX_BASE64 },
+      { sub: "xlsx", blankName: "Blank Spreadsheet.xlsx", b64: BLANK_XLSX_BASE64 },
+    ];
+    if (!(await adapter.exists(root))) {
+      await adapter.mkdir(root);
     }
-    const blankDocxPath = docxDir + "/Blank Document.docx";
-    if (!(await adapter.exists(blankDocxPath))) {
-      const bytes = Uint8Array.from(atob(BLANK_DOCX_BASE64), (c) => c.charCodeAt(0));
-      await adapter.writeBinary(blankDocxPath, bytes);
+    for (const s of specs) {
+      const subDir = root + "/" + s.sub;
+      if (!(await adapter.exists(subDir))) {
+        await adapter.mkdir(subDir);
+      }
+      const blankPath = subDir + "/" + s.blankName;
+      if (!(await adapter.exists(blankPath))) {
+        const bytes = Uint8Array.from(atob(s.b64), (c) => c.charCodeAt(0));
+        await adapter.writeBinary(blankPath, bytes);
+      }
     }
-    // Phase 8 — Pptx template dir + Blank Presentation.pptx
-    const pptxDir = this.settings.pptxTemplateDir || "_pptx-templates";
-    if (!(await adapter.exists(pptxDir))) {
-      await adapter.mkdir(pptxDir);
+  }
+
+  // Phase 7.5 — migrate legacy per-format template folders into the
+  // consolidated tree. Idempotent: bails fast if no legacy folder exists.
+  // Runs in `onload` between `_migrateLegacyState` and `_initTemplateDir`.
+  async _migrateLegacyTemplateDirs() {
+    const adapter = this.app.vault.adapter;
+    const root = this.settings.templatesRoot || "_obsidi-office-templates";
+    // Legacy folder paths default to the Phase 7 defaults, but honor any
+    // setting key the user may have customized before upgrading.
+    const legacy = [
+      { sub: "docx", legacyKey: "templateDir",     legacyDefault: "_docx-templates" },
+      { sub: "pptx", legacyKey: "pptxTemplateDir", legacyDefault: "_pptx-templates" },
+      { sub: "xlsx", legacyKey: "xlsxTemplateDir", legacyDefault: "_xlsx-templates" },
+    ];
+    let migrated = 0;
+    for (const L of legacy) {
+      const legacyPath = (this.settings[L.legacyKey] || L.legacyDefault).replace(/\/+$/, "");
+      if (!(await adapter.exists(legacyPath))) continue;
+      // Ensure target subdir exists.
+      const targetSubDir = root + "/" + L.sub;
+      if (!(await adapter.exists(root))) await adapter.mkdir(root);
+      if (!(await adapter.exists(targetSubDir))) await adapter.mkdir(targetSubDir);
+      // Move every file in legacyPath into targetSubDir.
+      const listed = await adapter.list(legacyPath);
+      for (const filePath of listed.files) {
+        const baseName = filePath.split("/").pop();
+        const destPath = targetSubDir + "/" + baseName;
+        if (await adapter.exists(destPath)) {
+          // Conflict: keep target (which is most likely the canonical seed)
+          // and delete the legacy duplicate. Reseeding will overwrite later.
+          await adapter.remove(filePath);
+        } else {
+          await adapter.rename(filePath, destPath);
+        }
+        migrated++;
+      }
+      // Best-effort cleanup of the now-empty legacy folder.
+      try { await adapter.rmdir(legacyPath, true); } catch (e) { /* non-fatal */ }
+      // Clear the legacy setting key so this migration self-no-ops next run.
+      if (this.settings[L.legacyKey] !== undefined) {
+        delete this.settings[L.legacyKey];
+      }
     }
-    const blankPptxPath = pptxDir + "/Blank Presentation.pptx";
-    if (!(await adapter.exists(blankPptxPath))) {
-      const bytes = Uint8Array.from(atob(BLANK_PPTX_BASE64), (c) => c.charCodeAt(0));
-      await adapter.writeBinary(blankPptxPath, bytes);
-    }
-    // Phase 7 (xlsx) — Xlsx template dir + Blank Spreadsheet.xlsx
-    const xlsxDir = this.settings.xlsxTemplateDir || "_xlsx-templates";
-    if (!(await adapter.exists(xlsxDir))) {
-      await adapter.mkdir(xlsxDir);
-    }
-    const blankXlsxPath = xlsxDir + "/Blank Spreadsheet.xlsx";
-    if (!(await adapter.exists(blankXlsxPath))) {
-      const bytes = Uint8Array.from(atob(BLANK_XLSX_BASE64), (c) => c.charCodeAt(0));
-      await adapter.writeBinary(blankXlsxPath, bytes);
+    if (migrated > 0) {
+      dlog("migrated", migrated, "template file(s) into", root);
+      await this.saveSettings();
     }
   }
 
@@ -3207,13 +3303,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       style.id = styleId;
       document.head.appendChild(style);
     }
-    // Phase 7 — hide all three template dirs (docx + pptx + xlsx).
-    const docxDir = this.settings.templateDir || "_docx-templates";
-    const pptxDir = this.settings.pptxTemplateDir || "_pptx-templates";
-    const xlsxDir = this.settings.xlsxTemplateDir || "_xlsx-templates";
-    const hideDir = (d) =>
-      '.nav-folder-title[data-path="' + d + '"], .nav-folder-title[data-path="' + d + '"] + .nav-folder-children { display: none !important; }';
-    style.textContent = hideDir(docxDir) + " " + hideDir(pptxDir) + " " + hideDir(xlsxDir);
+    // Phase 7.5 — hide the single consolidated templates root. Children
+    // (docx/, pptx/, xlsx/, plus any user-added subfolders) are hidden by
+    // the nav-folder-children selector.
+    const root = this.settings.templatesRoot || "_obsidi-office-templates";
+    style.textContent =
+      '.nav-folder-title[data-path="' + root + '"], .nav-folder-title[data-path="' + root + '"] + .nav-folder-children { display: none !important; }';
   }
 
   _printDocument(images, pageMmW, pageMmH) {
