@@ -1630,18 +1630,23 @@ class OfficeEditorView extends obsidian.FileView {
         new obsidian.Notice('File "' + filename + '" already exists.');
         return;
       }
+      // Phase 8 (iPad fix) — read template bytes (or fall back to embedded
+      // blank), then write via vault.createBinary so the returned TFile is
+      // fully registered in Obsidian's metadata cache before we open it.
+      // Earlier code used adapter.writeBinary/copy + getAbstractFileByPath,
+      // which races on iPad's Capacitor adapter (registry hasn't refreshed,
+      // open throws "An error has occurred while opening the file").
+      // Phase 7 (xlsx) — format-aware base64 selection extended to 3-way map.
+      let buffer;
       if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
-        await this.app.vault.adapter.copy(templatePath, filename);
+        buffer = await this.app.vault.adapter.readBinary(templatePath);
       } else {
-        // Phase 8 — format-aware base64 selection. Docx + pptx blanks live as
-        // separate consts; the right one is selected by this.fileExtension.
-        const blankB64 = this.fileExtension === "pptx" ? BLANK_PPTX_BASE64 : BLANK_DOCX_BASE64;
-        const bytes = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0));
-        await this.app.vault.adapter.writeBinary(filename, bytes);
+        const blankB64 = ({ docx: BLANK_DOCX_BASE64, pptx: BLANK_PPTX_BASE64, xlsx: BLANK_XLSX_BASE64 })[ext] || BLANK_DOCX_BASE64;
+        buffer = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0)).buffer;
       }
+      const tfile = await this.app.vault.createBinary(filename, buffer);
       new obsidian.Notice("Created: " + filename);
-      const f = this.app.vault.getAbstractFileByPath(filename);
-      if (f && f instanceof obsidian.TFile) this._openFile(f);
+      this._openFile(tfile);
     }, dotExt);
     modal.open();
   }
@@ -2530,18 +2535,22 @@ function renderStandaloneLandingPage(containerEl, plugin) {
             new obsidian.Notice('File "' + filename + '" already exists.');
             return;
           }
+          // Phase 8 (iPad fix) — use vault.createBinary so the new TFile is
+          // fully registered before openFile() runs. Earlier code used
+          // adapter.writeBinary + getAbstractFileByPath, which races on
+          // iPad's Capacitor adapter (registry hasn't refreshed → openFile
+          // throws "An error has occurred while opening the file"). File
+          // got created either way, but the open path errored.
+          let buffer;
           if (tmpl.path && await app.vault.adapter.exists(tmpl.path)) {
-            await app.vault.adapter.copy(tmpl.path, filename);
+            buffer = await app.vault.adapter.readBinary(tmpl.path);
           } else {
-            const bytes = Uint8Array.from(atob(fmt.blankB64), (c) => c.charCodeAt(0));
-            await app.vault.adapter.writeBinary(filename, bytes);
+            buffer = Uint8Array.from(atob(fmt.blankB64), (c) => c.charCodeAt(0)).buffer;
           }
+          const tfile = await app.vault.createBinary(filename, buffer);
           new obsidian.Notice("Created: " + filename);
-          const f = app.vault.getAbstractFileByPath(filename);
-          if (f && f instanceof obsidian.TFile) {
-            const leaf = app.workspace.getLeaf(true);
-            await leaf.openFile(f);  // Obsidian routes by registered extension
-          }
+          const leaf = app.workspace.getLeaf(true);
+          await leaf.openFile(tfile);  // Obsidian routes by registered extension
         }, dotExt);
         modal.open();
       });
