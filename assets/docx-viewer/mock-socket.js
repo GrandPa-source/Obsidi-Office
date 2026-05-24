@@ -575,48 +575,102 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   // Scoped to: (a) cell engine only (asc_closeCellEditor present),
   // (b) within 15s of mock-socket load — covers init only, real errors
   // after that surface normally.
+  // Phase 8 hf3 — added instrumentation. Previous version (hf2) had no
+  // startup log, so an installer failure was invisible in the debug log.
+  // This revision logs entry, observe-success/fail, every match attempt,
+  // and dismissal outcome. Tagged "[xlsx-82]" for grep.
   (function installXlsxErrorDialogSuppressor() {
+    _slog("[xlsx-82] suppressor IIFE entry (hf3)");
     var SPURIOUS_TEXT = "An error has occurred while opening";
     var SCOPE_MS = 15000;
-    var observer = new MutationObserver(function (mutations) {
-      // Only suppress on cell engine. Check on each mutation because the
-      // editor isn't ready at install time.
-      if (!window.Asc || !window.Asc.editor) return;
-      if (typeof window.Asc.editor.asc_closeCellEditor !== "function") return;
-      for (var i = 0; i < mutations.length; i++) {
-        var m = mutations[i];
-        for (var j = 0; j < m.addedNodes.length; j++) {
-          var node = m.addedNodes[j];
-          if (node.nodeType !== 1) continue;
-          var text = node.textContent || "";
-          if (text.indexOf(SPURIOUS_TEXT) === -1) continue;
-          // Found it. Try to click an OK/Close button inside; if none,
-          // hide the node outright.
-          var btns = node.querySelectorAll("button, .btn");
-          var dismissed = false;
-          for (var k = 0; k < btns.length; k++) {
-            var b = btns[k];
-            var label = (b.textContent || "").trim().toLowerCase();
-            if (label === "ok" || label === "close" || label === "dismiss" || label === "cancel") {
-              try { b.click(); dismissed = true; break; } catch (_) {}
-            }
-          }
-          if (!dismissed) {
-            try {
-              // Fallback: click the first button, or hide the node.
-              if (btns.length > 0) { btns[0].click(); dismissed = true; }
-              else { node.style.display = "none"; dismissed = true; }
-            } catch (_) {}
-          }
-          _slog("suppressed xlsx engine -82 dialog (known minor): " +
-                (dismissed ? "dismissed" : "no-op"));
+    var matchCount = 0;
+    function tryDismiss(node) {
+      var btns = node.querySelectorAll ? node.querySelectorAll("button, .btn") : [];
+      var dismissed = false;
+      for (var k = 0; k < btns.length; k++) {
+        var b = btns[k];
+        var label = (b.textContent || "").trim().toLowerCase();
+        if (label === "ok" || label === "close" || label === "dismiss" || label === "cancel") {
+          try { b.click(); dismissed = true; break; } catch (_) {}
         }
       }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
+      if (!dismissed) {
+        try {
+          if (btns.length > 0) { btns[0].click(); dismissed = true; }
+          else { node.style.display = "none"; dismissed = true; }
+        } catch (_) {}
+      }
+      return dismissed;
+    }
+    function checkNode(node) {
+      if (!node || node.nodeType !== 1) return;
+      var text = node.textContent || "";
+      if (text.indexOf(SPURIOUS_TEXT) === -1) return;
+      matchCount++;
+      // Only act on cell engine. If engine not yet ready, still log the
+      // match — useful for diagnosing when the dialog fires before the
+      // editor object is exposed.
+      var hasCellEngine = !!(window.Asc && window.Asc.editor &&
+        typeof window.Asc.editor.asc_closeCellEditor === "function");
+      if (!hasCellEngine) {
+        _slog("[xlsx-82] dialog text matched but cell engine not ready yet (match #" + matchCount + ", textLen=" + text.length + ")");
+        // Still try to dismiss — desktop docx/pptx never produce this
+        // exact text, so false positives are very unlikely.
+        var d1 = tryDismiss(node);
+        _slog("[xlsx-82] pre-engine dismiss: " + (d1 ? "ok" : "failed"));
+        return;
+      }
+      var d = tryDismiss(node);
+      _slog("[xlsx-82] suppressed dialog (match #" + matchCount + "): " + (d ? "dismissed" : "no-op"));
+    }
+    var observer;
+    try {
+      observer = new MutationObserver(function (mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+          var m = mutations[i];
+          for (var j = 0; j < m.addedNodes.length; j++) {
+            checkNode(m.addedNodes[j]);
+          }
+        }
+      });
+    } catch (eCtor) {
+      _slog("[xlsx-82] MutationObserver ctor threw: " + (eCtor && eCtor.message));
+      return;
+    }
+    if (!document.body) {
+      _slog("[xlsx-82] document.body is null at install time — skipping observer");
+      return;
+    }
+    try {
+      observer.observe(document.body, { childList: true, subtree: true });
+      _slog("[xlsx-82] observer active (body present, scope=" + SCOPE_MS + "ms)");
+    } catch (eObs) {
+      _slog("[xlsx-82] observe() threw: " + (eObs && eObs.message));
+      return;
+    }
+    // Also scan any nodes that may already be in the DOM (in case the
+    // dialog rendered before we installed). Cheap one-time sweep.
+    try {
+      var existing = document.body.querySelectorAll("*");
+      for (var i = 0; i < existing.length; i++) {
+        var el = existing[i];
+        var t = el.textContent || "";
+        if (t.length < SPURIOUS_TEXT.length || t.indexOf(SPURIOUS_TEXT) === -1) continue;
+        // Skip elements whose descendants also match (avoid double-dismiss)
+        var hasMatchingChild = false;
+        for (var c = 0; c < el.children.length; c++) {
+          var ct = el.children[c].textContent || "";
+          if (ct.indexOf(SPURIOUS_TEXT) !== -1) { hasMatchingChild = true; break; }
+        }
+        if (hasMatchingChild) continue;
+        checkNode(el);
+      }
+    } catch (eSweep) {
+      _slog("[xlsx-82] initial sweep threw: " + (eSweep && eSweep.message));
+    }
     setTimeout(function () {
       observer.disconnect();
-      _slog("xlsx -82 dialog suppressor disconnected (init window closed)");
+      _slog("[xlsx-82] suppressor disconnected (init window closed, totalMatches=" + matchCount + ")");
     }, SCOPE_MS);
   })();
 
