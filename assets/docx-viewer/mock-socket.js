@@ -560,6 +560,66 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }, 10000);
   }, true);
 
+  // --- xlsx engine spurious -82 dialog suppressor (Phase 8 hotfix) ---
+  // The cell engine throws an internal TypeError at sdk-all-min.js:2019
+  // (chart-init reads property on null) during initial load of any xlsx
+  // doc. On desktop this throws as an Uncaught console error and surfaces
+  // nothing user-facing. On iPad's WKWebView the same error gets caught
+  // and converted to an onError event with code -82 ("An error has
+  // occurred while opening the file"), which the spreadsheeteditor
+  // renders as a modal dialog blocking the editor. The engine recovers
+  // and fires onDocumentReady within ~400ms — the dialog is spurious.
+  //
+  // Patching the underlying engine bug requires modifying minified sdkjs.
+  // Instead, watch document.body for the dialog node and auto-dismiss it.
+  // Scoped to: (a) cell engine only (asc_closeCellEditor present),
+  // (b) within 15s of mock-socket load — covers init only, real errors
+  // after that surface normally.
+  (function installXlsxErrorDialogSuppressor() {
+    var SPURIOUS_TEXT = "An error has occurred while opening";
+    var SCOPE_MS = 15000;
+    var observer = new MutationObserver(function (mutations) {
+      // Only suppress on cell engine. Check on each mutation because the
+      // editor isn't ready at install time.
+      if (!window.Asc || !window.Asc.editor) return;
+      if (typeof window.Asc.editor.asc_closeCellEditor !== "function") return;
+      for (var i = 0; i < mutations.length; i++) {
+        var m = mutations[i];
+        for (var j = 0; j < m.addedNodes.length; j++) {
+          var node = m.addedNodes[j];
+          if (node.nodeType !== 1) continue;
+          var text = node.textContent || "";
+          if (text.indexOf(SPURIOUS_TEXT) === -1) continue;
+          // Found it. Try to click an OK/Close button inside; if none,
+          // hide the node outright.
+          var btns = node.querySelectorAll("button, .btn");
+          var dismissed = false;
+          for (var k = 0; k < btns.length; k++) {
+            var b = btns[k];
+            var label = (b.textContent || "").trim().toLowerCase();
+            if (label === "ok" || label === "close" || label === "dismiss" || label === "cancel") {
+              try { b.click(); dismissed = true; break; } catch (_) {}
+            }
+          }
+          if (!dismissed) {
+            try {
+              // Fallback: click the first button, or hide the node.
+              if (btns.length > 0) { btns[0].click(); dismissed = true; }
+              else { node.style.display = "none"; dismissed = true; }
+            } catch (_) {}
+          }
+          _slog("suppressed xlsx engine -82 dialog (known minor): " +
+                (dismissed ? "dismissed" : "no-op"));
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    setTimeout(function () {
+      observer.disconnect();
+      _slog("xlsx -82 dialog suppressor disconnected (init window closed)");
+    }, SCOPE_MS);
+  })();
+
   // --- Ctrl+P interceptor (print) ---
   // Capture phase + stopImmediatePropagation so OnlyOffice's own Ctrl+P
   // (which would open its in-editor print modal) doesn't fire.
