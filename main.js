@@ -2568,13 +2568,10 @@ function renderStandaloneLandingPage(containerEl, plugin) {
       return;
     }
 
-    // Search input + pre-computed searchable text per file (basename +
-    // sidecar tags lower-cased).
+    // Search input. searchText is recomputed dynamically on each filter
+    // call (see applyFilter below) so tag edits via the Metadata modal
+    // after landing render are picked up without manual re-render.
     const searchInput = content.createEl("input", { type: "text", cls: "recent-search", attr: { placeholder: "Filter by name or tag…" } });
-    const rowMeta = allRecent.map((f) => ({
-      file: f,
-      searchText: (f.basename + " " + sidecarTagText(f)).toLowerCase(),
-    }));
 
     const table = content.createEl("table", { cls: "recent-table" });
     const thead = table.createEl("thead");
@@ -2583,25 +2580,33 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     headerRow.createEl("th", { text: "Modified", cls: "date" });
     const tbody = table.createEl("tbody");
     const rows = [];
-    for (const m of rowMeta) {
+    for (const f of allRecent) {
       const row = tbody.createEl("tr");
-      row.createEl("td", { text: m.file.basename });
-      const date = new Date(m.file.stat.mtime);
+      row.createEl("td", { text: f.basename });
+      const date = new Date(f.stat.mtime);
       row.createEl("td", {
         text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
         cls: "date",
       });
       row.addEventListener("click", async () => {
         const leaf = app.workspace.getLeaf(true);
-        await leaf.openFile(m.file);  // Obsidian routes by registered extension
+        await leaf.openFile(f);  // Obsidian routes by registered extension
       });
-      rows.push({ row, meta: m });
+      rows.push({ row, file: f });
     }
 
     function applyFilter() {
       const q = searchInput.value.trim().toLowerCase();
       for (const r of rows) {
-        const hit = !q || r.meta.searchText.includes(q);
+        // Phase 7.5 follow-up: recompute searchText dynamically on each
+        // keystroke rather than caching at render time. Sidecar tags
+        // edited via the Metadata modal AFTER the landing page was
+        // already open would otherwise be invisible until the user
+        // manually re-renders (switch tabs and back, or reopen ribbon).
+        // sidecarTagText is O(1) metadataCache hash access per row —
+        // cheap even for 100 rows on every keystroke.
+        const fresh = (r.file.basename + " " + sidecarTagText(r.file)).toLowerCase();
+        const hit = !q || fresh.includes(q);
         r.row.style.display = hit ? "" : "none";
       }
     }
