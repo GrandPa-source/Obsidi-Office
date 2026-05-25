@@ -1556,7 +1556,7 @@ class OfficeEditorView extends obsidian.FileView {
       "." + cls + " .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
       "." + cls + " .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
       "." + cls + " .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
-      "." + cls + " .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
+      "." + cls + " .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 180px; }";
 
     // --- NEW section ---
     wrapper.createEl("h2", { text: "New" });
@@ -1612,7 +1612,7 @@ class OfficeEditorView extends obsidian.FileView {
         row.createEl("td", { text: f.basename });
         const date = new Date(f.stat.mtime);
         row.createEl("td", {
-          text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+          text: date.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
           cls: "date",
         });
         row.addEventListener("click", () => this._openFile(f));
@@ -2485,7 +2485,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     ".docx-landing .recent-table th { text-align: left; padding: 6px 12px; border-bottom: 2px solid var(--background-modifier-border); font-size: 12px; color: var(--text-muted); font-weight: 600; }" +
     ".docx-landing .recent-table td { padding: 8px 12px; border-bottom: 1px solid var(--background-modifier-border); font-size: 13px; cursor: pointer; }" +
     ".docx-landing .recent-table tr:hover td { background: var(--background-modifier-hover); }" +
-    ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 140px; }";
+    ".docx-landing .recent-table .date { color: var(--text-muted); white-space: nowrap; width: 180px; }";
 
   const app = plugin.app;
   const templatesRoot = plugin.settings.templatesRoot || "_obsidi-office-templates";
@@ -2712,7 +2712,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
       const tagFlex = tagCell.createEl("div", { cls: "tag-cell" });
       const date = new Date(f.stat.mtime);
       row.createEl("td", {
-        text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
+        text: date.toLocaleString("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }),
         cls: "date",
       });
       row.addEventListener("click", (ev) => {
