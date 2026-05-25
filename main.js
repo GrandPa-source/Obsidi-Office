@@ -3142,15 +3142,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
               mdLeaf = leaf;
             }
           });
-          if (mdLeaf) {
-            mdLeaf.detach();
-            dlog("sidecar redirect: detached .md leaf");
-          }
-          // Explicitly create a new tab — getLeaf("tab") guarantees a
-          // fresh leaf rather than reusing the active one.
+          // Phase 7.6 hf4: hf3 detached BEFORE opening, which killed the
+          // tab group when the .md was the only leaf in its group →
+          // getLeaf("tab") then failed with "No tab group found".
+          // Reorder: open new tab WHILE .md leaf still anchors the group,
+          // then detach .md after the new view is mounted.
           let newLeaf;
           try { newLeaf = this.app.workspace.getLeaf("tab"); }
           catch (_) { newLeaf = this.app.workspace.getLeaf(true); }
+          // Safety: if getLeaf returned the .md leaf itself (shouldn't
+          // with "tab" arg, but defend anyway), force a split.
+          if (newLeaf === mdLeaf) {
+            try { newLeaf = this.app.workspace.getLeaf("split"); }
+            catch (_) { newLeaf = this.app.workspace.getLeaf(true); }
+          }
           await newLeaf.setViewState({ type: viewType, active: true });
           const view = newLeaf.view;
           if (view && typeof view.onLoadFile === "function") {
@@ -3159,6 +3164,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           } else {
             dlog("sidecar redirect: view has no onLoadFile:",
                  view ? view.getViewType() : "null");
+          }
+          // Detach AFTER the new leaf is mounted + loaded, so the tab
+          // group still exists when getLeaf("tab") runs above.
+          if (mdLeaf && mdLeaf !== newLeaf) {
+            try {
+              mdLeaf.detach();
+              dlog("sidecar redirect: detached .md leaf");
+            } catch (detachErr) {
+              // Obsidian's onUnloadFile may throw "Field is not present
+              // in this state" — non-fatal noise from its history-save
+              // path. The leaf still detaches.
+              dlog("sidecar redirect: detach threw (non-fatal):",
+                   detachErr && detachErr.message);
+            }
           }
         };
         // Defer to next tick so the original file-open mount completes
