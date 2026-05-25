@@ -3156,15 +3156,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
             try { newLeaf = this.app.workspace.getLeaf("split"); }
             catch (_) { newLeaf = this.app.workspace.getLeaf(true); }
           }
-          await newLeaf.setViewState({ type: viewType, active: true });
-          const view = newLeaf.view;
-          if (view && typeof view.onLoadFile === "function") {
-            await view.onLoadFile(parent);
-            dlog("sidecar redirect: opened", parentPath, "as", viewType);
-          } else {
-            dlog("sidecar redirect: view has no onLoadFile:",
-                 view ? view.getViewType() : "null");
-          }
+          // Phase 7.6 hf5: hf4's setViewState({type, active: true}) without
+          // a file in state caused Obsidian to construct the DocxView,
+          // fire onOpen, then immediately collapse the view back to
+          // "empty" type. Console fingerprint: construct → onOpen
+          // hasFile:false → removed docKey → view.getViewType() === "empty"
+          // when we tried to call onLoadFile.
+          //
+          // Switch to leaf.openFile(parent), the canonical Obsidian
+          // navigation that auto-routes by registered extension. Same
+          // path as clicking the file in the file explorer — should
+          // construct DocxView AND load the file in one atomic operation.
+          await newLeaf.openFile(parent);
+          dlog("sidecar redirect: opened", parentPath, "via openFile");
           // Detach AFTER the new leaf is mounted + loaded, so the tab
           // group still exists when getLeaf("tab") runs above.
           if (mdLeaf && mdLeaf !== newLeaf) {
