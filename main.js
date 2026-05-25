@@ -3107,11 +3107,24 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // actually received the open) and (b) explicit setViewState to force
     // the office view type — openFile() alone leaves the markdown view
     // attached and the file-open handler can race the view's mount.
+    // Phase 7.6 hf6 dedup: Obsidian fires file-open twice for the same
+    // sidecar (once for activation, once for view load) within a few ms.
+    // Without this set the second fire spawns a duplicate office leaf
+    // that the existing duplicate-leaf detection then kills — works but
+    // noisy. Hold each sidecar path for 1.5s to suppress the second
+    // fire silently.
+    const _inFlightSidecars = new Set();
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (!file || !file.path) return;
         const m = file.path.match(/^(.+\.(docx|pptx|xlsx))\.md$/i);
         if (!m) return;
+        if (_inFlightSidecars.has(file.path)) {
+          dlog("sidecar redirect: dedup skip", file.path);
+          return;
+        }
+        _inFlightSidecars.add(file.path);
+        setTimeout(() => _inFlightSidecars.delete(file.path), 1500);
         dlog("sidecar redirect: detected", file.path);
         const parentPath = m[1];
         const parent = this.app.vault.getAbstractFileByPath(parentPath);
