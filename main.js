@@ -2460,9 +2460,20 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     ".docx-landing { padding: 24px 32px; font-family: var(--font-interface); color: var(--text-normal); max-width: 900px; margin: 0 auto; }" +
     ".docx-landing h2 { font-size: 16px; font-weight: 600; margin: 0 0 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }" +
     ".docx-landing .tab-strip { display: flex; gap: 4px; border-bottom: 1px solid var(--background-modifier-border); margin: 0 0 24px; }" +
+    ".docx-landing .tab-strip .tabs-left { display: flex; gap: 4px; }" +
+    ".docx-landing .tab-strip .tabs-right { display: flex; gap: 4px; margin-left: auto; }" +
     ".docx-landing .tab { padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-muted); border-bottom: 2px solid transparent; margin-bottom: -1px; transition: color 0.15s, border-color 0.15s; }" +
     ".docx-landing .tab:hover { color: var(--text-normal); }" +
     ".docx-landing .tab.active { color: var(--text-normal); border-bottom-color: var(--interactive-accent); }" +
+    ".docx-landing .search-wrapper { position: relative; }" +
+    ".docx-landing .search-suggestions { position: absolute; top: 100%; left: 0; right: 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-top: none; border-radius: 0 0 4px 4px; max-height: 200px; overflow-y: auto; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: none; }" +
+    ".docx-landing .search-suggestions.visible { display: block; }" +
+    ".docx-landing .search-suggestion { padding: 6px 10px; cursor: pointer; font-size: 13px; color: var(--text-normal); }" +
+    ".docx-landing .search-suggestion:hover, .docx-landing .search-suggestion.active { background: var(--background-modifier-hover); }" +
+    ".docx-landing .search-suggestion .hash { color: var(--text-muted); margin-right: 2px; }" +
+    ".docx-landing .tag-cell { display: flex; flex-wrap: wrap; gap: 4px; max-width: 280px; }" +
+    ".docx-landing .tag-pill { display: inline-block; padding: 2px 8px; border-radius: 10px; background: var(--background-modifier-border); color: var(--text-muted); font-size: 11px; line-height: 16px; white-space: nowrap; }" +
+    ".docx-landing .recent-table .type-col { color: var(--text-muted); white-space: nowrap; width: 60px; font-family: var(--font-monospace); font-size: 11px; }" +
     ".docx-landing .template-grid { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 24px; }" +
     ".docx-landing .template-card { width: 120px; padding: 16px 12px; border: 1px solid var(--background-modifier-border); border-radius: 8px; cursor: pointer; text-align: center; transition: border-color 0.15s, background 0.15s; }" +
     ".docx-landing .template-card:hover { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }" +
@@ -2491,15 +2502,94 @@ function renderStandaloneLandingPage(containerEl, plugin) {
 
   // Sidecar tag lookup — handles both array (`tags: [a, b]`) and
   // string (`tags: "a b"`) frontmatter forms per Obsidian conventions.
-  // Strips the leading `#` if a user wrote inline-tag form.
-  function sidecarTagText(file) {
+  // Strips the leading `#` if a user wrote inline-tag form. Returns an
+  // array of tag strings (case-preserved, # stripped). Empty array if no
+  // sidecar or no tags.
+  function sidecarTagArray(file) {
     const sidecar = app.vault.getAbstractFileByPath(file.path + ".md");
-    if (!sidecar || !(sidecar instanceof obsidian.TFile)) return "";
+    if (!sidecar || !(sidecar instanceof obsidian.TFile)) return [];
     const cache = app.metadataCache.getFileCache(sidecar);
     const tags = cache && cache.frontmatter && cache.frontmatter.tags;
-    if (Array.isArray(tags)) return tags.map((t) => String(t).replace(/^#/, "")).join(" ");
-    if (typeof tags === "string") return tags.replace(/#/g, "");
-    return "";
+    if (Array.isArray(tags)) return tags.map((t) => String(t).replace(/^#/, ""));
+    if (typeof tags === "string") return tags.split(/[\s,]+/).map((t) => t.replace(/^#/, "")).filter(Boolean);
+    return [];
+  }
+  // Back-compat thin wrapper — returns space-joined lowercased text.
+  function sidecarTagText(file) {
+    return sidecarTagArray(file).join(" ");
+  }
+
+  // Phase 7.6 — collect unique tag set across all sidecars in the vault.
+  // Used for the `#` autocomplete dropdown. Scope: only ObsidiOffice
+  // sidecars (.docx.md/.pptx.md/.xlsx.md) so suggestions can't lead to
+  // tags that don't match any office file.
+  function allSidecarTags() {
+    const set = new Set();
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (!/\.(docx|pptx|xlsx)\.md$/i.test(f.path)) continue;
+      const cache = app.metadataCache.getFileCache(f);
+      const tags = cache && cache.frontmatter && cache.frontmatter.tags;
+      if (Array.isArray(tags)) tags.forEach((t) => set.add(String(t).replace(/^#/, "")));
+      else if (typeof tags === "string") {
+        tags.split(/[\s,]+/).forEach((t) => { const c = t.replace(/^#/, ""); if (c) set.add(c); });
+      }
+    }
+    return Array.from(set).sort();
+  }
+
+  // Phase 7.6 — parse search query into a structured filter spec.
+  // Input examples:
+  //   "report"               → name tokens: ["report"], tag tokens: []
+  //   "#draft"               → name tokens: [],          tag tokens: ["draft"]
+  //   "report, #draft, #q2"  → name tokens: ["report"], tag tokens: ["draft","q2"]
+  //   "#draft  report"       → name tokens: ["report"], tag tokens: ["draft"]  (whitespace also splits)
+  // AND semantics across all tokens (all must match a row).
+  // Also returns the in-progress `#` token (if any) for the autocomplete:
+  //   "report, #dra" with cursor at end → activeTagPrefix: "dra"
+  function parseFilterQuery(raw, cursorPos) {
+    const q = raw || "";
+    const tokens = q.split(/[\s,]+/).filter(Boolean);
+    const nameTokens = [];
+    const tagTokens = [];
+    for (const t of tokens) {
+      if (t.startsWith("#")) {
+        const inner = t.slice(1).toLowerCase();
+        if (inner) tagTokens.push(inner);
+      } else {
+        nameTokens.push(t.toLowerCase());
+      }
+    }
+    // Active tag prefix: if the substring immediately to the left of
+    // cursorPos starts with # and contains no comma/space, that's the
+    // partial tag being typed.
+    let activeTagPrefix = null;
+    if (typeof cursorPos === "number") {
+      const before = q.slice(0, cursorPos);
+      const lastBreak = Math.max(before.lastIndexOf(","), before.lastIndexOf(" "));
+      const lastToken = before.slice(lastBreak + 1);
+      if (lastToken.startsWith("#")) {
+        activeTagPrefix = lastToken.slice(1).toLowerCase();
+      }
+    }
+    return { nameTokens, tagTokens, activeTagPrefix, rawLength: q.length };
+  }
+
+  // Phase 7.6 — match a file against a parsed query.
+  // - Name tokens: substring match against basename (lowercase, AND across all).
+  // - Tag tokens: substring match against any tag in the file's sidecar
+  //   (lowercase, AND across all — each tag-token must hit at least one tag).
+  function matchAgainstQuery(file, parsed) {
+    const basename = file.basename.toLowerCase();
+    for (const nt of parsed.nameTokens) {
+      if (!basename.includes(nt)) return false;
+    }
+    if (parsed.tagTokens.length > 0) {
+      const tags = sidecarTagArray(file).map((t) => t.toLowerCase());
+      for (const tt of parsed.tagTokens) {
+        if (!tags.some((t) => t.includes(tt))) return false;
+      }
+    }
+    return true;
   }
 
   function renderTab(fmt) {
@@ -2556,7 +2646,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
       });
     }
 
-    // --- RECENT (per-format, with search) ---
+    // --- RECENT (per-format, with search + tag pills) ---
     content.createEl("h2", { text: "Recent" });
     const allRecent = app.vault.getFiles()
       .filter((f) => f.extension === fmt.ext && !f.path.startsWith(templatesRoot + "/"))
@@ -2568,57 +2658,181 @@ function renderStandaloneLandingPage(containerEl, plugin) {
       return;
     }
 
-    // Search input. searchText is recomputed dynamically on each filter
-    // call (see applyFilter below) so tag edits via the Metadata modal
-    // after landing render are picked up without manual re-render.
-    const searchInput = content.createEl("input", { type: "text", cls: "recent-search", attr: { placeholder: "Filter by name or tag…" } });
+    renderRecentTable(content, allRecent, { showTypeCol: false });
+  }
 
-    const table = content.createEl("table", { cls: "recent-table" });
+  // Phase 7.6 — Search tab. Cross-format Recent table (docx + pptx + xlsx
+  // merged), with a Type column showing extension. No template section.
+  function renderSearchTab() {
+    content.empty();
+    content.createEl("h2", { text: "Search all documents" });
+    const allRecent = app.vault.getFiles()
+      .filter((f) => (f.extension === "docx" || f.extension === "pptx" || f.extension === "xlsx") &&
+                     !f.path.startsWith(templatesRoot + "/"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 200);  // wider than per-format; this view is purpose-built for search
+
+    if (allRecent.length === 0) {
+      content.createEl("p", { text: "No .docx, .pptx, or .xlsx files found." });
+      return;
+    }
+
+    renderRecentTable(content, allRecent, { showTypeCol: true });
+  }
+
+  // Phase 7.6 — Shared renderer: search input + tag-pill column + dynamic
+  // filter with comma-stacking AND-semantics and `#` autocomplete. Used by
+  // both per-format tab Recent sections and the Search tab.
+  function renderRecentTable(host, files, opts) {
+    const showTypeCol = !!(opts && opts.showTypeCol);
+    const searchWrapper = host.createEl("div", { cls: "search-wrapper" });
+    const searchInput = searchWrapper.createEl("input", {
+      type: "text",
+      cls: "recent-search",
+      attr: { placeholder: "Filter by name or tag (use # for tag, comma to add)…" },
+    });
+    const suggestionsEl = searchWrapper.createEl("div", { cls: "search-suggestions" });
+
+    const table = host.createEl("table", { cls: "recent-table" });
     const thead = table.createEl("thead");
     const headerRow = thead.createEl("tr");
     headerRow.createEl("th", { text: "File" });
+    headerRow.createEl("th", { text: "Tags" });
     headerRow.createEl("th", { text: "Modified", cls: "date" });
+
     const tbody = table.createEl("tbody");
-    const rows = [];
-    for (const f of allRecent) {
+    const rows = [];  // [{row, file, tagCell}]
+    for (const f of files) {
       const row = tbody.createEl("tr");
-      row.createEl("td", { text: f.basename });
+      // Phase 7.6 hotfix: on the Search tab (showTypeCol=true) append the
+      // extension to the filename instead of a separate Type column —
+      // saves a column for the Tags pill cell on the cross-format view.
+      row.createEl("td", { text: showTypeCol ? f.name : f.basename });
+      const tagCell = row.createEl("td");
+      const tagFlex = tagCell.createEl("div", { cls: "tag-cell" });
       const date = new Date(f.stat.mtime);
       row.createEl("td", {
         text: date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
         cls: "date",
       });
-      row.addEventListener("click", async () => {
+      row.addEventListener("click", (ev) => {
+        // Don't navigate when user clicks a tag pill or the suggestion dropdown.
+        if (ev.target && ev.target.closest && ev.target.closest(".tag-pill")) return;
         const leaf = app.workspace.getLeaf(true);
-        await leaf.openFile(f);  // Obsidian routes by registered extension
+        leaf.openFile(f);  // Obsidian routes by registered extension
       });
-      rows.push({ row, file: f });
+      rows.push({ row, file: f, tagFlex });
+    }
+
+    function renderRowPills(r) {
+      r.tagFlex.empty();
+      const tags = sidecarTagArray(r.file);
+      for (const t of tags) {
+        r.tagFlex.createSpan({ cls: "tag-pill", text: t });
+      }
+    }
+    // Initial pill render.
+    for (const r of rows) renderRowPills(r);
+
+    // Autocomplete state.
+    let activeSuggestionIdx = -1;
+    let currentSuggestions = [];
+    function hideSuggestions() {
+      suggestionsEl.classList.remove("visible");
+      suggestionsEl.empty();
+      activeSuggestionIdx = -1;
+      currentSuggestions = [];
+    }
+    function showSuggestionsFor(prefix) {
+      const allTags = allSidecarTags();
+      const matches = allTags.filter((t) => t.toLowerCase().includes(prefix)).slice(0, 8);
+      if (matches.length === 0) { hideSuggestions(); return; }
+      suggestionsEl.empty();
+      currentSuggestions = matches;
+      activeSuggestionIdx = -1;
+      matches.forEach((tag, i) => {
+        const s = suggestionsEl.createEl("div", { cls: "search-suggestion" });
+        s.createSpan({ cls: "hash", text: "#" });
+        s.createSpan({ text: tag });
+        s.addEventListener("mousedown", (e) => {
+          // mousedown (not click) so it fires before the input's blur.
+          e.preventDefault();
+          insertTagAtCursor(tag);
+        });
+      });
+      suggestionsEl.classList.add("visible");
+    }
+    function insertTagAtCursor(tag) {
+      const pos = searchInput.selectionStart || 0;
+      const before = searchInput.value.slice(0, pos);
+      const after = searchInput.value.slice(pos);
+      const lastBreak = Math.max(before.lastIndexOf(","), before.lastIndexOf(" "));
+      const head = before.slice(0, lastBreak + 1);
+      const tail = head.length === 0 ? "" : (head.endsWith(" ") || head.endsWith(",") ? " " : "");
+      searchInput.value = head + (head ? tail : "") + "#" + tag + (after.startsWith(" ") ? "" : ", ") + after.replace(/^[\s,]+/, "");
+      searchInput.focus();
+      // Place cursor after the inserted tag + ", "
+      const newPos = (head + (head ? tail : "") + "#" + tag + ", ").length;
+      searchInput.setSelectionRange(newPos, newPos);
+      hideSuggestions();
+      applyFilter();
     }
 
     function applyFilter() {
-      const q = searchInput.value.trim().toLowerCase();
+      const cursorPos = searchInput.selectionStart || 0;
+      const parsed = parseFilterQuery(searchInput.value, cursorPos);
       for (const r of rows) {
-        // Phase 7.5 follow-up: recompute searchText dynamically on each
-        // keystroke rather than caching at render time. Sidecar tags
-        // edited via the Metadata modal AFTER the landing page was
-        // already open would otherwise be invisible until the user
-        // manually re-renders (switch tabs and back, or reopen ribbon).
-        // sidecarTagText is O(1) metadataCache hash access per row —
-        // cheap even for 100 rows on every keystroke.
-        const fresh = (r.file.basename + " " + sidecarTagText(r.file)).toLowerCase();
-        const hit = !q || fresh.includes(q);
+        // Always refresh pills — sidecar tag edits made after render
+        // should reflect immediately on next interaction.
+        renderRowPills(r);
+        const hit = matchAgainstQuery(r.file, parsed);
         r.row.style.display = hit ? "" : "none";
+      }
+      // Autocomplete: show suggestions if cursor is in a # token.
+      if (parsed.activeTagPrefix !== null) {
+        showSuggestionsFor(parsed.activeTagPrefix);
+      } else {
+        hideSuggestions();
       }
     }
     searchInput.addEventListener("input", applyFilter);
+    searchInput.addEventListener("focus", applyFilter);
+    searchInput.addEventListener("blur", () => setTimeout(hideSuggestions, 150));
     searchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { searchInput.value = ""; applyFilter(); }
+      if (e.key === "Escape") {
+        if (suggestionsEl.classList.contains("visible")) hideSuggestions();
+        else { searchInput.value = ""; applyFilter(); }
+        return;
+      }
+      if (!suggestionsEl.classList.contains("visible")) return;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        activeSuggestionIdx = Math.min(currentSuggestions.length - 1, activeSuggestionIdx + 1);
+        updateActiveSuggestion();
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        activeSuggestionIdx = Math.max(0, activeSuggestionIdx - 1);
+        updateActiveSuggestion();
+      } else if (e.key === "Enter" && activeSuggestionIdx >= 0) {
+        e.preventDefault();
+        insertTagAtCursor(currentSuggestions[activeSuggestionIdx]);
+      } else if (e.key === "Tab" && currentSuggestions.length > 0) {
+        e.preventDefault();
+        const idx = activeSuggestionIdx >= 0 ? activeSuggestionIdx : 0;
+        insertTagAtCursor(currentSuggestions[idx]);
+      }
     });
+    function updateActiveSuggestion() {
+      const items = suggestionsEl.querySelectorAll(".search-suggestion");
+      items.forEach((el, i) => el.classList.toggle("active", i === activeSuggestionIdx));
+    }
   }
 
-  // Build tabs.
+  // Build tabs. Left group: format tabs. Right group: Search tab.
+  const tabsLeft = tabStrip.createEl("div", { cls: "tabs-left" });
+  const tabsRight = tabStrip.createEl("div", { cls: "tabs-right" });
   for (const fmt of FORMATS) {
-    const tab = tabStrip.createEl("div", { cls: "tab", text: fmt.label });
+    const tab = tabsLeft.createEl("div", { cls: "tab", text: fmt.label });
     tab.addEventListener("click", async () => {
       for (const t of Object.values(tabEls)) t.classList.remove("active");
       tab.classList.add("active");
@@ -2628,13 +2842,28 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     });
     tabEls[fmt.ext] = tab;
   }
+  // Search tab (Phase 7.6) — opposite the format tabs.
+  const searchTab = tabsRight.createEl("div", { cls: "tab", text: "\u{1F50D} Search" });
+  searchTab.addEventListener("click", async () => {
+    for (const t of Object.values(tabEls)) t.classList.remove("active");
+    searchTab.classList.add("active");
+    plugin.settings.lastLandingTab = "search";
+    await plugin.saveSettings();
+    renderSearchTab();
+  });
+  tabEls["search"] = searchTab;
 
   // Initial render — restore last-used tab, fall back to first format if
   // the persisted setting is invalid.
   const initialExt = plugin.settings.lastLandingTab || "docx";
-  const initialFmt = FORMATS.find((f) => f.ext === initialExt) || FORMATS[0];
-  tabEls[initialFmt.ext].classList.add("active");
-  renderTab(initialFmt);
+  if (initialExt === "search") {
+    searchTab.classList.add("active");
+    renderSearchTab();
+  } else {
+    const initialFmt = FORMATS.find((f) => f.ext === initialExt) || FORMATS[0];
+    tabEls[initialFmt.ext].classList.add("active");
+    renderTab(initialFmt);
+  }
 }
 
 // ===========================================================================
@@ -2851,10 +3080,118 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // Can't use setViewState because FileView requires a file.
     // Instead, render the landing page directly using a standalone function.
     const plugin = this;
-    this.addRibbonIcon("file-text", "Obsidi-Office", () => {
-      const leaf = this.app.workspace.getLeaf(true);
-      this.app.workspace.setActiveLeaf(leaf, { focus: true });
-      renderStandaloneLandingPage(leaf.view.containerEl, plugin);
+    const openLanding = (leaf) => {
+      const target = leaf || this.app.workspace.getLeaf(true);
+      this.app.workspace.setActiveLeaf(target, { focus: true });
+      renderStandaloneLandingPage(target.view.containerEl, plugin);
+    };
+    this.addRibbonIcon("file-text", "Obsidi-Office", () => openLanding());
+
+    // Phase 7.6 — command palette entry. Durable fallback for the new-tab
+    // button below (the DOM injection can break if Obsidian rev's their
+    // empty-state markup). Ctrl/Cmd+P → "Obsidi-Office: Open landing page".
+    this.addCommand({
+      id: "open-landing",
+      name: "Open landing page",
+      callback: () => openLanding(),
+    });
+
+    // Phase 7.6 — sidecar-to-parent redirect. Sidecar files (.docx.md /
+    // .pptx.md / .xlsx.md) are markdown that Obsidian opens in its
+    // standard markdown view by default. If a user finds one via Search
+    // or graph and opens it, they probably wanted the parent office
+    // file. Hook file-open: detect sidecar, find parent, re-route.
+    // Phase 7.6 hotfix: previous version used getMostRecentLeaf() +
+    // openFile(). User report: clicking Phase7-test.docx.md still opened
+    // the .md. Switched to (a) workspace.activeLeaf (the leaf that
+    // actually received the open) and (b) explicit setViewState to force
+    // the office view type — openFile() alone leaves the markdown view
+    // attached and the file-open handler can race the view's mount.
+    this.registerEvent(
+      this.app.workspace.on("file-open", async (file) => {
+        if (!file || !file.path) return;
+        const m = file.path.match(/^(.+\.(docx|pptx|xlsx))\.md$/i);
+        if (!m) return;
+        dlog("sidecar redirect: detected", file.path);
+        const parentPath = m[1];
+        const parent = this.app.vault.getAbstractFileByPath(parentPath);
+        if (!parent || !(parent instanceof obsidian.TFile)) {
+          dlog("sidecar redirect: parent file not found:", parentPath);
+          return;
+        }
+        const leaf = this.app.workspace.activeLeaf;
+        if (!leaf) {
+          dlog("sidecar redirect: no active leaf");
+          return;
+        }
+        let viewType = VIEW_TYPE;
+        if (parent.extension === "pptx") viewType = VIEW_TYPE_PPTX;
+        else if (parent.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
+        try {
+          await leaf.setViewState({ type: viewType, state: { file: parent.path }, active: true });
+          dlog("sidecar redirect: opened", parentPath, "as", viewType);
+        } catch (err) {
+          elog("sidecar redirect failed:", err && err.message);
+        }
+      })
+    );
+
+    // Phase 7.6 — empty-tab landing button. When the user opens a new
+    // tab (Ctrl+T), Obsidian creates a leaf with view type "empty"
+    // showing the "Create new note / Go to file / Close" button stack.
+    // Inject an "Open Obsidi-Office" button at the TOP of that stack so
+    // it sits inline with the others, styled to match.
+    //
+    // Hotfix (post-initial Phase 7.6 review):
+    //  - Skip injection when the empty leaf is hosting the Obsidi-Office
+    //    landing page (.docx-landing-scroll present). openLanding renders
+    //    the landing into an empty leaf without changing its view type,
+    //    so without this guard the banner would re-appear on the landing
+    //    after the active-leaf-change event re-fires.
+    //  - Position inside the .empty-state-action-list (vertical button
+    //    stack) rather than as a top banner. Obsidian's empty-state DOM
+    //    uses `.empty-state-action` for each pill button; we prepend our
+    //    own button with the same class so it inherits styling.
+    const injectEmptyTabButton = (leaf) => {
+      if (!leaf || !leaf.view || leaf.view.getViewType() !== "empty") return;
+      const container = leaf.view.containerEl;
+      if (!container) return;
+      // Skip if landing page is already rendered in this leaf.
+      if (container.querySelector(".docx-landing-scroll")) return;
+      // Don't double-inject.
+      if (container.querySelector(".obsidi-office-empty-action")) return;
+      // Find Obsidian's button stack. The empty-state container can vary
+      // by Obsidian version; try a few common selectors.
+      let actionList = container.querySelector(".empty-state-action-list");
+      if (!actionList) {
+        // Fallback: find parent of any .empty-state-action button.
+        const anyAction = container.querySelector(".empty-state-action");
+        if (anyAction && anyAction.parentElement) actionList = anyAction.parentElement;
+      }
+      const btn = createDiv({ cls: "empty-state-action obsidi-office-empty-action" });
+      btn.setText("Open Obsidi-Office");
+      btn.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        openLanding(leaf);
+      });
+      if (actionList) {
+        // Prepend so we sit above "Create new note".
+        actionList.insertBefore(btn, actionList.firstChild);
+      } else {
+        // Last-resort fallback: stick a styled button at top of container.
+        btn.style.cssText =
+          "margin: 16px auto; padding: 8px 24px; background: var(--interactive-accent); " +
+          "color: var(--text-on-accent); border-radius: 999px; cursor: pointer; " +
+          "text-align: center; max-width: 280px;";
+        container.insertBefore(btn, container.firstChild);
+      }
+    };
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => injectEmptyTabButton(leaf))
+    );
+    // Also handle leaves that exist at startup (workspace restore).
+    this.app.workspace.onLayoutReady(() => {
+      this.app.workspace.iterateAllLeaves((leaf) => injectEmptyTabButton(leaf));
     });
 
     // Template directory setup
@@ -3796,6 +4133,9 @@ class MetadataModal extends obsidian.Modal {
     this.sidecarPath = docxPath + ".md";
     this.tags = [];
     this.links = [];
+    // Phase 7.6 — preserve `created` from existing sidecar; null until
+    // first save. `modified` is always overwritten on save.
+    this.created = null;
   }
 
   async onOpen() {
@@ -3996,6 +4336,12 @@ class MetadataModal extends obsidian.Modal {
       this.links = linksMatch[1].match(/^\s+-\s+(.+)$/gm)
         ?.map(l => l.replace(/^\s+-\s+/, "").replace(/^["']|["']$/g, "").trim()) || [];
     }
+    // Phase 7.6 — Extract `created` (preserved across saves). Format:
+    // `created: 2026-05-24T22:00:00.000Z` (ISO 8601). Quoted form also
+    // accepted: `created: "2026-..."`. Modified is intentionally NOT
+    // read — it gets overwritten on every save.
+    const createdMatch = fm.match(/^created:\s*["']?([^"'\n]+)["']?\s*$/m);
+    if (createdMatch) this.created = createdMatch[1].trim();
   }
 
   async _saveSidecar() {
@@ -4013,8 +4359,14 @@ class MetadataModal extends obsidian.Modal {
     }
 
     const docxName = this.docxPath.split("/").pop();
+    // Phase 7.6 — timestamps. created is preserved from existing sidecar
+    // (set on first save only); modified is always current.
+    const nowIso = new Date().toISOString();
+    if (!this.created) this.created = nowIso;
     let yaml = "---\n";
     yaml += 'docx: "[[' + docxName + ']]"\n';
+    yaml += 'created: "' + this.created + '"\n';
+    yaml += 'modified: "' + nowIso + '"\n';
     if (hasTags) {
       yaml += "tags:\n";
       for (const t of this.tags) yaml += "  - " + t + "\n";
