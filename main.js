@@ -4204,8 +4204,10 @@ class MetadataModal extends obsidian.Modal {
     this.tags = [];
     this.links = [];
     // Phase 7.6 — preserve `created` from existing sidecar; null until
-    // first save. `modified` is always overwritten on save.
+    // first save. `modified` is loaded for display; always overwritten
+    // on save.
     this.created = null;
+    this.modified = null;
   }
 
   async onOpen() {
@@ -4221,6 +4223,32 @@ class MetadataModal extends obsidian.Modal {
       text: this.docxPath.split("/").pop(),
       attr: { style: "color: var(--text-muted); font-size: 12px;" }
     });
+
+    // --- Created/Modified timestamps (Phase 7.6 follow-up) ---
+    // Show the sidecar's `created` + `modified` ISO timestamps as a
+    // human-readable strip. "Not yet saved" if no sidecar exists yet
+    // (first time opening the modal for a file). Modified is the
+    // PREVIOUS save's timestamp — the current modal save will overwrite
+    // it on submit.
+    const fmtTime = (iso) => {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return iso;
+      return d.toLocaleString("en-US", {
+        month: "short", day: "numeric", year: "numeric",
+        hour: "numeric", minute: "2-digit",
+      });
+    };
+    const tsRow = contentEl.createEl("div", {
+      attr: { style: "color: var(--text-muted); font-size: 11px; margin: 0 0 12px;" }
+    });
+    if (this.created || this.modified) {
+      tsRow.createEl("span", { text: "Created: " + fmtTime(this.created) });
+      tsRow.createEl("span", { text: " · ", attr: { style: "opacity: 0.5;" } });
+      tsRow.createEl("span", { text: "Modified: " + fmtTime(this.modified) });
+    } else {
+      tsRow.setText("Not yet saved");
+    }
 
     // --- Tags section ---
     contentEl.createEl("label", { text: "Tags", attr: { style: "font-weight: 600; font-size: 12px; display: block; margin: 4px 0 2px;" } });
@@ -4406,12 +4434,14 @@ class MetadataModal extends obsidian.Modal {
       this.links = linksMatch[1].match(/^\s+-\s+(.+)$/gm)
         ?.map(l => l.replace(/^\s+-\s+/, "").replace(/^["']|["']$/g, "").trim()) || [];
     }
-    // Phase 7.6 — Extract `created` (preserved across saves). Format:
-    // `created: 2026-05-24T22:00:00.000Z` (ISO 8601). Quoted form also
-    // accepted: `created: "2026-..."`. Modified is intentionally NOT
-    // read — it gets overwritten on every save.
+    // Phase 7.6 — Extract `created` (preserved across saves) AND
+    // `modified` (loaded for display in the modal; overwritten on save).
+    // Format: `created: 2026-05-24T22:00:00.000Z` (ISO 8601). Quoted
+    // form also accepted: `created: "2026-..."`.
     const createdMatch = fm.match(/^created:\s*["']?([^"'\n]+)["']?\s*$/m);
     if (createdMatch) this.created = createdMatch[1].trim();
+    const modifiedMatch = fm.match(/^modified:\s*["']?([^"'\n]+)["']?\s*$/m);
+    if (modifiedMatch) this.modified = modifiedMatch[1].trim();
   }
 
   async _saveSidecar() {
