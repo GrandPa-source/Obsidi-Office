@@ -3108,7 +3108,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // the office view type — openFile() alone leaves the markdown view
     // attached and the file-open handler can race the view's mount.
     this.registerEvent(
-      this.app.workspace.on("file-open", async (file) => {
+      this.app.workspace.on("file-open", (file) => {
         if (!file || !file.path) return;
         const m = file.path.match(/^(.+\.(docx|pptx|xlsx))\.md$/i);
         if (!m) return;
@@ -3119,29 +3119,54 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           dlog("sidecar redirect: parent file not found:", parentPath);
           return;
         }
-        // Phase 7.6 hf2: in-place replacement (hf1) cleared the markdown
-        // view but Obsidian's view-state machinery left the new office
-        // view broken/blank ("Measure loop restarted more than 5 times"
-        // warning + visible .md wipe with no replacement). Switch to
-        // open-in-new-leaf + detach-sidecar-leaf — cleaner, no in-place
-        // race. Per user suggestion.
-        let mdLeaf = null;
-        this.app.workspace.iterateAllLeaves((leaf) => {
-          if (leaf.view && leaf.view.file && leaf.view.file.path === file.path) {
-            mdLeaf = leaf;
-          }
-        });
-        try {
-          await this._openInView(parent);
+        let viewType = VIEW_TYPE;
+        if (parent.extension === "pptx") viewType = VIEW_TYPE_PPTX;
+        else if (parent.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
+        // Phase 7.6 hf3: hf2 used _openInView which calls getLeaf(true).
+        // That can return the *active* leaf — i.e. the .md leaf we just
+        // opened. setViewState then replaced .md with DocxView IN THE
+        // SAME LEAF, after which our subsequent mdLeaf.detach() killed
+        // the new DocxView leaf (since mdLeaf and the new leaf were the
+        // same object). Log fingerprint: DocxView constructed → onOpen
+        // hasFile:false → removed docKey, all within ~10ms of each other.
+        //
+        // Fix: (a) detach .md leaf FIRST so getLeaf can't reuse it;
+        // (b) use getLeaf("tab") to explicitly request a new tab (not a
+        // possibly-reused leaf); (c) defer the whole sequence to the next
+        // microtask so Obsidian's file-open mount completes before we
+        // start tearing it down.
+        const doRedirect = async () => {
+          let mdLeaf = null;
+          this.app.workspace.iterateAllLeaves((leaf) => {
+            if (leaf.view && leaf.view.file && leaf.view.file.path === file.path) {
+              mdLeaf = leaf;
+            }
+          });
           if (mdLeaf) {
             mdLeaf.detach();
-            dlog("sidecar redirect: opened", parentPath, "in new leaf, detached .md leaf");
-          } else {
-            dlog("sidecar redirect: opened", parentPath, "in new leaf (.md leaf not found to detach)");
+            dlog("sidecar redirect: detached .md leaf");
           }
-        } catch (err) {
+          // Explicitly create a new tab — getLeaf("tab") guarantees a
+          // fresh leaf rather than reusing the active one.
+          let newLeaf;
+          try { newLeaf = this.app.workspace.getLeaf("tab"); }
+          catch (_) { newLeaf = this.app.workspace.getLeaf(true); }
+          await newLeaf.setViewState({ type: viewType, active: true });
+          const view = newLeaf.view;
+          if (view && typeof view.onLoadFile === "function") {
+            await view.onLoadFile(parent);
+            dlog("sidecar redirect: opened", parentPath, "as", viewType);
+          } else {
+            dlog("sidecar redirect: view has no onLoadFile:",
+                 view ? view.getViewType() : "null");
+          }
+        };
+        // Defer to next tick so the original file-open mount completes
+        // before we tear it down — avoids the RangeError that Obsidian
+        // throws when a view is unmounted mid-history-save.
+        setTimeout(() => doRedirect().catch((err) => {
           elog("sidecar redirect failed:", err && err.message);
-        }
+        }), 0);
       })
     );
 
