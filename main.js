@@ -3119,17 +3119,44 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           dlog("sidecar redirect: parent file not found:", parentPath);
           return;
         }
-        const leaf = this.app.workspace.activeLeaf;
-        if (!leaf) {
-          dlog("sidecar redirect: no active leaf");
-          return;
-        }
         let viewType = VIEW_TYPE;
         if (parent.extension === "pptx") viewType = VIEW_TYPE_PPTX;
         else if (parent.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
+        // Find the leaf currently displaying the sidecar markdown. The
+        // active leaf may not be it if e.g. user clicked from a side
+        // pane that opened the file in a separate leaf. Falls back to
+        // active leaf if no exact match found.
+        let targetLeaf = null;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+          if (leaf.view && leaf.view.file && leaf.view.file.path === file.path) {
+            targetLeaf = leaf;
+          }
+        });
+        if (!targetLeaf) targetLeaf = this.app.workspace.activeLeaf;
+        if (!targetLeaf) {
+          dlog("sidecar redirect: no target leaf found");
+          return;
+        }
+        // Phase 7.6 hf1: prior version used setViewState with state.file,
+        // which logged success but visually left the markdown view in
+        // place (DocxView/PptxView/XlsxView don't auto-load from
+        // state.file alone). Switch to the proven _openInView pattern:
+        // setViewState (type only) + explicit onLoadFile.
         try {
-          await leaf.setViewState({ type: viewType, state: { file: parent.path }, active: true });
-          dlog("sidecar redirect: opened", parentPath, "as", viewType);
+          await targetLeaf.setViewState({ type: viewType, active: true });
+          const view = targetLeaf.view;
+          if (view && typeof view.onLoadFile === "function") {
+            await view.onLoadFile(parent);
+            // Some FileView subclasses expect .file to be set on the
+            // instance too — onLoadFile is the canonical loader but
+            // setting .file ensures any leaf-state queries (workspace
+            // restore, leaf header) see the correct file.
+            view.file = parent;
+            dlog("sidecar redirect: loaded", parentPath, "as", viewType);
+          } else {
+            dlog("sidecar redirect: view has no onLoadFile:",
+                 view ? view.getViewType() : "null");
+          }
         } catch (err) {
           elog("sidecar redirect failed:", err && err.message);
         }
