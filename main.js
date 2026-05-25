@@ -1645,6 +1645,9 @@ class OfficeEditorView extends obsidian.FileView {
         buffer = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0)).buffer;
       }
       const tfile = await this.app.vault.createBinary(filename, buffer);
+      // Phase 7.6 hf9: auto-create sidecar with timestamps so the
+      // Metadata modal shows real creation time from the start.
+      await this.plugin._autoCreateSidecar(tfile);
       new obsidian.Notice("Created: " + filename);
       this._openFile(tfile);
     }, dotExt);
@@ -2638,6 +2641,9 @@ function renderStandaloneLandingPage(containerEl, plugin) {
             buffer = Uint8Array.from(atob(fmt.blankB64), (c) => c.charCodeAt(0)).buffer;
           }
           const tfile = await app.vault.createBinary(filename, buffer);
+          // Phase 7.6 hf9: auto-create sidecar with timestamps so the
+          // Metadata modal shows real creation time from the start.
+          await plugin._autoCreateSidecar(tfile);
           new obsidian.Notice("Created: " + filename);
           const leaf = app.workspace.getLeaf(true);
           await leaf.openFile(tfile);  // Obsidian routes by registered extension
@@ -4132,6 +4138,30 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return d ? d.filePath : null;
   }
 
+  // Phase 7.6 hf9 — auto-create a sidecar `.md` for a freshly-created
+  // office file. Writes minimal frontmatter: `docx:` wikilink + `created:`
+  // + `modified:` ISO timestamps. No tags/links yet (user adds those via
+  // the Metadata modal). Idempotent — skips if a sidecar already exists.
+  async _autoCreateSidecar(parentFile) {
+    if (!parentFile || !parentFile.path) return;
+    const sidecarPath = parentFile.path + ".md";
+    try {
+      if (await this.app.vault.adapter.exists(sidecarPath)) return;
+      const nowIso = new Date().toISOString();
+      const parentName = parentFile.name;
+      const yaml =
+        "---\n" +
+        'docx: "[[' + parentName + ']]"\n' +
+        'created: "' + nowIso + '"\n' +
+        'modified: "' + nowIso + '"\n' +
+        "---\n";
+      await this.app.vault.create(sidecarPath, yaml);
+      dlog("auto-created sidecar:", sidecarPath);
+    } catch (err) {
+      elog("auto-sidecar failed:", err && err.message);
+    }
+  }
+
   _injectSidecarCSS() {
     const styleId = "obsidi-office-hide-sidecars";
     let style = document.getElementById(styleId);
@@ -4449,11 +4479,21 @@ class MetadataModal extends obsidian.Modal {
     const hasLinks = this.links.length > 0;
 
     if (!hasTags && !hasLinks) {
-      // Delete sidecar if empty
+      // Phase 7.6 hf9: preserve sidecar if it has a `created` timestamp
+      // (auto-created at file-creation time or set on previous save).
+      // Pre-hf9 behavior deleted any tag/link-empty sidecar, which would
+      // wipe creation timestamps just because the user opened the modal
+      // and saved without adding metadata. Now: preserve as-is, no write
+      // (so we don't bump `modified` just for an empty save).
       const f = this.app.vault.getAbstractFileByPath(this.sidecarPath);
+      if (f && f instanceof obsidian.TFile && this.created) {
+        dlog("sidecar preserved (no metadata changes):", this.sidecarPath);
+        return;
+      }
+      // Legacy path: truly empty sidecar (no timestamps either) — safe to delete.
       if (f && f instanceof obsidian.TFile) {
         await this.app.vault.delete(f);
-        dlog("sidecar deleted (empty):", this.sidecarPath);
+        dlog("sidecar deleted (legacy empty):", this.sidecarPath);
       }
       return;
     }
