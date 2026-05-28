@@ -3321,6 +3321,26 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       }
     }));
 
+    // Vault-wide note frontmatter normalization. Registered INSIDE
+    // onLayoutReady: Obsidian fires a "create" event for every existing file
+    // while indexing the vault on startup, so registering after layout-ready
+    // ensures only files created during the live session reach the handler —
+    // existing notes are never rewritten.
+    this.app.workspace.onLayoutReady(() => {
+      this.registerEvent(this.app.vault.on("create", (file) => {
+        if (!(file instanceof obsidian.TFile)) return;
+        if (file.extension !== "md") return;
+        if (/\.(docx|pptx|xlsx)\.md$/i.test(file.path)) return;  // office sidecar
+        const root = this.settings.templatesRoot || "_obsidi-office-templates";
+        if (file.path === root || file.path.startsWith(root + "/")) return;  // template file
+        if (this.settings.autoNoteFrontmatter === false) return;
+        // Defer one tick so template-based creators (Templater, daily notes,
+        // "new from template") write their content/frontmatter first;
+        // processFrontMatter then only adds keys that are still absent.
+        setTimeout(() => this._normalizeNoteFrontmatter(file), 0);
+      }));
+    });
+
     // Listen for metadata button postMessage from editor iframe
     this._metadataHandler = (ev) => {
       if (!ev.data || !ev.data.type) return;
@@ -4161,6 +4181,24 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // office file. Writes minimal frontmatter: `docx:` wikilink + `created:`
   // + `modified:` ISO timestamps. No tags/links yet (user adds those via
   // the Metadata modal). Idempotent — skips if a sidecar already exists.
+  // 2026-05-28 — add the three standard properties to a new note's own
+  // frontmatter. Only missing keys are filled; existing values and the note
+  // body are left untouched. `created` is a full ISO-8601 datetime matching
+  // the sidecar `created` format.
+  async _normalizeNoteFrontmatter(file) {
+    if (!file || file.extension !== "md") return;
+    try {
+      await this.app.fileManager.processFrontMatter(file, (fm) => {
+        if (fm.created == null) fm.created = new Date().toISOString();
+        if (fm.tags == null) fm.tags = [];
+        if (fm.aliases == null) fm.aliases = [];
+      });
+      dlog("normalized note frontmatter:", file.path);
+    } catch (err) {
+      elog("note frontmatter normalize failed:", err && err.message);
+    }
+  }
+
   async _autoCreateSidecar(parentFile) {
     if (!parentFile || !parentFile.path) return;
     const sidecarPath = parentFile.path + ".md";
