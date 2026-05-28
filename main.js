@@ -2740,6 +2740,74 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     renderRecentTable(content, allRecent, { showTypeCol: true });
   }
 
+  // Note tab — plain .md notes. Mirrors renderTab but: text templates (not
+  // binary blanks), no sidecar (tagSource "self"), opened by Obsidian's
+  // native markdown editor, and excludes office sidecars + template files.
+  function renderNoteTab() {
+    content.empty();
+    const dir = templatesRoot + "/notes";
+
+    // --- NEW (note templates) ---
+    content.createEl("h2", { text: "New" });
+    const grid = content.createEl("div", { cls: "template-grid" });
+    const templates = [];
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (f.path.startsWith(dir + "/") && f.extension === "md") {
+        templates.push({ name: f.basename, path: f.path });
+      }
+    }
+    templates.sort((a, b) => {
+      if (a.name === "Blank Note") return -1;
+      if (b.name === "Blank Note") return 1;
+      return a.name.localeCompare(b.name);
+    });
+    if (templates.length === 0) templates.push({ name: "Blank Note", path: "" });
+
+    for (const tmpl of templates) {
+      const card = grid.createEl("div", { cls: "template-card" });
+      card.createEl("div", { cls: "icon", text: tmpl.name === "Blank Note" ? "\u{1F5D2}️" : "\u{1F4DD}" });
+      card.createEl("div", { cls: "label", text: tmpl.name });
+      card.addEventListener("click", () => {
+        const modal = new FileNameModal(app, tmpl.name, async (filename) => {
+          if (!filename) return;
+          if (!filename.endsWith(".md")) filename += ".md";
+          if (await app.vault.adapter.exists(filename)) {
+            new obsidian.Notice('File "' + filename + '" already exists.');
+            return;
+          }
+          let text;
+          if (tmpl.path && await app.vault.adapter.exists(tmpl.path)) {
+            text = await app.vault.adapter.read(tmpl.path);
+          } else {
+            text = BLANK_NOTE_MD;
+          }
+          // vault.create registers the TFile fully before openFile (mirrors
+          // the office createBinary path). The vault create listener then
+          // fills created + any missing tags/aliases.
+          const tfile = await app.vault.create(filename, text);
+          new obsidian.Notice("Created: " + filename);
+          const leaf = app.workspace.getLeaf(true);
+          await leaf.openFile(tfile);  // .md -> Obsidian's native markdown editor
+        }, ".md");
+        modal.open();
+      });
+    }
+
+    // --- RECENT (.md, excluding sidecars + templates; own-frontmatter tags) ---
+    content.createEl("h2", { text: "Recent" });
+    const allRecent = app.vault.getMarkdownFiles()
+      .filter((f) => !/\.(docx|pptx|xlsx)\.md$/i.test(f.path) && !f.path.startsWith(templatesRoot + "/"))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 100);
+
+    if (allRecent.length === 0) {
+      content.createEl("p", { text: "No notes found." });
+      return;
+    }
+
+    renderRecentTable(content, allRecent, { showTypeCol: false, tagSource: "self" });
+  }
+
   // Phase 7.6 — Shared renderer: search input + tag-pill column + dynamic
   // filter with comma-stacking AND-semantics and `#` autocomplete. Used by
   // both per-format tab Recent sections and the Search tab.
@@ -2907,6 +2975,16 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     });
     tabEls[fmt.ext] = tab;
   }
+  // Note tab (2026-05-28) — 4th left tab, plain .md notes.
+  const noteTab = tabsLeft.createEl("div", { cls: "tab", text: "Note" });
+  noteTab.addEventListener("click", async () => {
+    for (const t of Object.values(tabEls)) t.classList.remove("active");
+    noteTab.classList.add("active");
+    plugin.settings.lastLandingTab = "note";
+    await plugin.saveSettings();
+    renderNoteTab();
+  });
+  tabEls["note"] = noteTab;
   // Search tab (Phase 7.6) — opposite the format tabs.
   const searchTab = tabsRight.createEl("div", { cls: "tab", text: "\u{1F50D} Search" });
   searchTab.addEventListener("click", async () => {
@@ -2924,6 +3002,9 @@ function renderStandaloneLandingPage(containerEl, plugin) {
   if (initialExt === "search") {
     searchTab.classList.add("active");
     renderSearchTab();
+  } else if (initialExt === "note") {
+    noteTab.classList.add("active");
+    renderNoteTab();
   } else {
     const initialFmt = FORMATS.find((f) => f.ext === initialExt) || FORMATS[0];
     tabEls[initialFmt.ext].classList.add("active");
@@ -4664,7 +4745,7 @@ class FileNameModal extends obsidian.Modal {
     // by the caller's onSubmit. Defaults to ".docx" if not passed (back-compat
     // with any caller that hasn't been updated).
     this.dotExt = (typeof dotExt === "string" && dotExt) ? dotExt : ".docx";
-    const blanks = { ".docx": "Blank Document", ".pptx": "Blank Presentation", ".xlsx": "Blank Spreadsheet" };
+    const blanks = { ".docx": "Blank Document", ".pptx": "Blank Presentation", ".xlsx": "Blank Spreadsheet", ".md": "Blank Note" };
     const blankFor = blanks[this.dotExt] || "Blank Document";
     this.defaultName = defaultName === blankFor ? "" : defaultName;
     this.onSubmit = onSubmit;
@@ -4673,7 +4754,7 @@ class FileNameModal extends obsidian.Modal {
     const { contentEl } = this;
     // Phase 7 — 3-way kind map (replaces docx-vs-pptx ternary). Falls back
     // to "Document" for any unknown extension.
-    const kind = ({ ".docx": "Document", ".pptx": "Presentation", ".xlsx": "Spreadsheet" })[this.dotExt] || "Document";
+    const kind = ({ ".docx": "Document", ".pptx": "Presentation", ".xlsx": "Spreadsheet", ".md": "Note" })[this.dotExt] || "Document";
     contentEl.createEl("h3", { text: "New " + kind });
     contentEl.createEl("p", { text: "Enter a name for the new " + kind.toLowerCase() + ":" });
     const input = contentEl.createEl("input", { type: "text" });
