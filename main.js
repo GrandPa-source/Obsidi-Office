@@ -2368,6 +2368,20 @@ class SettingsTab extends obsidian.PluginSettingTab {
         }));
 
     new obsidian.Setting(containerEl)
+      .setName("Auto-add frontmatter to new notes")
+      .setDesc(
+        "Adds empty tags and aliases properties and an auto-filled created " +
+        "timestamp to every new .md note. Excludes .docx.md/.pptx.md/.xlsx.md " +
+        "sidecars and template files. Existing values are never overwritten."
+      )
+      .addToggle(t => t
+        .setValue(this.plugin.settings.autoNoteFrontmatter !== false)
+        .onChange(async v => {
+          this.plugin.settings.autoNoteFrontmatter = v;
+          await this.plugin.saveSettings();
+        }));
+
+    new obsidian.Setting(containerEl)
       .setName("Asset zip source")
       .setDesc(
         "Where to fetch the trimmed asset zip from when assets are missing. " +
