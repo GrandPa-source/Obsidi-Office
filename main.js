@@ -3682,6 +3682,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         await adapter.writeBinary(blankPath, bytes);
       }
     }
+    // Note templates live alongside the office subfolders, but as plain text.
+    const notesDir = root + "/notes";
+    if (!(await adapter.exists(notesDir))) {
+      await adapter.mkdir(notesDir);
+    }
+    const blankNotePath = notesDir + "/Blank Note.md";
+    if (!(await adapter.exists(blankNotePath))) {
+      await adapter.write(blankNotePath, BLANK_NOTE_MD);
+    }
   }
 
   // Phase 7.5 — migrate legacy per-format template folders into the
