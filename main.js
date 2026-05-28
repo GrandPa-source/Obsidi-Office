@@ -4177,10 +4177,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return d ? d.filePath : null;
   }
 
-  // Phase 7.6 hf9 — auto-create a sidecar `.md` for a freshly-created
-  // office file. Writes minimal frontmatter: `docx:` wikilink + `created:`
-  // + `modified:` ISO timestamps. No tags/links yet (user adds those via
-  // the Metadata modal). Idempotent — skips if a sidecar already exists.
   // 2026-05-28 — add the three standard properties to a new note's own
   // frontmatter. Only missing keys are filled; existing values and the note
   // body are left untouched. `created` is a full ISO-8601 datetime matching
@@ -4199,6 +4195,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  // Phase 7.6 hf9 — auto-create a sidecar `.md` for a freshly-created
+  // office file. Writes minimal frontmatter: `docx:` wikilink + `created:`
+  // + `modified:` ISO timestamps. No tags/links yet (user adds those via
+  // the Metadata modal). Idempotent — skips if a sidecar already exists.
   async _autoCreateSidecar(parentFile) {
     if (!parentFile || !parentFile.path) return;
     const sidecarPath = parentFile.path + ".md";
