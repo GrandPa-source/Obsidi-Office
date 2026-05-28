@@ -2546,6 +2546,18 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     return sidecarTagArray(file).join(" ");
   }
 
+  // Note tab — read tags from the note's OWN frontmatter (notes carry their
+  // own frontmatter; they have no sidecar). Same array/string handling as
+  // sidecarTagArray.
+  function noteTagArray(file) {
+    if (!(file instanceof obsidian.TFile)) return [];
+    const cache = app.metadataCache.getFileCache(file);
+    const tags = cache && cache.frontmatter && cache.frontmatter.tags;
+    if (Array.isArray(tags)) return tags.map((t) => String(t).replace(/^#/, ""));
+    if (typeof tags === "string") return tags.split(/[\s,]+/).map((t) => t.replace(/^#/, "")).filter(Boolean);
+    return [];
+  }
+
   // Phase 7.6 — collect unique tag set across all sidecars in the vault.
   // Used for the `#` autocomplete dropdown. Scope: only ObsidiOffice
   // sidecars (.docx.md/.pptx.md/.xlsx.md) so suggestions can't lead to
@@ -2554,6 +2566,23 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     const set = new Set();
     for (const f of app.vault.getMarkdownFiles()) {
       if (!/\.(docx|pptx|xlsx)\.md$/i.test(f.path)) continue;
+      const cache = app.metadataCache.getFileCache(f);
+      const tags = cache && cache.frontmatter && cache.frontmatter.tags;
+      if (Array.isArray(tags)) tags.forEach((t) => set.add(String(t).replace(/^#/, "")));
+      else if (typeof tags === "string") {
+        tags.split(/[\s,]+/).forEach((t) => { const c = t.replace(/^#/, ""); if (c) set.add(c); });
+      }
+    }
+    return Array.from(set).sort();
+  }
+
+  // Note tab — unique tag set across all non-sidecar, non-template notes
+  // (read from each note's own frontmatter). Feeds the `#` autocomplete.
+  function allNoteTags() {
+    const set = new Set();
+    for (const f of app.vault.getMarkdownFiles()) {
+      if (/\.(docx|pptx|xlsx)\.md$/i.test(f.path)) continue;
+      if (f.path.startsWith(templatesRoot + "/")) continue;
       const cache = app.metadataCache.getFileCache(f);
       const tags = cache && cache.frontmatter && cache.frontmatter.tags;
       if (Array.isArray(tags)) tags.forEach((t) => set.add(String(t).replace(/^#/, "")));
@@ -2605,13 +2634,14 @@ function renderStandaloneLandingPage(containerEl, plugin) {
   // - Name tokens: substring match against basename (lowercase, AND across all).
   // - Tag tokens: substring match against any tag in the file's sidecar
   //   (lowercase, AND across all — each tag-token must hit at least one tag).
-  function matchAgainstQuery(file, parsed) {
+  function matchAgainstQuery(file, parsed, tagArrayFn) {
     const basename = file.basename.toLowerCase();
     for (const nt of parsed.nameTokens) {
       if (!basename.includes(nt)) return false;
     }
     if (parsed.tagTokens.length > 0) {
-      const tags = sidecarTagArray(file).map((t) => t.toLowerCase());
+      const getTags = tagArrayFn || sidecarTagArray;
+      const tags = getTags(file).map((t) => t.toLowerCase());
       for (const tt of parsed.tagTokens) {
         if (!tags.some((t) => t.includes(tt))) return false;
       }
@@ -2715,6 +2745,11 @@ function renderStandaloneLandingPage(containerEl, plugin) {
   // both per-format tab Recent sections and the Search tab.
   function renderRecentTable(host, files, opts) {
     const showTypeCol = !!(opts && opts.showTypeCol);
+    // tagSource: "sidecar" (default — office tabs) | "self" (Note tab, reads
+    // the file's own frontmatter).
+    const tagSource = (opts && opts.tagSource) || "sidecar";
+    const tagArrayFn = tagSource === "self" ? noteTagArray : sidecarTagArray;
+    const allTagsFn = tagSource === "self" ? allNoteTags : allSidecarTags;
     const searchWrapper = host.createEl("div", { cls: "search-wrapper" });
     const searchInput = searchWrapper.createEl("input", {
       type: "text",
@@ -2756,7 +2791,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
 
     function renderRowPills(r) {
       r.tagFlex.empty();
-      const tags = sidecarTagArray(r.file);
+      const tags = tagArrayFn(r.file);
       for (const t of tags) {
         r.tagFlex.createSpan({ cls: "tag-pill", text: t });
       }
@@ -2774,7 +2809,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
       currentSuggestions = [];
     }
     function showSuggestionsFor(prefix) {
-      const allTags = allSidecarTags();
+      const allTags = allTagsFn();
       const matches = allTags.filter((t) => t.toLowerCase().includes(prefix)).slice(0, 8);
       if (matches.length === 0) { hideSuggestions(); return; }
       suggestionsEl.empty();
@@ -2815,7 +2850,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
         // Always refresh pills — sidecar tag edits made after render
         // should reflect immediately on next interaction.
         renderRowPills(r);
-        const hit = matchAgainstQuery(r.file, parsed);
+        const hit = matchAgainstQuery(r.file, parsed, tagArrayFn);
         r.row.style.display = hit ? "" : "none";
       }
       // Autocomplete: show suggestions if cursor is in a # token.
