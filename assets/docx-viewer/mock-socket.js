@@ -286,28 +286,59 @@ MockSocket.prototype.close = MockSocket.prototype.disconnect;
 // binary produced by asc_Save() is captured here and routed to the parent
 // (which writes the file) instead of being postMessaged out via the editor's
 // own gateway. t.buffer is a clean %PDF-1.x ArrayBuffer. Idempotent.
+function _postPdfBytes(ab) {
+  var copy = ab.slice ? ab.slice(0) : ab; // copy before transfer neuters it
+  var dk = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
+  window.parent.postMessage(
+    { __shim: "docx-viewer", type: "pdf-save", docKey: dk, bytes: copy },
+    "*", [copy]
+  );
+}
 function ensurePdfSaveHook() {
   try {
+    if (ensurePdfSaveHook.__done) return;
+    var ed = window.Asc && window.Asc.editor;
+    if (!ed) return;
+    // api.js does NOT forward editorConfig.canSaveDocumentToBinary, so the
+    // engine never enters binary-save mode and asc_Save() falls back to the
+    // socket route (no PDF produced). We make the same two calls pdfeditor's
+    // app.js makes — directly on the editor, in-iframe:
+    //   api.put_SupportsOnSaveDocument(true);
+    //   api.asc_registerCallback("asc_onSaveDocument", handler)
+    if (typeof ed.put_SupportsOnSaveDocument === "function") {
+      ed.put_SupportsOnSaveDocument(true);
+      _slog("put_SupportsOnSaveDocument(true) [pdf]");
+    } else {
+      _slog("WARN: ed.put_SupportsOnSaveDocument is not a function");
+    }
+    if (typeof ed.asc_registerCallback === "function") {
+      ed.asc_registerCallback("asc_onSaveDocument", function (t) {
+        try {
+          var ab = (t instanceof ArrayBuffer) ? t
+            : (t && t.buffer instanceof ArrayBuffer) ? t.buffer
+            : (t && t.data) ? (t.data.buffer || t.data) : null;
+          if (!ab) { console.error("[mock-socket] asc_onSaveDocument: no buffer in", t); return; }
+          _slog("asc_onSaveDocument captured " + ab.byteLength + " bytes");
+          _postPdfBytes(ab);
+        } catch (e) { console.error("[mock-socket] asc_onSaveDocument handler error:", e); }
+      });
+      _slog("registered asc_onSaveDocument [pdf]");
+    }
+    // Fallback: also hook Common.Gateway.saveDocument in case the engine
+    // routes through the app's gateway path instead of our direct callback.
     var C = window.Common;
-    if (!C || !C.Gateway || C.Gateway.__obsidiPdfHooked) return;
-    var orig = C.Gateway.saveDocument;
-    C.Gateway.saveDocument = function (t) {
-      try {
-        if (t && t.buffer) {
-          var ab = t.buffer.slice(0); // copy before any transfer neuters it
-          _slog("pdf saveDocument captured " + ab.byteLength + " bytes");
-          var dk = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
-          window.parent.postMessage(
-            { __shim: "docx-viewer", type: "pdf-save", docKey: dk, bytes: ab },
-            "*", [ab]
-          );
-          return; // suppress the editor's own postMessage
-        }
-      } catch (e) { console.error("[mock-socket] pdf save capture failed:", e); }
-      return orig ? orig.apply(this, arguments) : undefined;
-    };
-    C.Gateway.__obsidiPdfHooked = true;
-    _slog("installed pdf save hook on Common.Gateway.saveDocument");
+    if (C && C.Gateway && !C.Gateway.__obsidiPdfHooked) {
+      var orig = C.Gateway.saveDocument;
+      C.Gateway.saveDocument = function (t) {
+        try {
+          if (t && t.buffer) { _slog("Gateway.saveDocument captured " + t.buffer.byteLength + " bytes"); _postPdfBytes(t.buffer); return; }
+        } catch (e) { console.error("[mock-socket] gateway save capture failed:", e); }
+        return orig ? orig.apply(this, arguments) : undefined;
+      };
+      C.Gateway.__obsidiPdfHooked = true;
+    }
+    ensurePdfSaveHook.__done = true;
+    _slog("pdf save hook ready");
   } catch (e) { console.error("[mock-socket] ensurePdfSaveHook error:", e); }
 }
 
@@ -1730,6 +1761,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
         try {
           window.Asc.editor.zoomFitToWidth();
           _slog("Fit-to-width applied");
+          // PDF PoC: arm the binary-save hook as soon as the editor is ready
+          // (before any save), so put_SupportsOnSaveDocument takes effect.
+          if ((window.__oo_params && window.__oo_params.docExt) === "pdf") ensurePdfSaveHook();
           setTimeout(function () {
             var savedZoom = parseInt(localStorage.getItem("de-settings-zoom") || "0");
             if (savedZoom > 0) {
