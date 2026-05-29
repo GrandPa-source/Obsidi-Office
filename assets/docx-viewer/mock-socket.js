@@ -282,6 +282,35 @@ MockSocket.prototype.close = MockSocket.prototype.disconnect;
 
 // Global save function — triggers editor's internal downloadAs flow
 // which POSTs to /downloadas/ (intercepted by transport shim → postMessage → bridge)
+// PDF PoC: hook Common.Gateway.saveDocument (in-iframe) so the native PDF
+// binary produced by asc_Save() is captured here and routed to the parent
+// (which writes the file) instead of being postMessaged out via the editor's
+// own gateway. t.buffer is a clean %PDF-1.x ArrayBuffer. Idempotent.
+function ensurePdfSaveHook() {
+  try {
+    var C = window.Common;
+    if (!C || !C.Gateway || C.Gateway.__obsidiPdfHooked) return;
+    var orig = C.Gateway.saveDocument;
+    C.Gateway.saveDocument = function (t) {
+      try {
+        if (t && t.buffer) {
+          var ab = t.buffer.slice(0); // copy before any transfer neuters it
+          _slog("pdf saveDocument captured " + ab.byteLength + " bytes");
+          var dk = (window.__oo_params && (window.__oo_params.frameEditorId || window.__oo_params.docKey)) || "";
+          window.parent.postMessage(
+            { __shim: "docx-viewer", type: "pdf-save", docKey: dk, bytes: ab },
+            "*", [ab]
+          );
+          return; // suppress the editor's own postMessage
+        }
+      } catch (e) { console.error("[mock-socket] pdf save capture failed:", e); }
+      return orig ? orig.apply(this, arguments) : undefined;
+    };
+    C.Gateway.__obsidiPdfHooked = true;
+    _slog("installed pdf save hook on Common.Gateway.saveDocument");
+  } catch (e) { console.error("[mock-socket] ensurePdfSaveHook error:", e); }
+}
+
 function triggerSaveToVault() {
   if (typeof window !== "undefined" && window.Asc && window.Asc.editor) {
     try {
@@ -300,8 +329,14 @@ function triggerSaveToVault() {
       // silently fell through to 65 = docx export, corrupting the .pdf).
       var __saveExt = (window.__oo_params && window.__oo_params.docExt) || "";
       if (__saveExt === "pdf") {
-        _slog("triggerSaveToVault — asc_DownloadAs(513) [pdf]");
-        window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(513));
+        // PDF: native client-side save. asc_DownloadAs(513) via /downloadas/
+        // produced a non-standard %PDF "save-bin" (Unknown error). With
+        // editorConfig.canSaveDocumentToBinary:true, asc_Save() fires
+        // asc_onSaveDocument → Common.Gateway.saveDocument(t) with t.buffer =
+        // a CLEAN PDF ArrayBuffer. We hook that to grab the bytes in-iframe.
+        ensurePdfSaveHook();
+        _slog("triggerSaveToVault — asc_Save() [pdf]");
+        window.Asc.editor.asc_Save();
       } else {
         if (typeof window.Asc.editor.asc_closeCellEditor === "function") {
           try {

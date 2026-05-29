@@ -999,6 +999,23 @@ class TransportBridge {
       dlog("shim-ready received for docKey:", d.docKey);
       return;
     }
+    // PDF PoC: native PDF save delivered in-iframe via the hooked
+    // Common.Gateway.saveDocument. d.bytes is a clean %PDF-1.x ArrayBuffer.
+    // Write to a sibling *.pocsave.pdf (PoC safety) — switch to the real path
+    // once verified.
+    if (d.type === "pdf-save") {
+      const doc = this.docs.get(d.docKey);
+      if (doc && d.bytes) {
+        const bytes = new Uint8Array(d.bytes);
+        const savePath = doc.filePath.replace(/\.pdf$/i, ".pocsave.pdf");
+        Promise.resolve(this.onSave(savePath, bytes))
+          .then(() => dlog("pdf-save: wrote", bytes.byteLength, "bytes to", savePath))
+          .catch((err) => elog("pdf-save write failed:", err));
+      } else {
+        elog("pdf-save: no doc for docKey", d.docKey, "or no bytes");
+      }
+      return;
+    }
     if (d.type !== "rpc-call") return;
 
     // Multi-instance guard â€” if multiple TransportBridges are attached to
@@ -2243,6 +2260,11 @@ class OfficeEditorView extends obsidian.FileView {
       editorConfig: {
         mode: this.plugin.settings.defaultMode,
         lang: "en",
+        // PDF PoC: makes asc_Save() produce the native PDF binary client-side
+        // and fire asc_onSaveDocument (Common.Gateway.saveDocument) instead of
+        // the server-POST path. Scoped to pdf — docx/pptx/xlsx keep their
+        // /downloadas/ + x2t save flow.
+        canSaveDocumentToBinary: this.fileExtension === "pdf" ? true : undefined,
         user: { id: username, name: username },
         customization: {
           // PDF PoC: disable the editor's internal autosave for pdf so it
