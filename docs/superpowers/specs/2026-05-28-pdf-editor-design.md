@@ -33,7 +33,7 @@ The effort gates on two cheap PoCs before any production integration is built.
 **Gate:** all four steps green → proceed. Any failure → triage before building anything else.
 
 ### Phase 0b — iPad PoC (GATE 2)
-Reinstall the PoC asset zip on iPad; confirm `drawingfile.wasm` **boots in WKWebView** and a PDF opens. **Gate:** boots → proceed. Needs `SharedArrayBuffer` → iPad blocked; stop and reassess (desktop-only fallback, or abandon). Detection: try/catch around PDF open + check `typeof SharedArrayBuffer`.
+Reinstall the PoC asset zip on iPad; confirm `drawingfile.wasm` **boots in WKWebView** and a PDF opens. **Gate:** boots → proceed. Needs `SharedArrayBuffer` → iPad blocked → **stop and review whether a WASM workaround can be generated** (e.g., a single-threaded recompile of `drawingfile.wasm`, or an alternative PDF engine) *before* deciding between a desktop-only fallback or abandoning iPad. Detection: try/catch around PDF open + check `typeof SharedArrayBuffer`.
 
 ### Phase 1+ — Full integration (only if both gates pass)
 `PdfView`, the toggle + command/ribbon, the x2t-bypass bridge branches, sidecar 4-way + Search inclusion, then desktop + iPad smoke.
@@ -93,7 +93,7 @@ Save (Ctrl+S / toolbar / 10s autosave)
 
 ## Risks & mitigations
 
-1. **`drawingfile.wasm` needs SharedArrayBuffer/threads → iPad blocked.** Mitigation: Phase 0b gate (~1 day) before any production build; desktop-only fallback documented.
+1. **`drawingfile.wasm` needs SharedArrayBuffer/threads → iPad blocked.** Mitigation: Phase 0b gate (~1 day) before any production build. If hit, first review whether a WASM workaround can be generated (single-threaded recompile of `drawingfile.wasm`, or an alternative PDF engine); only then decide between desktop-only fallback or abandoning iPad.
 2. **x2t-bypass load + save branches** are new code paths and the #2 risk. Mitigation: validated end-to-end in Phase 0 desktop PoC before the view class is built.
 3. **`sdkjs/word/sdk-all.js` might lack compiled PDF code** in the pruned build. Mitigation: confirmed by the Phase 0 boot (it's the standard v9.3.1 word bundle, so expected to contain it).
 4. **Native-viewer override scope.** Mitigation: confined to toggle-ON; reload-to-apply; try/catch on `registerExtensions`.
