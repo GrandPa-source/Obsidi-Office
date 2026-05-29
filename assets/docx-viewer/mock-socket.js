@@ -95,7 +95,13 @@ function MockSocket(url, opts) {
       ]).then(function (results) {
         var editorBlob = results[0];
         var mediaFiles = results[1];
-        var dataMap = { "Editor.bin": URL.createObjectURL(editorBlob) };
+        // PDF PoC — the PDF editor's native viewer reads the document from the
+        // `origin.pdf` URL key (raw PDF), not `Editor.bin`. docExt is threaded
+        // in via window.__oo_params (main.js _renderEditor).
+        var docExt = (window.__oo_params && window.__oo_params.docExt) || "";
+        var docUrlKey = (docExt === "pdf") ? "origin.pdf" : "Editor.bin";
+        var dataMap = {};
+        dataMap[docUrlKey] = URL.createObjectURL(editorBlob);
         // Fetch each media file via shim (RPC) and create blob: URLs.
         // Native image loading (<img src>) can't use /media/ paths — those
         // only work for fetch/XHR which the shim intercepts. Blob URLs work natively.

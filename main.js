@@ -144,6 +144,7 @@ const vioAbs = {
 const VIEW_TYPE = "obsidi-office-docx";
 const VIEW_TYPE_PPTX = "obsidi-office-pptx";
 const VIEW_TYPE_XLSX = "obsidi-office-xlsx";
+const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -1740,12 +1741,22 @@ class OfficeEditorView extends obsidian.FileView {
       const sourceBytes = await this.app.vault.adapter.readBinary(file.path);
       dlog("read", sourceBytes.byteLength, "bytes from", file.path);
 
-      const result = await this.plugin.converter.toEditorBin(new Uint8Array(sourceBytes), this.fileExtension);
-      dlog("x2t produced", result.editorBin.byteLength, "Editor.bin bytes,",
-           result.media.size, "media files");
+      let docBytes, media;
+      if (this.fileExtension === "pdf") {
+        // PDF PoC — native load: feed raw PDF bytes to the engine, no x2t.
+        docBytes = new Uint8Array(sourceBytes);
+        media = new Map();
+        dlog("pdf native load:", docBytes.byteLength, "bytes (x2t bypassed)");
+      } else {
+        const result = await this.plugin.converter.toEditorBin(new Uint8Array(sourceBytes), this.fileExtension);
+        dlog("x2t produced", result.editorBin.byteLength, "Editor.bin bytes,",
+             result.media.size, "media files");
+        docBytes = result.editorBin;
+        media = result.media;
+      }
 
       this.plugin.bridge.registerDocument(
-        this.docKey, file.path, result.editorBin, result.media, this.fileExtension
+        this.docKey, file.path, docBytes, media, this.fileExtension
       );
 
       await this._renderEditor();
@@ -1929,6 +1940,7 @@ class OfficeEditorView extends obsidian.FileView {
             u.searchParams.forEach((v, k) => { params[k] = v; });
           } catch (e) {}
           params.docFilePath = filePath;
+          params.docExt = this.fileExtension;  // PDF PoC: mock-socket picks origin.pdf vs Editor.bin
           // Print-button enable signal for the iframe. Always true on
           // desktop; on mobile, governed by the user setting (defaults to
           // false because Capacitor WKWebView doesn't implement
@@ -2318,6 +2330,24 @@ class XlsxView extends OfficeEditorView {
   static get documentType()     { return "cell"; }   // Phase 0 verified
   static get editorType()       { return 4; }        // standard OnlyOffice cell editorType
   static get sidecarExtension() { return ".xlsx.md"; }
+}
+
+// ===========================================================================
+// PdfView — PDF PoC (Gate 1). Throwaway/minimal until both gates pass.
+// PDF loads NATIVELY (no x2t): the drawingfile engine reads PDF bytes,
+// delivered to the editor under the `origin.pdf` URL key. The PDF editor
+// shares the word SDK bundle (sdkjs/word), and identifies as c_oEditorId.Word
+// at the socket layer, so editorType 2 (same as docx).
+// ===========================================================================
+
+class PdfView extends OfficeEditorView {
+  static get VIEW_TYPE()        { return VIEW_TYPE_PDF; }
+  static get fileExtension()    { return "pdf"; }
+  static get engineAppPath()    { return "web-apps/apps/pdfeditor/main/"; }
+  static get engineSdkPath()    { return "sdkjs/word/"; }
+  static get documentType()     { return "pdf"; }
+  static get editorType()       { return 2; }
+  static get sidecarExtension() { return ".pdf.md"; }
 }
 
 // ===========================================================================
@@ -3198,6 +3228,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.registerView(VIEW_TYPE, (leaf) => new DocxView(leaf, this));
     this.registerView(VIEW_TYPE_PPTX, (leaf) => new PptxView(leaf, this));
     this.registerView(VIEW_TYPE_XLSX, (leaf) => new XlsxView(leaf, this));
+    // PDF PoC (Gate 1) — register view + a temp command. NO registerExtensions
+    // for pdf yet (default opt-in per design; PoC opens via the command only).
+    this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfView(leaf, this));
+    this.addCommand({
+      id: "pdf-poc-open",
+      name: "PDF PoC: open active/last .pdf in editor",
+      callback: async () => {
+        const f = this.app.workspace.getActiveFile()
+          || this.app.vault.getFiles().find((x) => x.extension === "pdf");
+        if (!f || f.extension !== "pdf") { new obsidian.Notice("No .pdf found"); return; }
+        await this._openInView(f);
+      },
+    });
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
@@ -3569,6 +3612,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PPTX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF);  // PDF PoC
   }
 
   async loadSettings() {
@@ -4402,6 +4446,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     let viewType = VIEW_TYPE;  // docx default
     if (file && file.extension === "pptx") viewType = VIEW_TYPE_PPTX;
     else if (file && file.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
+    else if (file && file.extension === "pdf") viewType = VIEW_TYPE_PDF;  // PDF PoC
     const leaf = this.app.workspace.getLeaf(true);
     await leaf.setViewState({ type: viewType, active: true });
     const view = leaf.view;
