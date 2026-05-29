@@ -1235,9 +1235,15 @@ class TransportBridge {
         ? editorBin
         : await this.converter.toSourceFormat(editorBin, ext, doc.media);
       if (!outBytes || outBytes.length === 0) return { reply: { error: 1 } };
-      await this.onSave(doc.filePath, outBytes);
+      // PDF PoC SAFETY: write pdf saves to a sibling *.pocsave.pdf so we can
+      // verify the 513 export WITHOUT overwriting (and risking corrupting)
+      // the original during the PoC. Switch to doc.filePath once proven.
+      const savePath = ext === "pdf"
+        ? doc.filePath.replace(/\.pdf$/i, ".pocsave.pdf")
+        : doc.filePath;
+      await this.onSave(savePath, outBytes);
       doc.editorBin = editorBin;
-      dlog("saved", outBytes.length, "bytes to", doc.filePath, "(ext:", ext, ")");
+      dlog("saved", outBytes.length, "bytes to", savePath, "(ext:", ext, ")");
       return { reply: { status: "ok", type: "save", data: saveKey || randomHex(8) } };
     } catch (err) {
       elog("save conversion failed:", err);

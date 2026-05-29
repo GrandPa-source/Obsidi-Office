@@ -295,8 +295,11 @@ function triggerSaveToVault() {
       // docx + pptx behavior identical.
       // PDF PoC: native PDF export (format 513). The editor produces a valid
       // PDF and POSTs it via /downloadas/; the bridge writes those bytes
-      // directly (no x2t reverse). isPdfEditor() is pdf-engine-specific.
-      if (typeof window.Asc.editor.isPdfEditor === "function" && window.Asc.editor.isPdfEditor()) {
+      // directly (no x2t reverse). Detect pdf via the docExt we thread into
+      // __oo_params — isPdfEditor() does NOT exist in this build (using it
+      // silently fell through to 65 = docx export, corrupting the .pdf).
+      var __saveExt = (window.__oo_params && window.__oo_params.docExt) || "";
+      if (__saveExt === "pdf") {
         _slog("triggerSaveToVault — asc_DownloadAs(513) [pdf]");
         window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(513));
       } else {
