@@ -2239,7 +2239,10 @@ class OfficeEditorView extends obsidian.FileView {
         lang: "en",
         user: { id: username, name: username },
         customization: {
-          forcesave: false, autosave: true, chat: false, comments: true,
+          // PDF PoC: disable the editor's internal autosave for pdf so it
+          // can't overwrite the file with a re-serialized (possibly stub) PDF
+          // before the user explicitly saves. Other formats keep autosave.
+          forcesave: false, autosave: this.fileExtension !== "pdf", chat: false, comments: true,
           about: false, help: false, feedback: false, plugins: false, macros: false,
           goback: false, close: false, compactHeader: true, hideRightMenu: true,
           // Spellcheck re-enabled 2026-04-27 via Blob-URL Worker + Worker-side
@@ -2256,6 +2259,11 @@ class OfficeEditorView extends obsidian.FileView {
         onAppReady:        () => dlog("onAppReady for", this.docKey),
         onDocumentReady:   () => dlog("onDocumentReady for", this.docKey),
         onDocumentStateChange: (e) => {
+          // PDF PoC: disable plugin-side autosave for pdf. The PDF editor can
+          // report "modified" on load / fit-to-width before any real edit, and
+          // a premature asc_DownloadAs(513) overwrote the file with a 1606-byte
+          // stub. Explicit Ctrl+S still saves. Revisit in Phase 1.
+          if (this.fileExtension === "pdf") return;
           // e.data === true means document is modified (unsaved changes)
           if (e && e.data === true) {
             dlog("document modified, scheduling auto-save for", this.docKey);
