@@ -1005,7 +1005,7 @@ class TransportBridge {
     // once verified.
     if (d.type === "pdf-save") {
       const doc = this.docs.get(d.docKey);
-      if (doc && d.bytes) {
+      if (doc && d.bytes && d.bytes.byteLength > 0) {
         const bytes = new Uint8Array(d.bytes);
         const savePath = doc.filePath.replace(/\.pdf$/i, ".pocsave.pdf");
         Promise.resolve(this.onSave(savePath, bytes))
@@ -1252,6 +1252,18 @@ class TransportBridge {
         ? editorBin
         : await this.converter.toSourceFormat(editorBin, ext, doc.media);
       if (!outBytes || outBytes.length === 0) return { reply: { error: 1 } };
+      if (ext === "pdf") {
+        // PDF PoC diagnostic: log the signature so we can tell a clean %PDF
+        // from an internal save-bin without manual hex inspection.
+        const n = Math.min(8, outBytes.length);
+        let head = "";
+        for (let i = 0; i < n; i++) head += outBytes[i].toString(16).padStart(2, "0") + " ";
+        let tailStr = "";
+        for (let i = Math.max(0, outBytes.length - 8); i < outBytes.length; i++) {
+          tailStr += String.fromCharCode(outBytes[i]);
+        }
+        dlog("pdf downloadAs: len", outBytes.length, "head[", head.trim(), "] tail<<", tailStr, ">>");
+      }
       // PDF PoC SAFETY: write pdf saves to a sibling *.pocsave.pdf so we can
       // verify the 513 export WITHOUT overwriting (and risking corrupting)
       // the original during the PoC. Switch to doc.filePath once proven.
@@ -2260,11 +2272,11 @@ class OfficeEditorView extends obsidian.FileView {
       editorConfig: {
         mode: this.plugin.settings.defaultMode,
         lang: "en",
-        // PDF PoC: makes asc_Save() produce the native PDF binary client-side
-        // and fire asc_onSaveDocument (Common.Gateway.saveDocument) instead of
-        // the server-POST path. Scoped to pdf — docx/pptx/xlsx keep their
-        // /downloadas/ + x2t save flow.
-        canSaveDocumentToBinary: this.fileExtension === "pdf" ? true : undefined,
+        // PDF PoC: client-side binary save is NOT enabled here. api.js
+        // (line ~408) recomputes editorConfig.canSaveDocumentToBinary from
+        // !!events.onSaveDocument at load time, OVERWRITING anything set on
+        // editorConfig. The real switch is the events.onSaveDocument handler
+        // below — see the comment there. docx/pptx/xlsx keep the x2t save flow.
         user: { id: username, name: username },
         customization: {
           // PDF PoC: disable the editor's internal autosave for pdf so it
@@ -2313,7 +2325,20 @@ class OfficeEditorView extends obsidian.FileView {
             }, 10000);
           }
         },
-        onError:           (e) => elog("Editor error:", e)
+        onError:           (e) => elog("Editor error:", e),
+        // PDF PoC: registering onSaveDocument is THE load-time switch that
+        // makes api.js set editorConfig.canSaveDocumentToBinary = true
+        // (api.js: `canSaveDocumentToBinary = !!events.onSaveDocument`). Only
+        // with the flag true does pdfeditor's app.js call
+        // put_SupportsOnSaveDocument(true) on the asc_CDocInfo at load and
+        // register asc_onSaveDocument → onSaveDocumentBinary. It MUST be set at
+        // load — put_SupportsOnSaveDocument is on the docInfo, not the editor,
+        // so it can't be flipped post-load from the iframe.
+        // This handler itself is an inert trigger: the saved bytes are captured
+        // in-iframe by mock-socket's Common.Gateway.saveDocument wrapper and
+        // posted to the bridge as "pdf-save". Scoped to pdf via the conditional
+        // so docx/pptx/xlsx never enter binary-save mode (they use x2t).
+        onSaveDocument:    this.fileExtension === "pdf" ? () => {} : undefined
       },
       type: "desktop",
       width: "100%",

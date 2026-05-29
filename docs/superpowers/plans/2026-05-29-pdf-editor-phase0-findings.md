@@ -1,12 +1,12 @@
 # OnlyOffice PDF Editor — Phase 0 Findings & Gate-1 Status (PAUSED)
 
-**Date:** 2026-05-29
-**Status:** Gate 1 (desktop PoC) — **load + edit PROVEN; save BLOCKED (one lever identified).** Phase 0b (iPad) not started.
+**Date:** 2026-05-29 (updated same day — save investigation concluded)
+**Status:** Gate 1 (desktop PoC) — **load + edit PROVEN. Native/structure-preserving SAVE is INFEASIBLE in our serverless browser runtime (conclusively ruled out, see §SAVE).** Only re-render-to-raster (Path R) is achievable with OnlyOffice; a true vector save needs a *different engine* (pdf.js / mupdf / PDFium). Phase 0b (iPad) not started. **Feature paused for a scope decision.**
 **Spec:** `docs/superpowers/specs/2026-05-28-pdf-editor-design.md`
 **Plan:** `docs/superpowers/plans/2026-05-28-pdf-editor-phase0.md`
-**HEAD at pause:** `add7f97`. PoC commit range: `6907f25..add7f97` (spec/plan + 10 PoC commits).
+**HEAD at pause:** `add7f97` + uncommitted save-investigation edits (see §Code state). PoC commit range: `6907f25..add7f97`.
 
-This doc is the resume point. Read it first when picking this back up.
+This doc is the resume point. Read it first when picking this back up. The decisive section is §SAVE (root cause was corrected) and §Structure-preserving research.
 
 ---
 
@@ -19,10 +19,11 @@ This doc is the resume point. Read it first when picking this back up.
 | Full **edit** mode ("Edit PDF", content editing) | ✅ PROVEN | `permissions.edit:true`, `mode:"edit"`; user edited text on screen |
 | Open via command without hijacking Obsidian's native `.pdf` viewer | ✅ PROVEN | `_openInView` with `state.file`; `.pdf` NOT registerExtensions'd |
 | No docx/pptx/xlsx regression | ✅ PROVEN | docx opened+rendered in same sessions |
-| **Save edited PDF → clean file** | ❌ BLOCKED | Needs **load-time `canSaveDocumentToBinary` injection** (see below) |
-| iPad (`drawingfile.wasm` in WKWebView) — Phase 0b | ⛔ NOT STARTED | Still the open feasibility risk for cross-platform |
+| **Save edited PDF → clean vector file** | ❌ INFEASIBLE (OnlyOffice, serverless) | The engine's only PDF writer is the headless DocBuilder native module (`a["native"]`), not loaded in the browser editor. See §SAVE. |
+| **Save edited PDF → re-rendered raster file (Path R)** | ✅ ACHIEVABLE (not yet wired) | Reuse the existing canvas+pdf-lib export pipeline. Pages become raster images + invisible text overlay. Lossy. |
+| iPad (`drawingfile.wasm` in WKWebView) — Phase 0b | ⛔ NOT STARTED | Moot until the save-architecture decision is made. |
 
-**Bottom line:** the core feasibility question ("can the PDF editor be embedded + load + edit in our localhost-free architecture?") is **YES, on desktop**. Save is the lone holdout and is solvable but needs a deeper, load-time config change.
+**Bottom line:** embedding + load + edit works on desktop. But **a structure-preserving (vector) save is not possible with OnlyOffice in our serverless/browser architecture** — every native PDF-write route is unavailable (§SAVE). The achievable OnlyOffice save is a raster re-render (Path R). A real vector save requires switching the *save engine* (or whole editor) to a browser-native PDF library — and even then, *editing existing body text* is infeasible in any browser library; only annotations/markup/form-fill survive as vector (§Structure-preserving research).
 
 ---
 
@@ -38,53 +39,56 @@ This doc is the resume point. Read it first when picking this back up.
 
 ---
 
-## The SAVE blocker — root cause + the exact next lever
+## SAVE — corrected root cause + the conclusive feasibility map
 
-**Symptom:** `asc_Save()` (and `asc_DownloadAs(513)`) do not produce a clean PDF. `asc_DownloadAs(513)` via `/downloadas/` POST yields a non-standard file (`%PDF` + binary `d0 1b 02 00`, "Unknown error") — OnlyOffice's internal save-bin, because x2t-wasm **cannot** produce PDF (confirmed in prior P21 research). `asc_Save()` falls back to the collaborative **socket** route (`isSaveLock → saveChanges → onDocumentStateChange:false`) and never emits a binary.
-
-**Root cause (confirmed):** The PDF editor only enters **client-side binary-save mode** when `editorConfig.canSaveDocumentToBinary` is true at **document-load** time. pdfeditor `app.js`:
+### The earlier root cause was WRONG
+The previous version of this doc said *"api.js does NOT forward `canSaveDocumentToBinary` (grep: zero references)"* and proposed injecting it at load. That was incorrect. **api.js line ~408 actually RECOMPUTES the flag** from the events object:
+```js
+_config.editorConfig.canSaveDocumentToBinary = _config.events && !!_config.events.onSaveDocument;
 ```
-this.appOptions.canSaveDocumentToBinary = this.editorConfig.canSaveDocumentToBinary;
-i.put_SupportsOnSaveDocument(this.editorConfig.canSaveDocumentToBinary);   // i = asc_CDocInfo, set via asc_setDocInfo at LOAD
-t.appOptions.canSaveDocumentToBinary && t.api.asc_registerCallback("asc_onSaveDocument", ...)
-```
-Two hard facts that block the obvious fixes:
-- **`api.js` does NOT forward `canSaveDocumentToBinary`** (grep: zero references). So setting it in our `_buildEditorConfig().editorConfig` never reaches the app.
-- **`put_SupportsOnSaveDocument` is NOT on `window.Asc.editor`** (runtime: "is not a function"). It lives on the `asc_CDocInfo` consumed at load. So it **cannot be set post-load** from the iframe. Registering `asc_onSaveDocument` in-iframe succeeds but never fires, because binary-save mode was never enabled.
+So api.js *overwrites* whatever we set on `editorConfig` — the flag is driven purely by whether we register an `events.onSaveDocument` handler. We never did, so it was always `false`.
 
-**The next lever (the focused resume task):** inject `canSaveDocumentToBinary: true` into the config **at the point the pdfeditor app reads `this.editorConfig`** — i.e. load-time. Candidate approaches, in rough order of likelihood:
-1. **Patch the app's config intake / the init message.** Find where the app sets `this.editorConfig` (it comes from the `{command:"init", data:{config}}` postMessage that api.js sends, or the app's own config processing). Patch our eval'd `api.js` (we already string-patch `frameOrigin`) to inject `canSaveDocumentToBinary:true` into the config it forwards for pdf, OR intercept the init postMessage in the iframe and add the flag before the app consumes it.
-2. **Set it on the `asc_CDocInfo` before `asc_LoadDocument`.** If we can reach the docInfo construction in-iframe (the app builds it during `loadDocument`), call `put_SupportsOnSaveDocument(true)` on **it** (not the editor) before load completes.
-3. If neither is reachable cleanly, fall back to the **Gateway `onSaveDocument`** flow end-to-end (we already hook `Common.Gateway.saveDocument`; it just never gets bytes because the app never calls `onSaveDocumentBinary` without the flag).
+### Enabling the flag the right way — and what it revealed
+**FIX APPLIED:** added `onSaveDocument` (pdf-scoped) to the `events` object in `_buildEditorConfig()`. Verified this makes the flag `true` and the engine enters binary-save mode. **But this only exposed the real wall:** with binary-save on, `asc_Save()` for a PDF takes the engine's *Branch B* (XHR/server route, because `asc_isSupportFeature("ooxml")` is false for PDF — only docx/pptx/xlsx take the clean in-memory Branch A). The result:
+- The engine POSTs an internal **save-bin** to `/downloadas/` → our `_downloadAs` captured **138218 bytes** whose signature is `25 50 44 46 d0 1b 02 00` = `%PDF` + OnlyOffice binary marker. **A real PDF starts `25 50 44 46 2d 31 2e` (`%PDF-1.`). This is the internal save-bin, not a PDF.** It needs server-side x2t conversion — and **x2t-wasm cannot write PDF** (long-established in P21; it's exactly why the docx→PDF export uses canvas+pdf-lib instead).
+- The `asc_onSaveDocument`/`Common.Gateway.saveDocument` callback fires with a **0-byte buffer** (the engine's follow-up XHR-GET to re-fetch the converted file returns empty from our shim). Empty.
 
-Once binary-save mode is on, the rest is already built: `asc_Save()` → `asc_onSaveDocument`/`Common.Gateway.saveDocument` → our hook posts `{type:"pdf-save", bytes}` to the bridge → bridge writes the file. The capture + write path is wired and waiting.
+### Every native PDF-write route — ruled out
+| Route | Verdict | Why |
+|---|---|---|
+| `asc_Save()` / `asc_DownloadAs(513)` → `/downloadas/` | ❌ | Produces the save-bin (`%PDF d0 1b 02 00`); needs server x2t; x2t-wasm can't write PDF. |
+| `asc_onSaveDocument` / Gateway callback | ❌ | Fires with 0 bytes (no server to return the converted file). |
+| **`asc_nativeGetPDF()`** (engine's own PDF writer) | ❌ | **TESTED — threw `Cannot read properties of undefined (reading 'Save_End')`.** It calls `a["native"].Save_End(...)`; `a["native"]` is the headless **DocBuilder/conversion** runtime (`IS_NATIVE_EDITOR`), NOT loaded in the interactive browser editor. The function is unguarded and assumes that runtime. Also it just loops `asc_nativePrint` over pages — a render path. |
+| `drawingfile.wasm` incremental save | ❌ | The 217-line `drawingfile.js` wrapper exposes read/render/page-ops (`_openFile`,`_getPixmap`,`_getStructure`,`_SplitPages`,`_RedactPage`,`_getAnnotationsInfo/AP`,`_getInteractiveFormsInfo/AP`…) but **NO PDF serializer/writer**. |
+| Force engine offline mode (`asc_isOffline`→true, gated on `file://`) | ❌ | Wouldn't help — the offline branch invokes the same `a["native"]` writer that isn't loaded. |
+| x2t-wasm reverse for PDF | ❌ | Cannot produce PDF (established). |
 
-**Ruled out:** `asc_DownloadAs(513)` + `/downloadas/` (produces non-PDF bin); x2t reverse for PDF (x2t-wasm can't make PDF); post-load `put_SupportsOnSaveDocument` on the editor (method absent).
+**Conclusion:** OnlyOffice has no client-side PDF writer in our serverless/browser runtime. The only OnlyOffice-based save is **Path R** — reuse the existing canvas+pdf-lib export pipeline (`captureAndExportPdf("export")`) to re-render the edited pages → real, openable, *searchable* PDF, but **rasterized** (page images + invisible text overlay; original vector/structure not preserved). Not yet wired into the pdf save path.
 
 ---
 
-## Current code state (all `// PDF PoC` tagged; behind the `pdf-poc-open` command)
+## Current code state (all `// PDF PoC` tagged; behind the `pdf-poc-open` command; deployed to OB_Testing, UNCOMMITTED)
+
+⚠️ The save path currently calls `asc_nativeGetPDF()`, which **throws** (native writer absent), so **Ctrl+S on a PDF logs an error and saves nothing**. This is the spike's end-state, intentionally left for documentation. Nothing here touches docx/pptx/xlsx.
 
 **`main.js`:**
 - `VIEW_TYPE_PDF` const; `PdfView` class (after `XlsxView`).
 - `onload`: `registerView(VIEW_TYPE_PDF…)` + `addCommand("pdf-poc-open")`; `detachLeavesOfType(VIEW_TYPE_PDF)` in `onunload`.
-- `_openInView`: `pdf → VIEW_TYPE_PDF` branch + `state.file` fix (the `state.file` fix is a GENERAL improvement — benefits docx/pptx/xlsx "open current" too).
+- `_openInView`: `pdf → VIEW_TYPE_PDF` branch + `state.file` fix (GENERAL improvement — benefits docx/pptx/xlsx "open current" too).
 - `_onLoadFileInner`: `if (ext==="pdf")` native-load branch (skip x2t).
 - `params.docExt` threaded into `__oo_params`.
-- `_buildEditorConfig`: `document.isForm:false` (pdf) + `editorConfig.canSaveDocumentToBinary:true` (pdf) [latter is INERT — api.js drops it; left as documentation of intent].
-- `TransportBridge._onMessage`: `type:"pdf-save"` branch → writes to `*.pocsave.pdf` (PoC-safety path).
-- `TransportBridge._downloadAs`: `ext==="pdf"` → write bytes directly (skip toSourceFormat) to `*.pocsave.pdf` [from the asc_DownloadAs(513) attempt — now superseded by the pdf-save message path; revisit on cleanup].
-- `onDocumentStateChange`: `if (fileExtension==="pdf") return;` (autosave disabled for pdf — PoC safety).
-- `customization.autosave`: `false` for pdf.
+- `_buildEditorConfig`: `document.isForm:false` (pdf). The inert `canSaveDocumentToBinary` line was REMOVED (api.js recomputes it); replaced with a comment pointing to `events.onSaveDocument`. **NEW:** `events.onSaveDocument: fileExtension==="pdf" ? ()=>{} : undefined` — this is the real load-time switch that flips api.js's flag true (pdf-scoped).
+- `TransportBridge._onMessage`: `type:"pdf-save"` branch → writes to `*.pocsave.pdf`. **NEW:** guarded `d.bytes.byteLength > 0` (never write empty).
+- `TransportBridge._downloadAs`: `ext==="pdf"` → write bytes directly to `*.pocsave.pdf`. **NEW:** diagnostic logs the PDF signature (head/tail). NOTE: with the current `asc_nativeGetPDF` save path this branch is no longer hit (we don't call `asc_Save`); it only fired during the earlier flag test.
+- `onDocumentStateChange`: `if (fileExtension==="pdf") return;` (autosave disabled for pdf). `customization.autosave:false` for pdf.
 
-**`assets/docx-viewer/transport-shim.js`:**
-- `/downloadfile/` added to DYNAMIC + dispatch → `handleGetDownloadFile()` (serves bytes as application/pdf). Moot with `isForm:false`; harmless. **Has a diagnostic `console.log` in `isDynamic` for `downloadfile` URLs — remove on cleanup.**
+**`assets/docx-viewer/transport-shim.js`:** `/downloadfile/` intercept (moot with `isForm:false`; harmless). Still has a diagnostic `console.log` — remove on cleanup.
 
 **`assets/docx-viewer/mock-socket.js`:**
 - `documentOpen`: `origin.pdf` key for pdf.
-- `triggerSaveToVault`: `if (docExt==="pdf")` → `ensurePdfSaveHook()` + `asc_Save()`.
-- `ensurePdfSaveHook()` + `_postPdfBytes()`: enables binary save in-iframe (currently INERT — `put_SupportsOnSaveDocument` not on editor) + registers `asc_onSaveDocument` + Gateway fallback hook.
-- Fit-to-width ready block calls `ensurePdfSaveHook()` early for pdf.
+- `triggerSaveToVault`: pdf branch now calls **`asc_nativeGetPDF()`** directly (bypasses `asc_Save()`), logs len/head/tail, posts bytes via `_postPdfBytes`. Falls back to `asc_Save()` only if the method is absent. ⚠️ `asc_nativeGetPDF()` throws in our runtime — see §SAVE.
+- `ensurePdfSaveHook()`: collapsed to a single `Common.Gateway.saveDocument` wrapper (dead `put_SupportsOnSaveDocument` + duplicate `asc_onSaveDocument` registration removed). Guards empty buffer. Only reached via the asc_Save fallback now.
+- `_postPdfBytes()`: posts `{type:"pdf-save", bytes}` to the bridge.
 
 ---
 
@@ -106,12 +110,48 @@ Once binary-save mode is on, the rest is already built: `asc_Save()` → `asc_on
 
 ---
 
+## Structure-preserving save — feasibility research (2026-05-29, 3 parallel agents)
+
+User's question on pause: *"surely because we can still interact & edit the PDF there is enough information to still save non-flattened/rasterized pages."* Researched three angles: (A) what edit data OnlyOffice exposes client-side; (B) the browser PDF-write library ecosystem; (C) how existing browser PDF editors do non-raster save. Convergent answer below.
+
+### A — What OnlyOffice exposes client-side (codebase RE)
+- **Edit model:** With `isForm:false`, edits flow through the **same document-history/transaction system as Word** (`asc_EditPage`→`Kei`, `AddFreeTextAnnot`→`VWd`, all via the history wrapper). Existing page text, once edited, is **reflowed into the engine's private CDocument model** — not stored as recoverable PDF objects.
+- **Extractable as structured JS:** **annotations** (`getAnnotationsInfo` → per-annot type/page/rect/color/contents + rich-text runs + `InkList`/`QuadPoints`/`Vertices`) and **form values** (`asc_GetAllFormsData`/`asc_GetFormValue`/`getInteractiveFormsInfo().Fields[]`). ✅
+- **NOT extractable:** edits to **existing body text** — no structured op log; only an opaque glyph-draw buffer or re-render. ❌
+- **Appearance streams are NOT vector:** `_getAnnotationsAP`/`_getInteractiveFormsAP` take **pixel w/h + background** and return **raster pixmaps**, not PDF `/AP` content streams. So the hoped-for "splice the AP into the original PDF" shortcut **does not exist.**
+- **Guardrails:** page add/remove/rotate/merge and **redaction** break any original-bytes mapping; redaction-as-overlay would leak data (security defect). Must detect and bail/full-rebuild.
+
+### B + C — Browser PDF-write ecosystem & the real architecture
+The dominant browser pattern for non-raster save: **keep original PDF bytes immutable + represent edits as an annotation/object layer + write them as real PDF objects (incremental update) on save.** Vector preservation = editing the PDF *object graph*, not pixels. **Crucially, NO browser library edits/reflows existing body text** — that's native/server-only (Acrobat, Qoppa, Foxit). pdf.js, mupdf, PDFium all scope to annotations/forms/page-ops.
+
+| Engine | License | In-browser edit+save | Notes |
+|---|---|---|---|
+| **pdf.js** annotation editor + `saveDocument()` | Apache-2.0 | FreeText/Ink/Stamp/Highlight + form fill → incremental save | Ships in Firefox; save is **viewer-coupled / internal-dependent** (not a clean headless API). Pure JS, **no SharedArrayBuffer** (solves the iPad gate). `/AP` + CJK font-embed gotchas. |
+| **mupdf.js** (WASM) | **AGPL-3.0** / commercial | Annotations + **redaction** + forms + page ops + true `saveToBuffer("incremental")` | Most capable single engine. ~8–15 MB wasm. Single-threaded (no SAB). AGPL — but OnlyOffice is already AGPL, so may be license-consistent. |
+| **EmbedPDF `@embedpdf/pdfium`** (WASM) | **MIT wrapper + BSD/Apache PDFium** | annotations, forms, page ops, `saveAsCopy()` | **Permissive** (AGPL escape hatch). ~3–6 MB wasm, single-threaded. Newer/less proven — needs its own Gate-1 PoC. |
+| **pdf-lib** (`@cantoo/pdf-lib` fork) | MIT | form-fill + add new content/annotations (hand-built dicts); **full-rewrite** save | No existing-text edit; weak incremental (fork-only). Good for the *reconstruct* half if paired with an extractor. |
+
+### Synthesis / strategic conclusion
+1. **OnlyOffice is the wrong engine for a vector PDF save.** It uniquely attempts *full text editing* — the one thing no browser engine can save client-side. Its save needs the server/headless native writer we don't have.
+2. **The edits we CAN extract from OnlyOffice (annotations + form-fill) are exactly the subset a purpose-built browser annotator handles natively and saves losslessly — without OnlyOffice at all.** Trying to extract-then-rebuild via pdf-lib is possible for those types but redundant and fiddly (pdf-lib has no high-level annotation API; OnlyOffice AP is raster).
+3. **Full existing-text editing + vector save is infeasible client-side in any library.** Treat it as out of scope (or "redact region + overlay text", which is brittle).
+
+### Decision options for resume (pick one)
+- **(R) Ship raster save with OnlyOffice.** Wire `captureAndExportPdf("export")` → pocsave/real path. Keeps full-edit UX; output is flattened+searchable. Lowest effort. Honest framing: "edit, then flatten-to-PDF on save."
+- **(S) Re-scope to an annotation/markup/form PDF editor on a browser-native engine.** Drop OnlyOffice for PDFs; adopt **pdf.js editor + saveDocument()** (permissive, no SAB, pure JS — also clears the iPad Phase-0b gate) or **mupdf.js** (more capable, AGPL) or **EmbedPDF/PDFium** (permissive WASM). True vector save; no existing-text edit. This is the architecturally-correct path if the goal is "markup/fill/sign a PDF and save a real PDF."
+- **(X) Shelve the PDF editor.** docx/pptx/xlsx editing + the existing docx→PDF *export* already cover the high-value cases.
+
+Recommendation: **(S) with pdf.js** if a real (non-raster) PDF editor is wanted and annotation/markup/form scope is acceptable; **(X)** if not worth the build; **(R)** only if full-content-edit UX matters more than output fidelity.
+
 ## How to reproduce the current state (≈30s)
 
 1. OB_Testing already has the deployed plugin + pdfeditor assets. Full-restart Obsidian.
 2. Put a text PDF in the vault; run command **"PDF PoC: open active/last .pdf in editor"**.
-3. PDF renders in the OnlyOffice editor; "Edit PDF" → edit works. Ctrl+S → `asc_Save()` fires but no binary (the blocker).
+3. PDF renders in the OnlyOffice editor; "Edit PDF" → edit works. Ctrl+S → logs `triggerSaveToVault — asc_nativeGetPDF() [pdf]` then `asc_nativeGetPDF failed: TypeError … 'Save_End'` — **nothing saved** (native writer absent; this is the documented end-state, not a regression to fix in place).
 
-## Reminder of the larger plan
-- Phase 0b (iPad): the `drawingfile.wasm`-in-WKWebView SharedArrayBuffer risk is **still unverified** and is the gate for cross-platform. Per spec, if it needs SAB, first review a single-threaded `drawingfile.wasm` recompile before any desktop-only fallback.
-- Phase 1 (full integration: toggle, ribbon, sidecar 4-way, Search, build-assets + zip ship) is gated on Phase 0 (save) + Phase 0b (iPad) passing.
+## Reminder of the larger plan (now contingent on the §SAVE decision)
+- **The save architecture must be decided first** (options R/S/X above). Phase 0b and Phase 1 are moot until then:
+  - If **(S) pdf.js / EmbedPDF-PDFium**: those are single-threaded (no SharedArrayBuffer) — the iPad Phase-0b SAB gate largely evaporates. mupdf.js is also single-threaded per its docs.
+  - If **(R) raster via OnlyOffice**: Phase 0b reverts to the original `drawingfile.wasm`-in-WKWebView SAB question.
+- Phase 1 (toggle, ribbon, sidecar 4-way, Search, build-assets + zip ship) stays gated on the save decision + iPad pass.
+- **Cleanup if abandoning the OnlyOffice PDF route:** the PoC `// PDF PoC` code is isolated behind `pdf-poc-open` and doesn't touch docx/pptx/xlsx; the `events.onSaveDocument` pdf-scoped addition and the `state.file` fix in `_openInView` are harmless general improvements worth keeping regardless.

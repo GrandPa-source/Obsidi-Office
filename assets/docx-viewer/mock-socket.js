@@ -297,48 +297,37 @@ function _postPdfBytes(ab) {
 function ensurePdfSaveHook() {
   try {
     if (ensurePdfSaveHook.__done) return;
-    var ed = window.Asc && window.Asc.editor;
-    if (!ed) return;
-    // api.js does NOT forward editorConfig.canSaveDocumentToBinary, so the
-    // engine never enters binary-save mode and asc_Save() falls back to the
-    // socket route (no PDF produced). We make the same two calls pdfeditor's
-    // app.js makes — directly on the editor, in-iframe:
-    //   api.put_SupportsOnSaveDocument(true);
-    //   api.asc_registerCallback("asc_onSaveDocument", handler)
-    if (typeof ed.put_SupportsOnSaveDocument === "function") {
-      ed.put_SupportsOnSaveDocument(true);
-      _slog("put_SupportsOnSaveDocument(true) [pdf]");
-    } else {
-      _slog("WARN: ed.put_SupportsOnSaveDocument is not a function");
-    }
-    if (typeof ed.asc_registerCallback === "function") {
-      ed.asc_registerCallback("asc_onSaveDocument", function (t) {
-        try {
-          var ab = (t instanceof ArrayBuffer) ? t
-            : (t && t.buffer instanceof ArrayBuffer) ? t.buffer
-            : (t && t.data) ? (t.data.buffer || t.data) : null;
-          if (!ab) { console.error("[mock-socket] asc_onSaveDocument: no buffer in", t); return; }
-          _slog("asc_onSaveDocument captured " + ab.byteLength + " bytes");
-          _postPdfBytes(ab);
-        } catch (e) { console.error("[mock-socket] asc_onSaveDocument handler error:", e); }
-      });
-      _slog("registered asc_onSaveDocument [pdf]");
-    }
-    // Fallback: also hook Common.Gateway.saveDocument in case the engine
-    // routes through the app's gateway path instead of our direct callback.
+    // Binary-save mode is enabled at LOAD via editorConfig.canSaveDocumentToBinary
+    // (driven by the parent's events.onSaveDocument — see main.js _buildEditorConfig).
+    // With it on, pdfeditor app.js registers asc_onSaveDocument → onSaveDocumentBinary
+    // → Common.Gateway.saveDocument(t), where t.buffer is a CLEAN PDF ArrayBuffer.
+    // We wrap that single downstream call to grab the bytes in-iframe. We do NOT
+    // register our own asc_onSaveDocument: app.js's onSaveDocumentBinary also runs
+    // long-action unblocking, so we let it run and intercept only its Gateway call.
     var C = window.Common;
     if (C && C.Gateway && !C.Gateway.__obsidiPdfHooked) {
       var orig = C.Gateway.saveDocument;
       C.Gateway.saveDocument = function (t) {
         try {
-          if (t && t.buffer) { _slog("Gateway.saveDocument captured " + t.buffer.byteLength + " bytes"); _postPdfBytes(t.buffer); return; }
+          if (t && t.buffer && t.buffer.byteLength > 0) {
+            _slog("Gateway.saveDocument captured " + t.buffer.byteLength + " bytes [pdf]");
+            _postPdfBytes(t.buffer);
+            return;
+          }
+          // Empty buffer: the engine's PDF binary comes via the downloadAs
+          // POST path (Branch B), not this callback. Don't post 0 bytes — it
+          // would clobber the real file written by the downloadAs handler.
+          _slog("Gateway.saveDocument: empty buffer (" +
+            ((t && t.buffer && t.buffer.byteLength) || 0) + " bytes) — ignored [pdf]");
         } catch (e) { console.error("[mock-socket] gateway save capture failed:", e); }
         return orig ? orig.apply(this, arguments) : undefined;
       };
       C.Gateway.__obsidiPdfHooked = true;
+      ensurePdfSaveHook.__done = true;
+      _slog("pdf save hook ready (Gateway.saveDocument wrapped)");
+    } else if (!C || !C.Gateway) {
+      _slog("WARN: Common.Gateway not ready; pdf save hook deferred");
     }
-    ensurePdfSaveHook.__done = true;
-    _slog("pdf save hook ready");
   } catch (e) { console.error("[mock-socket] ensurePdfSaveHook error:", e); }
 }
 
@@ -360,14 +349,38 @@ function triggerSaveToVault() {
       // silently fell through to 65 = docx export, corrupting the .pdf).
       var __saveExt = (window.__oo_params && window.__oo_params.docExt) || "";
       if (__saveExt === "pdf") {
-        // PDF: native client-side save. asc_DownloadAs(513) via /downloadas/
-        // produced a non-standard %PDF "save-bin" (Unknown error). With
-        // editorConfig.canSaveDocumentToBinary:true, asc_Save() fires
-        // asc_onSaveDocument → Common.Gateway.saveDocument(t) with t.buffer =
-        // a CLEAN PDF ArrayBuffer. We hook that to grab the bytes in-iframe.
-        ensurePdfSaveHook();
-        _slog("triggerSaveToVault — asc_Save() [pdf]");
-        window.Asc.editor.asc_Save();
+        // PDF native save (Path N): the engine's asc_nativeGetPDF() renders
+        // every page through the built-in PDF writer (asc_nativePrint into a
+        // PDF memory stream) and returns real PDF bytes synchronously, fully
+        // client-side — no server, no AscDesktopEditor, no offline mode.
+        // This avoids asc_Save()/asc_DownloadAs(513), which only yield the
+        // internal "save-bin" (%PDF + d0 1b 02 00) that needs server x2t.
+        var ed = window.Asc.editor;
+        if (typeof ed.asc_nativeGetPDF === "function") {
+          try {
+            _slog("triggerSaveToVault — asc_nativeGetPDF() [pdf]");
+            var out = ed.asc_nativeGetPDF();
+            var u8 = (out instanceof Uint8Array) ? out
+              : (out && out.data) ? new Uint8Array(out.data)
+              : (out ? new Uint8Array(out) : null);
+            if (u8 && u8.byteLength > 0) {
+              var head = "";
+              for (var hi = 0; hi < Math.min(8, u8.length); hi++) head += u8[hi].toString(16).padStart(2, "0") + " ";
+              var tail = "";
+              for (var ti = Math.max(0, u8.length - 8); ti < u8.length; ti++) tail += String.fromCharCode(u8[ti]);
+              _slog("asc_nativeGetPDF: len " + u8.byteLength + " head[" + head.trim() + "] tail<<" + tail + ">>");
+              // Copy into a fresh exact-length ArrayBuffer for transfer.
+              var copy = new Uint8Array(u8);
+              _postPdfBytes(copy.buffer);
+            } else {
+              _slog("WARN: asc_nativeGetPDF returned empty");
+            }
+          } catch (e) { console.error("[mock-socket] asc_nativeGetPDF failed:", e); }
+        } else {
+          _slog("WARN: asc_nativeGetPDF not a function — falling back to asc_Save()");
+          ensurePdfSaveHook();
+          window.Asc.editor.asc_Save();
+        }
       } else {
         if (typeof window.Asc.editor.asc_closeCellEditor === "function") {
           try {
