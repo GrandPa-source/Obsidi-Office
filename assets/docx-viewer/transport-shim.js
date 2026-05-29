@@ -42,16 +42,20 @@
     /\/downloadas\//,             // POST save (the critical one)
     /\/upload\//,                 // POST embedded image upload
     /\/callback(\?|$)/,           // POST callback (mostly unused)
-    /\/downloadfile\//,           // PDF PoC: native viewer document download
+    /downloadfile\//,             // PDF PoC: native viewer document download (lenient — relative or absolute)
     /\/fonts\/\d+/                // GET numbered font files (need fallback for missing)
   ];
 
   function isDynamic(url) {
     if (typeof url !== "string") url = String(url);
+    var dyn = false;
     for (var i = 0; i < DYNAMIC.length; i++) {
-      if (DYNAMIC[i].test(url)) return true;
+      if (DYNAMIC[i].test(url)) { dyn = true; break; }
     }
-    return false;
+    // PDF PoC diagnostic — see whether the shim observes the document download
+    // and whether the pattern matches. Remove once Gate 1 passes.
+    if (/downloadfile/i.test(url)) console.log("[shim] downloadfile url seen:", url, "-> dynamic:", dyn);
+    return dyn;
   }
 
   // ---------- RPC ----------
@@ -237,7 +241,7 @@
   function dispatch(method, url, body, contentType) {
     var path = urlPathOf(url);
     if (/\/document(\/)?(\?|$)/.test(path) && method === "GET")    return handleGetDocument();
-    if (/\/downloadfile\//.test(path))                             return handleGetDownloadFile();  // PDF PoC
+    if (/downloadfile\//.test(path))                               return handleGetDownloadFile();  // PDF PoC
     if (/\/media-manifest(\?|$)/.test(path) && method === "GET")   return handleGetMediaManifest();
     if (/\/media\//.test(path) && method === "GET")                return handleGetMedia(path);
     if (/\/downloadas\//.test(path))                               return handleDownloadAs(url, body);
