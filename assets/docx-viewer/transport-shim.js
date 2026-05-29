@@ -42,6 +42,7 @@
     /\/downloadas\//,             // POST save (the critical one)
     /\/upload\//,                 // POST embedded image upload
     /\/callback(\?|$)/,           // POST callback (mostly unused)
+    /\/downloadfile\//,           // PDF PoC: native viewer document download
     /\/fonts\/\d+/                // GET numbered font files (need fallback for missing)
   ];
 
@@ -128,6 +129,19 @@
       return makeResponse(r.bytes, {
         status: 200,
         headers: { "Content-Type": "application/octet-stream" }
+      });
+    });
+  }
+
+  function handleGetDownloadFile() {
+    // PDF PoC — the PDF native viewer downloads the document from a
+    // `downloadfile/<hash>` URL (not the /document path). Serve the registered
+    // PDF bytes as application/pdf. One doc per iframe, so DOC_KEY is implicit.
+    return rpc("getDocument", { docKey: DOC_KEY }).then(function (r) {
+      if (!r || !r.ok) return makeResponse("", { status: 404 });
+      return makeResponse(r.bytes, {
+        status: 200,
+        headers: { "Content-Type": "application/pdf" }
       });
     });
   }
@@ -223,6 +237,7 @@
   function dispatch(method, url, body, contentType) {
     var path = urlPathOf(url);
     if (/\/document(\/)?(\?|$)/.test(path) && method === "GET")    return handleGetDocument();
+    if (/\/downloadfile\//.test(path))                             return handleGetDownloadFile();  // PDF PoC
     if (/\/media-manifest(\?|$)/.test(path) && method === "GET")   return handleGetMediaManifest();
     if (/\/media\//.test(path) && method === "GET")                return handleGetMedia(path);
     if (/\/downloadas\//.test(path))                               return handleDownloadAs(url, body);
