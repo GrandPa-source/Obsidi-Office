@@ -4448,9 +4448,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     else if (file && file.extension === "xlsx") viewType = VIEW_TYPE_XLSX;
     else if (file && file.extension === "pdf") viewType = VIEW_TYPE_PDF;  // PDF PoC
     const leaf = this.app.workspace.getLeaf(true);
-    await leaf.setViewState({ type: viewType, active: true });
-    const view = leaf.view;
-    if (view && view.onLoadFile) await view.onLoadFile(file);
+    // Pass state.file so the FileView loads it via its lifecycle (onLoadFile).
+    // WITHOUT state.file, setViewState constructs the view, fires onOpen
+    // (hasFile:false), then collapses it back to "empty" before the file
+    // loads (the sidecar-redirect lesson). The explicit `type` forces this
+    // editor view even when the extension (e.g. .pdf) is owned by a native
+    // Obsidian viewer.
+    await leaf.setViewState({ type: viewType, active: true, state: { file: file.path } });
+    this.app.workspace.revealLeaf(leaf);
   }
 }
 
