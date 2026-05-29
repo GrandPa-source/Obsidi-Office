@@ -2215,6 +2215,11 @@ class OfficeEditorView extends obsidian.FileView {
     return {
       document: {
         fileType: this.fileExtension,
+        // PDF PoC: isForm:false skips the pdfeditor's checkExtendedPDF probe
+        // (the blocked `downloadfile/<hash>` range request) AND opens the PDF
+        // as a regular editable document (not a form). Scoped to pdf so docx
+        // OFORM behavior is unchanged.
+        isForm: this.fileExtension === "pdf" ? false : undefined,
         key: editorKey,
         title: filename,
         url: "/document?docKey=" + encodeURIComponent(this.docKey),
