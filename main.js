@@ -1229,7 +1229,11 @@ class TransportBridge {
 
     try {
       const ext = doc.extension || "docx"; // legacy-safe fallback
-      const outBytes = await this.converter.toSourceFormat(editorBin, ext, doc.media);
+      // PDF PoC: asc_DownloadAs(513) POSTs native PDF bytes — they ARE the
+      // final file, so skip the x2t reverse conversion and write directly.
+      const outBytes = ext === "pdf"
+        ? editorBin
+        : await this.converter.toSourceFormat(editorBin, ext, doc.media);
       if (!outBytes || outBytes.length === 0) return { reply: { error: 1 } };
       await this.onSave(doc.filePath, outBytes);
       doc.editorBin = editorBin;

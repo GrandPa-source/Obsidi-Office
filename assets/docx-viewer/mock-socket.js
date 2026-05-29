@@ -293,16 +293,24 @@ function triggerSaveToVault() {
       // the in-progress edit. asc_closeCellEditor is cell-engine-specific
       // (undefined on word/slide engines), so the typeof guard keeps
       // docx + pptx behavior identical.
-      if (typeof window.Asc.editor.asc_closeCellEditor === "function") {
-        try {
-          window.Asc.editor.asc_closeCellEditor();
-          _slog("triggerSaveToVault — committed pending cell edit");
-        } catch (commitEx) {
-          _slog("triggerSaveToVault — asc_closeCellEditor threw (continuing):", commitEx.message);
+      // PDF PoC: native PDF export (format 513). The editor produces a valid
+      // PDF and POSTs it via /downloadas/; the bridge writes those bytes
+      // directly (no x2t reverse). isPdfEditor() is pdf-engine-specific.
+      if (typeof window.Asc.editor.isPdfEditor === "function" && window.Asc.editor.isPdfEditor()) {
+        _slog("triggerSaveToVault — asc_DownloadAs(513) [pdf]");
+        window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(513));
+      } else {
+        if (typeof window.Asc.editor.asc_closeCellEditor === "function") {
+          try {
+            window.Asc.editor.asc_closeCellEditor();
+            _slog("triggerSaveToVault — committed pending cell edit");
+          } catch (commitEx) {
+            _slog("triggerSaveToVault — asc_closeCellEditor threw (continuing):", commitEx.message);
+          }
         }
+        _slog("triggerSaveToVault — asc_DownloadAs(65)");
+        window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(65));
       }
-      _slog("triggerSaveToVault — asc_DownloadAs(65)");
-      window.Asc.editor.asc_DownloadAs(new window.Asc.asc_CDownloadOptions(65));
     } catch (ex) { console.error("[mock-socket] save error:", ex); }
   }
 }
