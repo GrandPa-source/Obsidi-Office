@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ObsidiPdfEditor — standalone validation</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        font-family: system-ui, sans-serif;
+      }
+      #bar {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        padding: 6px 10px;
+        background: #204295;
+        color: #fff;
+      }
+      #bar button {
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      #status {
+        font-size: 12px;
+      }
+      #editor {
+        height: calc(100% - 44px);
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="bar">
+      <strong>ObsidiPdfEditor PoC</strong>
+      <button id="saveBtn">Save</button>
+      <span id="status">booting…</span>
+    </div>
+    <div id="editor"></div>
+
+    <!-- The IIFE bundle exposes window.ObsidiPdfEditor -->
+    <script src="../dist/pdf-editor.js"></script>
+    <script>
+      // Test hooks Playwright reads:
+      window.__poc = { mounted: false, saved: null, error: null, savedSize: 0 };
+
+      const status = (m) => {
+        document.getElementById('status').textContent = m;
+        console.log('[poc]', m);
+      };
+
+      async function boot() {
+        try {
+          status('fetching sample.pdf + wasm…');
+          const pdfBytes = new Uint8Array(
+            await (await fetch('./sample.pdf')).arrayBuffer(),
+          );
+          // pdfiumWasmUrl is fetched by createPdfiumEngine internally.
+          const pdfiumWasmUrl = new URL('./pdfium.wasm', location.href).href;
+
+          status('mounting editor…');
+          await window.ObsidiPdfEditor.mountPdfEditor(
+            document.getElementById('editor'),
+            pdfBytes,
+            {
+              pdfiumWasmUrl,
+              author: 'PoC',
+              onSave: async (bytes) => {
+                window.__poc.saved = true;
+                window.__poc.savedSize = bytes.length;
+                const sig = String.fromCharCode(...bytes.slice(0, 5));
+                status('saved ' + bytes.length + ' bytes, sig=' + sig);
+                console.log('[poc] onSave fired', bytes.length, sig);
+              },
+            },
+          );
+          window.__poc.mounted = true;
+          status('mounted — render should be visible');
+        } catch (e) {
+          window.__poc.error = String((e && e.stack) || e);
+          status('ERROR: ' + (e && e.message ? e.message : e));
+          console.error('[poc] boot failed', e);
+        }
+      }
+
+      document.getElementById('saveBtn').addEventListener('click', async () => {
+        try {
+          status('saving…');
+          await window.ObsidiPdfEditor.savePdfEditor();
+        } catch (e) {
+          window.__poc.error = String((e && e.stack) || e);
+          status('SAVE ERROR: ' + (e && e.message ? e.message : e));
+          console.error('[poc] save failed', e);
+        }
+      });
+
+      boot();
+    </script>
+  </body>
+</html>

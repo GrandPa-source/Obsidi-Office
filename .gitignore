@@ -1,13 +1,16 @@
-# Large OnlyOffice assets — downloaded at runtime, not committed
+# OnlyOffice assets (large, license-encumbered)
 assets/onlyoffice/
 assets/x2t/
-
-# Backup files created by AssetPatcher
-*.original
-
-# Node
+assets/dont_modify_unless/
 node_modules/
+assets/test/
+pdf-poc/
+pdf-poc-open/
+pdf-poc-findings/
 
-# OS
-.DS_Store
-Thumbs.db
+# PDF editor (Preact + EmbedPDF) bundle — Task 3 PoC
+pdf-editor/node_modules/
+pdf-editor/dist/
+# Test fixtures: runtime wasm + any sample/PII PDFs (sample.pdf is regenerable via test/make-sample.mjs)
+pdf-editor/test/pdfium.wasm
+pdf-editor/test/*.pdf

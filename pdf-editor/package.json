@@ -1,0 +1,31 @@
+{
+  "name": "obsidi-pdf-editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Preact + EmbedPDF browser PDF editor bundle for Obsidi-Office (Task 3 PoC).",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs"
+  },
+  "dependencies": {
+    "@embedpdf/core": "2.14.3",
+    "@embedpdf/engines": "2.14.3",
+    "@embedpdf/models": "2.14.3",
+    "@embedpdf/pdfium": "2.14.3",
+    "@embedpdf/plugin-annotation": "2.14.3",
+    "@embedpdf/plugin-document-manager": "2.14.3",
+    "@embedpdf/plugin-export": "2.14.3",
+    "@embedpdf/plugin-history": "2.14.3",
+    "@embedpdf/plugin-interaction-manager": "2.14.3",
+    "@embedpdf/plugin-render": "2.14.3",
+    "@embedpdf/plugin-scroll": "2.14.3",
+    "@embedpdf/plugin-selection": "2.14.3",
+    "@embedpdf/plugin-viewport": "2.14.3",
+    "@embedpdf/plugin-zoom": "2.14.3",
+    "preact": "^10.24.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.3"
+  }
+}
