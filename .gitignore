@@ -11,6 +11,8 @@ pdf-poc-findings/
 # PDF editor (Preact + EmbedPDF) bundle — Task 3 PoC
 pdf-editor/node_modules/
 pdf-editor/dist/
+# PDFium wasm staged as a plugin asset (large binary, ~4.6 MB) — Task 4 PoC
+assets/pdfium/*.wasm
 # Test fixtures: runtime wasm + any sample/PII PDFs (sample.pdf is regenerable via test/make-sample.mjs)
 pdf-editor/test/pdfium.wasm
 pdf-editor/test/*.pdf

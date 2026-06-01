@@ -145,6 +145,7 @@ const VIEW_TYPE = "obsidi-office-docx";
 const VIEW_TYPE_PPTX = "obsidi-office-pptx";
 const VIEW_TYPE_XLSX = "obsidi-office-xlsx";
 const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
+const VIEW_TYPE_PDF_EMBED = "obsidi-office-pdf-embed";  // PDF-EMBEDPDF PoC
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -2421,6 +2422,131 @@ class PdfView extends OfficeEditorView {
 }
 
 // ===========================================================================
+// PdfEmbedView — PDF-EMBEDPDF PoC. A second, INDEPENDENT PDF editor built on
+// the browser-native EmbedPDF (Preact + main-thread PDFium) stack, opt-in via
+// the `embedpdf-poc-open` command only (NO registerExtensions — the native
+// Obsidian PDF viewer stays the default for .pdf double-clicks).
+//
+// Unlike PdfView (which rides the OnlyOffice OfficeEditorView/FileView base),
+// this is a plain obsidian.ItemView. ItemView has no native onLoadFile
+// lifecycle, so we resolve the file out of the view state in setState() and
+// dispatch to onLoadFile() ourselves. The bundle that does the actual mounting
+// is pdf-editor/dist/pdf-editor.js — an esbuild IIFE that installs the
+// `ObsidiPdfEditor` global (mountPdfEditor / savePdfEditor / unmountPdfEditor).
+// We lazy-load it via eval the first time a PDF is opened.
+// ===========================================================================
+
+class PdfEmbedView extends obsidian.ItemView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this.file = null;
+    this._pdfContainer = null;
+  }
+
+  getViewType() { return VIEW_TYPE_PDF_EMBED; }
+  getDisplayText() { return this.file ? this.file.basename : "PDF editor"; }
+  getIcon() { return "file-text"; }
+
+  // ItemView delivers its persisted state (incl. our { file } payload from
+  // setViewState) here. Resolve the path → TFile and load it.
+  async setState(state, result) {
+    await super.setState(state, result);
+    const path = state && state.file;
+    if (!path) return;
+    const f = this.app.vault.getAbstractFileByPath(path);
+    if (f && f instanceof obsidian.TFile) {
+      this.file = f;
+      await this.onLoadFile(f);
+    }
+  }
+
+  getState() {
+    const s = super.getState() || {};
+    if (this.file) s.file = this.file.path;
+    return s;
+  }
+
+  async onLoadFile(file) {
+    try {
+      this.file = file;
+      const bytes = new Uint8Array(await this.app.vault.readBinary(file));
+
+      // Lazy-load the IIFE bundle global on first use.
+      if (!globalThis.ObsidiPdfEditor) {
+        const codeRel = this.plugin.manifest.dir + "/pdf-editor/dist/pdf-editor.js";
+        let code;
+        try {
+          code = await this.app.vault.adapter.read(codeRel);
+        } catch (e) {
+          elog("PdfEmbedView: failed to read bundle at " + codeRel + ":", e && e.message || e);
+          new obsidian.Notice("EmbedPDF bundle not found — build pdf-editor/dist/pdf-editor.js");
+          return;
+        }
+        // Install the IIFE global. (0, eval) runs in global scope so the
+        // bundle's `var ObsidiPdfEditor = ...` lands on globalThis.
+        (0, eval)(code);
+        if (!globalThis.ObsidiPdfEditor) {
+          elog("PdfEmbedView: bundle eval did not install ObsidiPdfEditor global");
+          new obsidian.Notice("EmbedPDF bundle failed to load (see console)");
+          return;
+        }
+      }
+
+      // Fresh container per load.
+      this.contentEl.empty();
+      this.contentEl.style.padding = "0";
+      const container = this.contentEl.createDiv({ cls: "obsidi-office-pdf-embed-container" });
+      container.style.width = "100%";
+      container.style.height = "100%";
+      this._pdfContainer = container;
+
+      await globalThis.ObsidiPdfEditor.mountPdfEditor(container, bytes, {
+        pdfiumWasmUrl: this.plugin.pdfiumWasmUrl(),
+        onSave: async (out) => {
+          await this.app.vault.modifyBinary(file, out);
+          new obsidian.Notice("PDF saved (" + out.byteLength + " bytes)");
+        },
+        author: "Obsidi-Office",
+      });
+
+      // Ctrl/Cmd+S → save the live document. ItemView exposes a `this.scope`
+      // (a Keymap Scope) that the workspace activates while this leaf is
+      // focused; register the binding there once. Returning false stops the
+      // default Obsidian save-noop and prevents the browser save dialog.
+      if (!this._saveScopeRegistered) {
+        if (!this.scope) this.scope = new obsidian.Scope(this.app.scope);
+        this.scope.register(["Mod"], "s", () => {
+          const c = this._pdfContainer;
+          if (c && globalThis.ObsidiPdfEditor) {
+            globalThis.ObsidiPdfEditor.savePdfEditor(c).catch((err) =>
+              elog("PdfEmbedView: save failed:", err));
+          }
+          return false;
+        });
+        this._saveScopeRegistered = true;
+      }
+    } catch (err) {
+      elog("PdfEmbedView.onLoadFile threw:", err && err.stack || err);
+      new obsidian.Notice("EmbedPDF editor failed to open (see console)");
+    }
+  }
+
+  async onClose() {
+    try {
+      const c = this._pdfContainer;
+      if (c && globalThis.ObsidiPdfEditor) {
+        globalThis.ObsidiPdfEditor.unmountPdfEditor(c);
+      }
+    } catch (err) {
+      elog("PdfEmbedView.onClose unmount failed (non-fatal):", err && err.message || err);
+    }
+    this._pdfContainer = null;
+    this.contentEl.empty();
+  }
+}
+
+// ===========================================================================
 // Settings tab
 // ===========================================================================
 
@@ -3311,6 +3437,27 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         await this._openInView(f);
       },
     });
+
+    // PDF-EMBEDPDF PoC — register the EmbedPDF ItemView + an opt-in open
+    // command. NO registerExtensions for pdf (native Obsidian PDF viewer stays
+    // the default). Distinct view-type / command from the OnlyOffice pdf-poc
+    // above so the two PoCs don't collide.
+    this.registerView(VIEW_TYPE_PDF_EMBED, (leaf) => new PdfEmbedView(leaf, this));
+    this.addCommand({
+      id: "embedpdf-poc-open",
+      name: "EmbedPDF PoC: open active/last .pdf in editor",
+      callback: async () => {
+        const f = this.app.workspace.getActiveFile()
+          || (this._lastEmbedPdf && this.app.vault.getAbstractFileByPath(this._lastEmbedPdf))
+          || this.app.vault.getFiles().find((x) => x.extension === "pdf");
+        if (!f || f.extension !== "pdf") { new obsidian.Notice("No .pdf found"); return; }
+        this._lastEmbedPdf = f.path;
+        const leaf = this.app.workspace.getLeaf("tab");
+        await leaf.setViewState({ type: VIEW_TYPE_PDF_EMBED, active: true, state: { file: f.path } });
+        this.app.workspace.revealLeaf(leaf);
+      },
+    });
+
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
@@ -3683,6 +3830,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PPTX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF);  // PDF PoC
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF_EMBED);  // PDF-EMBEDPDF PoC
   }
 
   async loadSettings() {
@@ -4506,6 +4654,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '  .obsidi-office-print-layout-modal .pl-card-grid { grid-template-columns: 1fr; }',
       '}'
     ].join("\n");
+  }
+
+  // PDF-EMBEDPDF PoC — app:// URL for the staged PDFium wasm. The EmbedPDF
+  // bundle fetches the wasm bytes from this URL at runtime. Strip the cache-
+  // busting query string (getResourcePath appends ?<mtime>) so the fetch hits
+  // a stable, query-free URL (mirrors the assetBaseUrl idiom used elsewhere).
+  pdfiumWasmUrl() {
+    return this.app.vault.adapter
+      .getResourcePath(this.manifest.dir + "/assets/pdfium/pdfium.wasm")
+      .replace(/\?.*$/, "");
   }
 
   async _openInView(file) {
