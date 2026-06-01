@@ -170,7 +170,7 @@ function injectChromeStyles() {
   --oo-accent:#3a64b4;--oo-accent-underline:#cc4444;
   --oo-tabbar-bg:#404040;--oo-tab-text:#cfcfcf;--oo-tab-active-text:#f1f1f1;
   --oo-tab-active-bg:#444;--oo-ribbon-bg:#444;--oo-ribbon-border:#2b2b2b;
-  --oo-icon:#cccccc;--oo-btn-hover:#4f4f4f;--oo-btn-active-bg:#3b3b3b;
+  --oo-icon:#cccccc;--oo-btn-hover:#4f4f4f;--oo-btn-active-bg:#5c5c5c;
   --oo-btn-active-icon:#7aa2e3;--oo-label:#dcdcdc;--oo-sep:#5a5a5a;
   --oo-filename:#bdbdbd;}
 
@@ -185,12 +185,11 @@ function injectChromeStyles() {
   padding:0 14px;font-size:12px;line-height:32px;color:var(--oo-tab-text);
   position:relative;white-space:nowrap;}
 .${CX}-tab:hover{color:var(--oo-tab-active-text);}
-.${CX}-tab.${CX}-tab-active{color:var(--oo-tab-active-text);
-  background:var(--oo-tab-active-bg);font-weight:600;}
+.${CX}-tab.${CX}-tab-active{color:var(--oo-tab-active-text);font-weight:600;}
 .${CX}-tab.${CX}-tab-active::after{content:"";position:absolute;left:0;right:0;
   bottom:0;height:2px;background:var(--oo-accent-underline);}
-.${CX}-tab.${CX}-tab-file{color:#fff;background:var(--oo-accent);font-weight:600;}
-.${CX}-tab.${CX}-tab-file:hover{filter:brightness(1.08);}
+.${CX}-tab.${CX}-tab-file{color:var(--oo-tab-text);font-weight:600;}
+.${CX}-tab.${CX}-tab-file:hover{color:var(--oo-tab-active-text);}
 .${CX}-filename{flex:1;text-align:center;align-self:center;font-size:12px;
   color:var(--oo-filename);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;padding:0 12px;pointer-events:none;}
