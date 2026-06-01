@@ -267,6 +267,38 @@ async function saveViaRegistry(
   const doc = docManager?.getActiveDocument?.();
   if (!engine || !doc) throw new Error('No active document to save.');
 
+  // CRITICAL: flush the annotation plugin's pending changes into the in-memory
+  // PDFium document BEFORE saveAsCopy serializes it.
+  //
+  // The annotation plugin STAGES user-drawn annotations (and edits/deletes) in
+  // its own Redux-style state, then writes them into the PDFium doc on a
+  // "commit". With autoCommit (the default) that commit fires automatically
+  // after the history event — but it returns an un-awaited Task that runs
+  // asynchronously. For annotations whose commit involves async appearance-
+  // stream generation (ink / freeText / anything that re-renders), a fast
+  // Ctrl+S immediately after drawing can call saveAsCopy() before that commit
+  // Task has finished, serializing the document WITHOUT the new annotation.
+  //
+  // Calling commit() here and awaiting it guarantees all staged changes are in
+  // the PDFium doc. commit() is idempotent: it early-returns when there are no
+  // pending changes (the common case for synchronously-committed shapes), so
+  // this is harmless for already-flushed annotations. We deselect first so any
+  // in-progress edit (e.g. a FreeText box still in edit mode) is finalized into
+  // a pending change before the commit runs.
+  const annotationApi = registry.getPlugin<any>('annotation')?.provides();
+  if (annotationApi) {
+    try {
+      annotationApi.deselectAnnotation?.();
+      const commitTask = annotationApi.commit?.();
+      if (commitTask?.toPromise) await commitTask.toPromise();
+    } catch (_) {
+      // A commit failure must not silently corrupt the save — but neither
+      // should it block saving annotations that DID commit. Surface via console
+      // and proceed; saveAsCopy still serializes whatever is in the doc.
+      console.warn('[pdf-editor] annotation commit before save failed', _);
+    }
+  }
+
   const ab: ArrayBuffer = await engine.saveAsCopy(doc).toPromise();
   const bytes = new Uint8Array(ab);
   await onSave(bytes);
