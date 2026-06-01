@@ -112,27 +112,43 @@ const CX = 'oo-pdfchrome'; // scoped root class / prefix
 // small (viewBox 20x20) unless noted; pen is the only one we pull from the big
 // (28x28) sprite — mixed viewBoxes render fine because each <symbol> carries
 // its own viewBox.
+// Each entry is [symbolId, viewBoxSize]. Most small-sprite glyphs are 20x20;
+// the big-sprite glyphs we use (editText/handBig/selectBig/pen) are 28x28,
+// EXCEPT btn-big-hand-tool which (despite living in the big sprite) ships a
+// 20x20 viewBox — so we carry the size per-icon rather than per-sprite.
 const IC = {
-  save: 'btn-save',
-  undo: 'btn-undo',
-  redo: 'btn-redo',
-  editText: 'btn-add-text',
-  hand: 'btn-hand-tool',
-  select: 'btn-select-tool',
-  firstPage: 'btn-firstitem',
-  prevPage: 'btn-previtem',
-  nextPage: 'btn-nextitem',
-  lastPage: 'btn-lastitem',
-  zoomOut: 'btn-zoomdown',
-  zoomIn: 'btn-zoomup',
-  fitPage: 'btn-ic-zoomtopage',
-  fitWidth: 'btn-ic-zoomtowidth',
-  text: 'btn-text-comment',
-  highlight: 'btn-highlight',
-  pen: 'btn-pen-tool', // big sprite (28x28)
-  rect: 'btn-annotation-rectangle',
-  del: 'btn-cc-remove',
+  // clipboard / file cluster (small, 20)
+  save: ['btn-save', 20],
+  copy: ['btn-copy', 20],
+  paste: ['btn-paste', 20],
+  cut: ['btn-cut', 20],
+  print: ['btn-print', 20],
+  undo: ['btn-undo', 20],
+  redo: ['btn-redo', 20],
+  selectObjects: ['btn-select-tool', 20], // dashed-cursor select-objects glyph
+  // large labelled buttons
+  editText: ['btn-edit-text', 28], // big sprite
+  hand: ['btn-big-hand-tool', 20], // big sprite, but 20x20 viewBox
+  select: ['btn-select', 28], // big sprite arrow-cursor
+  // page nav (small, 20)
+  firstPage: ['btn-firstitem', 20],
+  prevPage: ['btn-previtem', 20],
+  nextPage: ['btn-nextitem', 20],
+  lastPage: ['btn-lastitem', 20],
+  // zoom / fit
+  zoomOut: ['btn-zoomdown', 20],
+  zoomIn: ['btn-zoomup', 20],
+  fitPage: ['btn-ic-zoomtopage', 20],
+  fitWidth: ['btn-ic-zoomtowidth', 20],
+  // comment tools
+  text: ['btn-text-comment', 20],
+  highlight: ['btn-highlight', 20],
+  pen: ['btn-pen-tool', 28], // big sprite (28x28)
+  rect: ['btn-annotation-rectangle', 20],
+  del: ['btn-cc-remove', 20],
 } as const;
+
+type IconSpec = readonly [string, number];
 
 let _stylesInjected = false;
 function injectChromeStyles() {
@@ -179,42 +195,92 @@ function injectChromeStyles() {
   color:var(--oo-filename);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;padding:0 12px;pointer-events:none;}
 
-/* ribbon */
-.${CX}-ribbon{display:flex;align-items:center;flex-wrap:wrap;gap:1px;
-  min-height:44px;padding:4px 8px;box-sizing:border-box;
+/* ribbon — OnlyOffice proportions: ~88px tall, groups laid out horizontally */
+.${CX}-ribbon{display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;
+  height:88px;padding:5px 4px;box-sizing:border-box;overflow-x:auto;
   background:var(--oo-ribbon-bg);border-bottom:1px solid var(--oo-ribbon-border);}
 
-/* buttons */
-.${CX}-btn{display:inline-flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:1px;min-width:28px;height:36px;padding:2px 5px;
-  border:none;border-radius:3px;background:transparent;cursor:pointer;
-  color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
-.${CX}-btn:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
-.${CX}-btn-active{background:var(--oo-btn-active-bg);}
-.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
-.${CX}-btn:disabled{opacity:.38;cursor:default;}
-.${CX}-btn .oo-cap{font-size:10px;line-height:1;color:var(--oo-label);}
-.oo-ic{width:20px;height:20px;display:block;color:inherit;fill:currentColor;}
+/* group — a labelled cluster of controls with a right-hand separator */
+.${CX}-group{display:flex;align-items:center;gap:2px;padding:2px 7px;
+  position:relative;flex:0 0 auto;}
+.${CX}-group::after{content:"";position:absolute;right:0;top:8px;bottom:8px;
+  width:1px;background:var(--oo-sep);}
+.${CX}-group:last-child::after{display:none;}
+/* a 2-row vertical stack inside a group (clipboard cluster, page nav, zoom) */
+.${CX}-group-rows{display:flex;flex-direction:column;justify-content:center;
+  gap:2px;}
+.${CX}-row{display:flex;align-items:center;gap:1px;}
 
-/* horizontal icon-only button variant */
-.${CX}-iconbtn{display:inline-flex;align-items:center;justify-content:center;
-  width:28px;height:28px;padding:0;border:none;border-radius:3px;
+/* small icon-only button (~22px) — clipboard cluster, page nav steppers */
+.${CX}-btn-small{display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;padding:0;border:none;border-radius:3px;
   background:transparent;cursor:pointer;color:var(--oo-icon);flex:0 0 auto;
   transition:background .1s;}
-.${CX}-iconbtn:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
-.${CX}-iconbtn.${CX}-btn-active{background:var(--oo-btn-active-bg);}
-.${CX}-iconbtn.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
-.${CX}-iconbtn:disabled{opacity:.38;cursor:default;}
+.${CX}-btn-small:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
+.${CX}-btn-small.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-small.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
+.${CX}-btn-small:disabled{opacity:.4;cursor:default;}
+.${CX}-btn-small .oo-ic{width:18px;height:18px;}
+
+/* big button (~52px) — icon on top, label below */
+.${CX}-btn-big{display:inline-flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:2px;min-width:48px;height:74px;padding:5px 6px 4px;
+  border:none;border-radius:3px;background:transparent;cursor:pointer;
+  color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
+.${CX}-btn-big:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
+.${CX}-btn-big.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-big.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
+.${CX}-btn-big:disabled{opacity:.4;cursor:default;}
+.${CX}-btn-big .oo-ic{width:28px;height:28px;}
+.${CX}-btn-big .oo-cap{font-size:11px;line-height:1.1;color:var(--oo-label);
+  text-align:center;max-width:64px;}
+
+/* wide button (~) — icon + inline label, stacked vertically in a group */
+.${CX}-btn-wide{display:inline-flex;align-items:center;justify-content:flex-start;
+  gap:6px;min-width:96px;height:24px;padding:2px 8px 2px 6px;
+  border:none;border-radius:3px;background:transparent;cursor:pointer;
+  color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
+.${CX}-btn-wide:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
+.${CX}-btn-wide.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-wide:disabled{opacity:.4;cursor:default;}
+.${CX}-btn-wide .oo-ic{width:18px;height:18px;flex:0 0 auto;}
+.${CX}-btn-wide .oo-cap{font-size:12px;line-height:1;color:var(--oo-label);
+  white-space:nowrap;}
+
+.oo-ic{width:20px;height:20px;display:block;color:inherit;fill:currentColor;}
+
+/* group caption (under a 2-row control, e.g. "Zoom") */
+.${CX}-grpcap{font-size:11px;line-height:1;color:var(--oo-label);
+  text-align:center;user-select:none;padding-top:1px;}
 
 .${CX}-sep{width:1px;align-self:stretch;margin:4px 6px;
   background:var(--oo-sep);flex:0 0 auto;}
 .${CX}-pageinp{width:30px;height:22px;text-align:center;font-size:12px;
   border:1px solid var(--oo-sep);border-radius:3px;background:transparent;
   color:var(--oo-tab-active-text);}
+.${CX}-pagebox{display:flex;align-items:center;gap:3px;justify-content:center;}
 .${CX}-pagetotal{font-size:12px;color:var(--oo-label);padding:0 2px;
-  user-select:none;}
-.${CX}-zoomlbl{min-width:46px;text-align:center;font-size:12px;
-  color:var(--oo-label);user-select:none;padding:0 4px;}
+  user-select:none;white-space:nowrap;}
+
+/* zoom dropdown */
+.${CX}-zoomdd{position:relative;display:inline-flex;}
+.${CX}-zoombtn{display:inline-flex;align-items:center;gap:4px;height:22px;
+  padding:0 6px;min-width:62px;justify-content:space-between;
+  border:1px solid var(--oo-sep);border-radius:3px;background:transparent;
+  cursor:pointer;color:var(--oo-tab-active-text);font-size:12px;}
+.${CX}-zoombtn:hover{background:var(--oo-btn-hover);}
+.${CX}-zoombtn .oo-caret{font-size:9px;line-height:1;opacity:.7;}
+.${CX}-zoommenu{position:absolute;top:24px;left:0;z-index:30;min-width:78px;
+  background:var(--oo-ribbon-bg);border:1px solid var(--oo-ribbon-border);
+  box-shadow:0 4px 16px rgba(0,0,0,.25);border-radius:3px;
+  display:flex;flex-direction:column;padding:3px 0;max-height:220px;
+  overflow-y:auto;}
+.${CX}-zoomitem{appearance:none;border:none;background:transparent;
+  text-align:left;padding:5px 14px;font-size:12px;cursor:pointer;
+  color:var(--oo-tab-active-text);}
+.${CX}-zoomitem:hover{background:var(--oo-btn-hover);}
+.${CX}-zoomitem.${CX}-zoomitem-active{color:var(--oo-btn-active-icon);
+  font-weight:600;}
 
 /* File popover */
 .${CX}-filemenu{position:absolute;top:32px;left:0;z-index:20;min-width:160px;
@@ -233,34 +299,27 @@ function injectChromeStyles() {
   document.head.appendChild(el);
 }
 
-// Render an OnlyOffice sprite icon by symbol id.
-const Ic = ({ id }: { id: string }) => (
-  <svg class="oo-ic" viewBox="0 0 20 20" aria-hidden="true">
-    <use href={`#${id}`} />
-  </svg>
-);
-
-// Big-sprite icons (pen) carry a 28x28 viewBox; give the host svg that viewBox
-// so the symbol's geometry maps correctly.
-const IcBig = ({ id }: { id: string }) => (
-  <svg class="oo-ic" viewBox="0 0 28 28" aria-hidden="true">
-    <use href={`#${id}`} />
+// Render an OnlyOffice sprite icon from an [id, viewBoxSize] spec. The host svg
+// gets the symbol's own viewBox so 20x20 and 28x28 glyphs both map correctly.
+const Ic = ({ spec }: { spec: IconSpec }) => (
+  <svg class="oo-ic" viewBox={`0 0 ${spec[1]} ${spec[1]}`} aria-hidden="true">
+    <use href={`#${spec[0]}`} />
   </svg>
 );
 
 const Sep = () => <span class={`${CX}-sep`} aria-hidden="true" />;
 
-// A labelled (icon-over-caption) ribbon button.
-function RibBtn({
-  icon, big, caption, title, active, disabled, onClick, testid,
+// Small icon-only button (~22px) — clipboard cluster + page-nav steppers.
+function SmallBtn({
+  icon, title, active, disabled, onClick, testid,
 }: {
-  icon: string; big?: boolean; caption?: string; title: string;
+  icon: IconSpec; title: string;
   active?: boolean; disabled?: boolean; onClick?: () => void; testid?: string;
 }) {
   return (
     <button
       type="button"
-      class={`${CX}-btn${active ? ` ${CX}-btn-active` : ''}`}
+      class={`${CX}-btn-small${active ? ` ${CX}-btn-active` : ''}`}
       title={title}
       aria-label={title}
       aria-pressed={active ? 'true' : undefined}
@@ -268,23 +327,22 @@ function RibBtn({
       disabled={disabled}
       onClick={onClick}
     >
-      {big ? <IcBig id={icon} /> : <Ic id={icon} />}
-      {caption ? <span class="oo-cap">{caption}</span> : null}
+      <Ic spec={icon} />
     </button>
   );
 }
 
-// A compact icon-only button (page nav / zoom steppers).
-function IconBtn({
-  icon, big, title, active, disabled, onClick, testid,
+// Big button (~52px) — icon on top, label below.
+function BigBtn({
+  icon, caption, title, active, disabled, onClick, testid,
 }: {
-  icon: string; big?: boolean; title: string;
+  icon: IconSpec; caption: string; title: string;
   active?: boolean; disabled?: boolean; onClick?: () => void; testid?: string;
 }) {
   return (
     <button
       type="button"
-      class={`${CX}-iconbtn${active ? ` ${CX}-btn-active` : ''}`}
+      class={`${CX}-btn-big${active ? ` ${CX}-btn-active` : ''}`}
       title={title}
       aria-label={title}
       aria-pressed={active ? 'true' : undefined}
@@ -292,8 +350,40 @@ function IconBtn({
       disabled={disabled}
       onClick={onClick}
     >
-      {big ? <IcBig id={icon} /> : <Ic id={icon} />}
+      <Ic spec={icon} />
+      <span class="oo-cap">{caption}</span>
     </button>
+  );
+}
+
+// Wide button — icon + inline label (Fit To Page / Fit To Width stacks).
+function WideBtn({
+  icon, caption, title, active, disabled, onClick, testid,
+}: {
+  icon: IconSpec; caption: string; title: string;
+  active?: boolean; disabled?: boolean; onClick?: () => void; testid?: string;
+}) {
+  return (
+    <button
+      type="button"
+      class={`${CX}-btn-wide${active ? ` ${CX}-btn-active` : ''}`}
+      title={title}
+      aria-label={title}
+      aria-pressed={active ? 'true' : undefined}
+      data-testid={testid}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <Ic spec={icon} />
+      <span class="oo-cap">{caption}</span>
+    </button>
+  );
+}
+
+// A group: cluster of controls with a right-hand separator.
+function Group({ children, testid }: { children: any; testid?: string }) {
+  return (
+    <div class={`${CX}-group`} data-testid={testid}>{children}</div>
   );
 }
 
@@ -316,6 +406,7 @@ function Chrome({
 
   const [tab, setTab] = useState<TabId>('home');
   const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const [zoomMenuOpen, setZoomMenuOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [, forceTick] = useState(0); // re-render on history changes
 
@@ -390,6 +481,12 @@ function Chrome({
   const zoomPct = Math.round((zoomState?.currentZoomLevel ?? 1) * 100);
   const fitPage = () => zoomApi?.requestZoom(ZoomMode.FitPage);
   const fitWidth = () => zoomApi?.requestZoom(ZoomMode.FitWidth);
+  // Preset zoom levels for the dropdown (OnlyOffice's standard set).
+  const ZOOM_PRESETS = [50, 75, 100, 125, 150, 200];
+  const setZoomPct = (pct: number) => {
+    zoomApi?.requestZoom(pct / 100);
+    setZoomMenuOpen(false);
+  };
 
   // Page nav. scrollState.currentPage / totalPages are 1-based counts.
   const curPage = scrollState?.currentPage ?? 1;
@@ -399,87 +496,160 @@ function Chrome({
     scrollApi?.scrollToPage({ pageNumber: p });
   };
 
-  // --- Ribbons ---
-  const zoomGroup = (
-    <span style={{ display: 'inline-flex', alignItems: 'center' }}>
-      <IconBtn icon={IC.zoomOut} title="Zoom out" disabled={!zoomApi}
-        onClick={() => zoomApi?.zoomOut()} testid="pdf-zoom-out" />
-      <span class={`${CX}-zoomlbl`} data-testid="pdf-zoom-pct">{zoomPct}%</span>
-      <IconBtn icon={IC.zoomIn} title="Zoom in" disabled={!zoomApi}
-        onClick={() => zoomApi?.zoomIn()} testid="pdf-zoom-in" />
-    </span>
+  // --- Reusable group fragments ---
+
+  // Page-nav group: 2-row stack (N / total box on top, first/prev/next/last
+  // arrows below).
+  const pageNavGroup = (
+    <Group testid="pdf-group-pagenav">
+      <div class={`${CX}-group-rows`}>
+        <div class={`${CX}-row ${CX}-pagebox`}>
+          <input class={`${CX}-pageinp`} data-testid="pdf-page-input" type="text"
+            value={String(curPage)} aria-label="Current page"
+            onChange={(e) => {
+              const v = parseInt((e.target as HTMLInputElement).value, 10);
+              if (!Number.isNaN(v)) goPage(v);
+            }} />
+          <span class={`${CX}-pagetotal`} data-testid="pdf-page-total">/ {totalPages}</span>
+        </div>
+        <div class={`${CX}-row`}>
+          <SmallBtn icon={IC.firstPage} title="First page" disabled={curPage <= 1}
+            onClick={() => goPage(1)} testid="pdf-first" />
+          <SmallBtn icon={IC.prevPage} title="Previous page" disabled={curPage <= 1}
+            onClick={() => goPage(curPage - 1)} testid="pdf-prev" />
+          <SmallBtn icon={IC.nextPage} title="Next page" disabled={curPage >= totalPages}
+            onClick={() => goPage(curPage + 1)} testid="pdf-next" />
+          <SmallBtn icon={IC.lastPage} title="Last page" disabled={curPage >= totalPages}
+            onClick={() => goPage(totalPages)} testid="pdf-last" />
+        </div>
+      </div>
+    </Group>
   );
+
+  // Zoom group: 2-row stack (100% ▾ dropdown on top, "Zoom" caption below).
+  const zoomGroup = (
+    <Group testid="pdf-group-zoom">
+      <div class={`${CX}-group-rows`}>
+        <div class={`${CX}-row`} style={{ justifyContent: 'center' }}>
+          <div class={`${CX}-zoomdd`}>
+            <button type="button" class={`${CX}-zoombtn`} data-testid="pdf-zoom-dd"
+              disabled={!zoomApi}
+              aria-haspopup="true" aria-expanded={zoomMenuOpen ? 'true' : 'false'}
+              onClick={() => setZoomMenuOpen((o) => !o)}>
+              <span data-testid="pdf-zoom-pct">{zoomPct}%</span>
+              <span class="oo-caret" aria-hidden="true">▾</span>
+            </button>
+            {zoomMenuOpen ? (
+              <div class={`${CX}-zoommenu`} data-testid="pdf-zoom-menu" role="menu">
+                {(ZOOM_PRESETS.includes(zoomPct) ? ZOOM_PRESETS
+                  : [...ZOOM_PRESETS, zoomPct].sort((a, b) => a - b)
+                ).map((p) => (
+                  <button type="button" role="menuitem"
+                    class={`${CX}-zoomitem${p === zoomPct ? ` ${CX}-zoomitem-active` : ''}`}
+                    data-testid={`pdf-zoom-${p}`}
+                    onClick={() => setZoomPct(p)}>
+                    {p}%
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div class={`${CX}-grpcap`}>Zoom</div>
+      </div>
+    </Group>
+  );
+
+  // Fit group: 2 stacked wide buttons (icon + inline label).
+  const fitGroup = (prefix: string) => (
+    <Group testid="pdf-group-fit">
+      <div class={`${CX}-group-rows`}>
+        <WideBtn icon={IC.fitPage} caption="Fit To Page" title="Fit to page"
+          disabled={!zoomApi} onClick={fitPage} testid={`${prefix}fit-page`} />
+        <WideBtn icon={IC.fitWidth} caption="Fit To Width" title="Fit to width"
+          disabled={!zoomApi} onClick={fitWidth} testid={`${prefix}fit-width`} />
+      </div>
+    </Group>
+  );
+
+  // --- Ribbons ---
 
   const homeRibbon = (
     <div class={`${CX}-ribbon`} data-testid="pdf-ribbon-home" role="toolbar" aria-label="Home">
-      <RibBtn icon={IC.save} caption="Save" title={saving ? 'Saving…' : 'Save (Ctrl+S)'}
-        disabled={saving} onClick={onSaveClick} testid="pdf-save" />
-      <Sep />
-      <IconBtn icon={IC.undo} title="Undo" disabled={!canUndo}
-        onClick={() => histScope?.undo()} testid="pdf-undo" />
-      <IconBtn icon={IC.redo} title="Redo" disabled={!canRedo}
-        onClick={() => histScope?.redo()} testid="pdf-redo" />
-      <Sep />
-      <RibBtn icon={IC.editText} caption="Edit Text" title="Edit Text (coming soon)"
-        disabled testid="pdf-edit-text" />
-      <Sep />
-      <IconBtn icon={IC.hand} title="Hand (pan)" active={false}
-        onClick={handMode} testid="pdf-hand" />
-      <IconBtn icon={IC.select} title="Select" active={isSelect}
-        onClick={selectMode} testid="pdf-select" />
-      <Sep />
-      <IconBtn icon={IC.firstPage} title="First page" disabled={curPage <= 1}
-        onClick={() => goPage(1)} testid="pdf-first" />
-      <IconBtn icon={IC.prevPage} title="Previous page" disabled={curPage <= 1}
-        onClick={() => goPage(curPage - 1)} testid="pdf-prev" />
-      <input class={`${CX}-pageinp`} data-testid="pdf-page-input" type="text"
-        value={String(curPage)} aria-label="Current page"
-        onChange={(e) => {
-          const v = parseInt((e.target as HTMLInputElement).value, 10);
-          if (!Number.isNaN(v)) goPage(v);
-        }} />
-      <span class={`${CX}-pagetotal`} data-testid="pdf-page-total">/ {totalPages}</span>
-      <IconBtn icon={IC.nextPage} title="Next page" disabled={curPage >= totalPages}
-        onClick={() => goPage(curPage + 1)} testid="pdf-next" />
-      <IconBtn icon={IC.lastPage} title="Last page" disabled={curPage >= totalPages}
-        onClick={() => goPage(totalPages)} testid="pdf-last" />
-      <Sep />
+      {/* 1. Clipboard / file cluster — 2 rows of small icon buttons */}
+      <Group testid="pdf-group-clipboard">
+        <div class={`${CX}-group-rows`}>
+          <div class={`${CX}-row`}>
+            <SmallBtn icon={IC.save} title={saving ? 'Saving…' : 'Save (Ctrl+S)'}
+              disabled={saving} onClick={onSaveClick} testid="pdf-save" />
+            <SmallBtn icon={IC.copy} title="Copy (coming soon)" disabled testid="pdf-copy" />
+            <SmallBtn icon={IC.paste} title="Paste (coming soon)" disabled testid="pdf-paste" />
+            <SmallBtn icon={IC.cut} title="Cut (coming soon)" disabled testid="pdf-cut" />
+          </div>
+          <div class={`${CX}-row`}>
+            <SmallBtn icon={IC.print} title="Print (coming soon)" disabled testid="pdf-print" />
+            <SmallBtn icon={IC.undo} title="Undo" disabled={!canUndo}
+              onClick={() => histScope?.undo()} testid="pdf-undo" />
+            <SmallBtn icon={IC.redo} title="Redo" disabled={!canRedo}
+              onClick={() => histScope?.redo()} testid="pdf-redo" />
+            <SmallBtn icon={IC.selectObjects} title="Select objects (coming soon)"
+              disabled testid="pdf-select-objects" />
+          </div>
+        </div>
+      </Group>
+
+      {/* 2. Edit Text — large labelled (disabled) */}
+      <Group testid="pdf-group-edittext">
+        <BigBtn icon={IC.editText} caption="Edit Text" title="Edit Text (coming soon)"
+          disabled testid="pdf-edit-text" />
+      </Group>
+
+      {/* 3. Hand + Select — large labelled buttons */}
+      <Group testid="pdf-group-tools">
+        <BigBtn icon={IC.hand} caption="Hand" title="Hand (pan)"
+          onClick={handMode} testid="pdf-hand" />
+        <BigBtn icon={IC.select} caption="Select" title="Select"
+          active={isSelect} onClick={selectMode} testid="pdf-select" />
+      </Group>
+
+      {/* 4. Page nav */}
+      {pageNavGroup}
+
+      {/* 5. Zoom dropdown */}
       {zoomGroup}
-      <IconBtn icon={IC.fitPage} title="Fit to page" disabled={!zoomApi}
-        onClick={fitPage} testid="pdf-fit-page" />
-      <IconBtn icon={IC.fitWidth} title="Fit to width" disabled={!zoomApi}
-        onClick={fitWidth} testid="pdf-fit-width" />
+
+      {/* 6. Fit */}
+      {fitGroup('pdf-')}
     </div>
   );
 
   const commentRibbon = (
     <div class={`${CX}-ribbon`} data-testid="pdf-ribbon-comment" role="toolbar" aria-label="Comment">
-      <RibBtn icon={IC.text} caption="Text" title="Text comment"
-        active={activeTool === 'freeText'} onClick={() => tool('freeText')}
-        testid="pdf-tool-freeText" />
-      <RibBtn icon={IC.highlight} caption="Highlight" title="Highlight"
-        active={activeTool === 'highlight'} onClick={() => tool('highlight')}
-        testid="pdf-tool-highlight" />
-      <RibBtn icon={IC.pen} big caption="Pen" title="Pen"
-        active={activeTool === 'ink'} onClick={() => tool('ink')}
-        testid="pdf-tool-ink" />
-      <RibBtn icon={IC.rect} caption="Shape" title="Rectangle"
-        active={activeTool === 'square'} onClick={() => tool('square')}
-        testid="pdf-tool-square" />
-      <Sep />
-      <RibBtn icon={IC.del} caption="Delete" title="Delete selection"
-        disabled={!hasSelection} onClick={deleteSelected} testid="pdf-delete" />
+      <Group testid="pdf-group-annotate">
+        <BigBtn icon={IC.text} caption="Text" title="Text comment"
+          active={activeTool === 'freeText'} onClick={() => tool('freeText')}
+          testid="pdf-tool-freeText" />
+        <BigBtn icon={IC.highlight} caption="Highlight" title="Highlight"
+          active={activeTool === 'highlight'} onClick={() => tool('highlight')}
+          testid="pdf-tool-highlight" />
+        <BigBtn icon={IC.pen} caption="Pen" title="Pen"
+          active={activeTool === 'ink'} onClick={() => tool('ink')}
+          testid="pdf-tool-ink" />
+        <BigBtn icon={IC.rect} caption="Shape" title="Rectangle"
+          active={activeTool === 'square'} onClick={() => tool('square')}
+          testid="pdf-tool-square" />
+      </Group>
+      <Group testid="pdf-group-delete">
+        <BigBtn icon={IC.del} caption="Delete" title="Delete selection"
+          disabled={!hasSelection} onClick={deleteSelected} testid="pdf-delete" />
+      </Group>
     </div>
   );
 
   const viewRibbon = (
     <div class={`${CX}-ribbon`} data-testid="pdf-ribbon-view" role="toolbar" aria-label="View">
       {zoomGroup}
-      <Sep />
-      <IconBtn icon={IC.fitPage} title="Fit to page" disabled={!zoomApi}
-        onClick={fitPage} testid="pdf-view-fit-page" />
-      <IconBtn icon={IC.fitWidth} title="Fit to width" disabled={!zoomApi}
-        onClick={fitWidth} testid="pdf-view-fit-width" />
+      {fitGroup('pdf-view-')}
     </div>
   );
 
@@ -489,7 +659,7 @@ function Chrome({
       class={`${CX}-tab${tab === id ? ` ${CX}-tab-active` : ''}`}
       data-testid={`pdf-tab-${id}`}
       aria-selected={tab === id ? 'true' : 'false'}
-      onClick={() => { setTab(id); setFileMenuOpen(false); }}
+      onClick={() => { setTab(id); setFileMenuOpen(false); setZoomMenuOpen(false); }}
     >
       {label}
     </button>
@@ -514,12 +684,12 @@ function Chrome({
             <button type="button" class={`${CX}-fileitem`} role="menuitem"
               data-testid="pdf-file-save"
               onClick={() => { setFileMenuOpen(false); onSaveClick(); }}>
-              <Ic id={IC.save} /> Save
+              <Ic spec={IC.save} /> Save
             </button>
             <button type="button" class={`${CX}-fileitem`} role="menuitem"
               data-testid="pdf-file-close" disabled={!onClose}
               onClick={() => { setFileMenuOpen(false); onClose?.(); }}>
-              <Ic id={IC.del} /> Close
+              <Ic spec={IC.del} /> Close
             </button>
           </div>
         ) : null}
