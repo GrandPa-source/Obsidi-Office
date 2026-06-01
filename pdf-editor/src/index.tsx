@@ -177,6 +177,19 @@ function injectChromeStyles() {
 /* hidden sprite host */
 .${CX}-sprites{position:absolute;width:0;height:0;overflow:hidden;}
 
+/* Obsidian's global <button>/<input> CSS bleeds into our chrome (it gives
+   buttons an --interactive-normal background + box-shadow that read as dark,
+   bordered boxes). The standalone test harness has no Obsidian CSS, so this
+   only appears inside Obsidian. Force-flatten our controls; keep a real border
+   only on the zoom dropdown + page-number field (like OnlyOffice). */
+.${CX}-btn-small,.${CX}-btn-big,.${CX}-btn-wide,.${CX}-tab,
+.${CX}-zoomitem,.${CX}-fileitem,.${CX}-zoombtn{
+  background-color:transparent !important;box-shadow:none !important;}
+.${CX}-btn-small,.${CX}-btn-big,.${CX}-btn-wide,.${CX}-tab,
+.${CX}-zoomitem,.${CX}-fileitem{border:none !important;}
+.${CX}-zoombtn{border:1px solid var(--oo-sep) !important;}
+.${CX}-pageinp{box-shadow:none !important;}
+
 /* tab bar */
 .${CX}-tabbar{display:flex;align-items:stretch;height:32px;
   background:var(--oo-tabbar-bg);position:relative;
@@ -215,8 +228,8 @@ function injectChromeStyles() {
   width:22px;height:22px;padding:0;border:none;border-radius:3px;
   background:transparent;cursor:pointer;color:var(--oo-icon);flex:0 0 auto;
   transition:background .1s;}
-.${CX}-btn-small:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
-.${CX}-btn-small.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-small:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover) !important;}
+.${CX}-btn-small.${CX}-btn-active{background:var(--oo-btn-active-bg) !important;}
 .${CX}-btn-small.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
 .${CX}-btn-small:disabled{opacity:.4;cursor:default;}
 .${CX}-btn-small .oo-ic{width:18px;height:18px;}
@@ -226,8 +239,8 @@ function injectChromeStyles() {
   justify-content:center;gap:2px;min-width:48px;height:74px;padding:5px 6px 4px;
   border:none;border-radius:3px;background:transparent;cursor:pointer;
   color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
-.${CX}-btn-big:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
-.${CX}-btn-big.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-big:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover) !important;}
+.${CX}-btn-big.${CX}-btn-active{background:var(--oo-btn-active-bg) !important;}
 .${CX}-btn-big.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
 .${CX}-btn-big:disabled{opacity:.4;cursor:default;}
 .${CX}-btn-big .oo-ic{width:28px;height:28px;}
@@ -239,8 +252,8 @@ function injectChromeStyles() {
   gap:6px;min-width:96px;height:24px;padding:2px 8px 2px 6px;
   border:none;border-radius:3px;background:transparent;cursor:pointer;
   color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
-.${CX}-btn-wide:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover);}
-.${CX}-btn-wide.${CX}-btn-active{background:var(--oo-btn-active-bg);}
+.${CX}-btn-wide:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover) !important;}
+.${CX}-btn-wide.${CX}-btn-active{background:var(--oo-btn-active-bg) !important;}
 .${CX}-btn-wide:disabled{opacity:.4;cursor:default;}
 .${CX}-btn-wide .oo-ic{width:18px;height:18px;flex:0 0 auto;}
 .${CX}-btn-wide .oo-cap{font-size:12px;line-height:1;color:var(--oo-label);
@@ -267,7 +280,7 @@ function injectChromeStyles() {
   padding:0 6px;min-width:62px;justify-content:space-between;
   border:1px solid var(--oo-sep);border-radius:3px;background:transparent;
   cursor:pointer;color:var(--oo-tab-active-text);font-size:12px;}
-.${CX}-zoombtn:hover{background:var(--oo-btn-hover);}
+.${CX}-zoombtn:hover{background:var(--oo-btn-hover) !important;}
 .${CX}-zoombtn .oo-caret{font-size:9px;line-height:1;opacity:.7;}
 .${CX}-zoommenu{position:absolute;top:24px;left:0;z-index:30;min-width:78px;
   background:var(--oo-ribbon-bg);border:1px solid var(--oo-ribbon-border);
@@ -277,7 +290,7 @@ function injectChromeStyles() {
 .${CX}-zoomitem{appearance:none;border:none;background:transparent;
   text-align:left;padding:5px 14px;font-size:12px;cursor:pointer;
   color:var(--oo-tab-active-text);}
-.${CX}-zoomitem:hover{background:var(--oo-btn-hover);}
+.${CX}-zoomitem:hover{background:var(--oo-btn-hover) !important;}
 .${CX}-zoomitem.${CX}-zoomitem-active{color:var(--oo-btn-active-icon);
   font-weight:600;}
 
@@ -289,7 +302,7 @@ function injectChromeStyles() {
 .${CX}-fileitem{appearance:none;border:none;background:transparent;
   text-align:left;padding:7px 16px;font-size:13px;cursor:pointer;
   color:var(--oo-tab-active-text);display:flex;align-items:center;gap:8px;}
-.${CX}-fileitem:hover{background:var(--oo-btn-hover);}
+.${CX}-fileitem:hover{background:var(--oo-btn-hover) !important;}
 .${CX}-fileitem:disabled{opacity:.4;cursor:default;}
 `;
   const el = document.createElement('style');
