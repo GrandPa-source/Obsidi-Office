@@ -169,7 +169,7 @@ function injectChromeStyles() {
 .${CX}.theme-dark{
   --oo-accent:#3a64b4;--oo-accent-underline:#cc4444;
   --oo-tabbar-bg:#404040;--oo-tab-text:#cfcfcf;--oo-tab-active-text:#f1f1f1;
-  --oo-tab-active-bg:#444;--oo-ribbon-bg:#444;--oo-ribbon-border:#2b2b2b;
+  --oo-tab-active-bg:#404040;--oo-ribbon-bg:#404040;--oo-ribbon-border:#2b2b2b;
   --oo-icon:#cccccc;--oo-btn-hover:#4f4f4f;--oo-btn-active-bg:#5c5c5c;
   --oo-btn-active-icon:#7aa2e3;--oo-label:#dcdcdc;--oo-sep:#5a5a5a;
   --oo-filename:#bdbdbd;}

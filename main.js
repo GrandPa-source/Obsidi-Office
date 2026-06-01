@@ -2472,8 +2472,13 @@ class PdfEmbedView extends obsidian.ItemView {
       this.file = file;
       const bytes = new Uint8Array(await this.app.vault.readBinary(file));
 
-      // Lazy-load the IIFE bundle global on first use.
-      if (!globalThis.ObsidiPdfEditor) {
+      // PDF-EMBEDPDF PoC: ALWAYS re-read + re-eval the bundle on open (no
+      // globalThis cache). The bundle installs globalThis.ObsidiPdfEditor, which
+      // SURVIVES plugin reloads — a cache guard made redeploys invisible until a
+      // full Obsidian restart (that's why UI tweaks "didn't change"). Re-evaling
+      // on every open means a tab close+reopen always picks up the latest build.
+      // (P1 will cache by build hash; the ~1.6 MB re-eval is fine for the PoC.)
+      {
         const codeRel = this.plugin.manifest.dir + "/pdf-editor/dist/pdf-editor.js";
         let code;
         try {
