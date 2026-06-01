@@ -32,6 +32,7 @@ import {
   ScrollPluginPackage,
   Scroller,
 } from '@embedpdf/plugin-scroll/preact';
+import type { RenderPageProps } from '@embedpdf/plugin-scroll/preact';
 import {
   DocumentManagerPluginPackage,
   DocumentContent,
@@ -66,6 +67,9 @@ interface ActiveInstance {
   save: () => Promise<void>;
   /** Tear down Preact + the engine. */
   destroy: () => void;
+  /** The captured EmbedPDF registry (null until onInitialized fires). Exposed
+   *  for diagnostics/automation (e.g. driving the annotation plugin in tests). */
+  getRegistry: () => PluginRegistry | null;
 }
 
 // container -> live instance, so savePdfEditor()/unmount can find it.
@@ -79,7 +83,14 @@ let lastContainer: HTMLElement | null = null;
 
 function Toolbar({ documentId }: { documentId: string }) {
   const { provides: annotationApi, state } = useAnnotation(documentId);
-  const activeTool = state?.activeVariant ?? null;
+  // AnnotationDocumentState: activeToolId is the currently-armed tool; a
+  // non-empty selectedUids means an annotation is selected (selectedUid is the
+  // deprecated single-selection alias kept as a fallback).
+  const activeTool = state?.activeToolId ?? null;
+  const selectedUid =
+    (state?.selectedUids && state.selectedUids.length > 0) || state?.selectedUid
+      ? true
+      : false;
 
   const tool = (id: string) =>
     annotationApi?.setActiveTool(activeTool === id ? null : id);
@@ -129,15 +140,15 @@ function Toolbar({ documentId }: { documentId: string }) {
         type="button"
         data-testid="pdf-delete"
         onClick={deleteSelected}
-        disabled={!state?.selectedUid}
+        disabled={!selectedUid}
         style={{
           padding: '4px 10px',
           marginLeft: 8,
           border: '1px solid #c5c5c5',
           borderRadius: 4,
           background: '#fff',
-          cursor: state?.selectedUid ? 'pointer' : 'not-allowed',
-          opacity: state?.selectedUid ? 1 : 0.5,
+          cursor: selectedUid ? 'pointer' : 'not-allowed',
+          opacity: selectedUid ? 1 : 0.5,
         }}
       >
         Delete
@@ -159,15 +170,14 @@ function PdfEditorApp({
   engine: PdfEngine;
   fileBytes: Uint8Array;
   author: string;
-  onRegistry: (r: PluginRegistry) => void;
+  onRegistry: (r: PluginRegistry) => Promise<void>;
 }) {
   // Build a stable ArrayBuffer copy of the incoming bytes for the document
   // manager (it expects an ArrayBuffer it can own).
   const [plugins] = useState(() => {
-    const ab = fileBytes.buffer.slice(
-      fileBytes.byteOffset,
-      fileBytes.byteOffset + fileBytes.byteLength,
-    );
+    // Copy into a fresh, non-shared ArrayBuffer the document manager can own.
+    const ab = new ArrayBuffer(fileBytes.byteLength);
+    new Uint8Array(ab).set(fileBytes);
     return [
       createPluginRegistration(DocumentManagerPluginPackage, {
         initialDocuments: [
@@ -205,7 +215,12 @@ function PdfEditorApp({
                     >
                       <Scroller
                         documentId={activeDocumentId}
-                        renderPage={({ width, height, pageIndex, scale, rotation }) => (
+                        renderPage={(page) => {
+                          // Scroller's declared param is PageLayout, but at runtime it
+                          // also spreads scale/rotation/document (RenderPageProps).
+                          const { width, height, pageIndex, scale, rotation } =
+                            page as RenderPageProps;
+                          return (
                           <PagePointerProvider
                             documentId={activeDocumentId}
                             pageIndex={pageIndex}
@@ -220,7 +235,8 @@ function PdfEditorApp({
                               rotation={rotation}
                             />
                           </PagePointerProvider>
-                        )}
+                          );
+                        }}
                       />
                     </Viewport>
                   </>
@@ -271,7 +287,8 @@ async function mountPdfEditor(
   const engine = (await createPdfiumEngine(opts.pdfiumWasmUrl)) as unknown as PdfEngine;
 
   let registry: PluginRegistry | null = null;
-  const onRegistry = (r: PluginRegistry) => {
+  // EmbedPDF's onInitialized is awaited internally, so it must return a Promise.
+  const onRegistry = async (r: PluginRegistry): Promise<void> => {
     registry = r;
   };
 
