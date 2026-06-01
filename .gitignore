@@ -16,3 +16,6 @@ assets/pdfium/*.wasm
 # Test fixtures: runtime wasm + any sample/PII PDFs (sample.pdf is regenerable via test/make-sample.mjs)
 pdf-editor/test/pdfium.wasm
 pdf-editor/test/*.pdf
+# OnlyOffice icon sprites copied into the test dir for the standalone harness
+# (large, downloaded OnlyOffice assets — not source). PDF-EMBEDPDF PoC.
+pdf-editor/test/*.svg

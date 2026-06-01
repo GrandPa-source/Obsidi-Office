@@ -36,6 +36,7 @@
     <div id="bar">
       <strong>ObsidiPdfEditor PoC</strong>
       <button id="saveBtn">Save</button>
+      <button id="themeBtn">Toggle dark</button>
       <span id="status">booting…</span>
     </div>
     <div id="editor"></div>
@@ -60,13 +61,22 @@
           // pdfiumWasmUrl is fetched by createPdfiumEngine internally.
           const pdfiumWasmUrl = new URL('./pdfium.wasm', location.href).href;
 
+          // OnlyOffice icon sprites (mirrors host's pdfSpriteUrls()).
+          const spriteUrls = [
+            new URL('./iconssmall.svg', location.href).href,
+            new URL('./iconsbig.svg', location.href).href,
+            new URL('./iconshuge.svg', location.href).href,
+          ];
+
           status('mounting editor…');
           await window.ObsidiPdfEditor.mountPdfEditor(
             document.getElementById('editor'),
             pdfBytes,
             {
               pdfiumWasmUrl,
+              spriteUrls,
               author: 'PoC',
+              onClose: () => { console.log('[poc] close requested'); },
               onSave: async (bytes) => {
                 window.__poc.saved = true;
                 window.__poc.savedSize = bytes.length;
@@ -84,6 +94,15 @@
           console.error('[poc] boot failed', e);
         }
       }
+
+      // Theme toggle drives Obsidian's `theme-dark` body class, which the chrome
+      // reads to switch between OnlyOffice light/dark palettes. The Chrome
+      // component reads the class at render time, so toggling alone won't
+      // re-render a mounted instance — the Playwright harness toggles BEFORE
+      // mounting for the dark screenshot. This button is a manual convenience.
+      document.getElementById('themeBtn').addEventListener('click', () => {
+        document.body.classList.toggle('theme-dark');
+      });
 
       document.getElementById('saveBtn').addEventListener('click', async () => {
         try {

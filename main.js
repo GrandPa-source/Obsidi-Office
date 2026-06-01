@@ -2503,6 +2503,7 @@ class PdfEmbedView extends obsidian.ItemView {
 
       await globalThis.ObsidiPdfEditor.mountPdfEditor(container, bytes, {
         pdfiumWasmUrl: this.plugin.pdfiumWasmUrl(),
+        spriteUrls: this.plugin.pdfSpriteUrls(),  // PDF-EMBEDPDF PoC — OnlyOffice icon sprites
         onSave: async (out) => {
           await this.app.vault.modifyBinary(file, out);
           new obsidian.Notice("PDF saved (" + out.byteLength + " bytes)");
@@ -4664,6 +4665,21 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return this.app.vault.adapter
       .getResourcePath(this.manifest.dir + "/assets/pdfium/pdfium.wasm")
       .replace(/\?.*$/, "");
+  }
+
+  // PDF-EMBEDPDF PoC — app:// URLs for OnlyOffice's PDF-editor icon sprites
+  // (symbol-based SVGs). The EmbedPDF bundle fetches each sprite's text and
+  // injects it once into a hidden div in the editor container so the toolbar's
+  // <use href="#btn-..."> references resolve. Mirrors pdfiumWasmUrl(): query
+  // string stripped for a stable URL. The 3 sprites are the small/big/huge
+  // icon sets shipped with the OnlyOffice pdfeditor app assets.
+  pdfSpriteUrls() {
+    const base = this.manifest.dir +
+      "/assets/onlyoffice/web-apps/apps/pdfeditor/main/resources/img/";
+    return ["iconssmall@2.5x.svg", "iconsbig@2.5x.svg", "iconshuge@2.5x.svg"]
+      .map((f) => this.app.vault.adapter
+        .getResourcePath(base + f)
+        .replace(/\?.*$/, ""));
   }
 
   async _openInView(file) {
