@@ -207,9 +207,9 @@ function injectChromeStyles() {
   color:var(--oo-filename);overflow:hidden;text-overflow:ellipsis;
   white-space:nowrap;padding:0 12px;pointer-events:none;}
 
-/* ribbon — OnlyOffice proportions: ~88px tall, groups laid out horizontally */
+/* ribbon — OnlyOffice proportions: ~68px tall, groups laid out horizontally */
 .${CX}-ribbon{display:flex;align-items:stretch;flex-wrap:nowrap;gap:0;
-  height:88px;padding:5px 4px;box-sizing:border-box;overflow-x:auto;
+  height:68px;padding:4px 4px;box-sizing:border-box;overflow-x:auto;
   background:var(--oo-ribbon-bg);border-bottom:1px solid var(--oo-ribbon-border);}
 
 /* group — a labelled cluster of controls with a right-hand separator */
@@ -236,7 +236,7 @@ function injectChromeStyles() {
 
 /* big button (~52px) — icon on top, label below */
 .${CX}-btn-big{display:inline-flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:2px;min-width:48px;height:74px;padding:5px 6px 4px;
+  justify-content:center;gap:1px;min-width:52px;height:54px;padding:3px 6px;
   border:none;border-radius:3px;background:transparent;cursor:pointer;
   color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
 .${CX}-btn-big:hover:not(:disabled):not(.${CX}-btn-active){background:var(--oo-btn-hover) !important;}
@@ -244,7 +244,7 @@ function injectChromeStyles() {
 .${CX}-btn-big.${CX}-btn-active .oo-ic{color:var(--oo-btn-active-icon);}
 .${CX}-btn-big:disabled{opacity:.4;cursor:default;}
 .${CX}-btn-big .oo-ic{width:28px;height:28px;}
-.${CX}-btn-big .oo-cap{font-size:11px;line-height:1.1;color:var(--oo-label);
+.${CX}-btn-big .oo-cap{font-size:9px;line-height:1.2;color:var(--oo-label);
   text-align:center;max-width:64px;}
 
 /* wide button (~) — icon + inline label, stacked vertically in a group */
