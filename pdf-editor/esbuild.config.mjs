@@ -35,6 +35,13 @@ const options = {
   // browser/Electron renderer/WKWebView, document.baseURI is always a valid
   // absolute URL.
   define: { 'import.meta.url': 'document.baseURI' },
+  // The host (main.js) loads this bundle via `(0, eval)(code)`. Because the
+  // bundle is strict-mode ("use strict" above), a strict eval gives its `var`
+  // declarations their OWN scope — so `var ObsidiPdfEditor = ...` does NOT leak
+  // to globalThis. Self-register explicitly: this footer runs in the bundle's
+  // own top-level scope (where the var IS visible) and pins it on globalThis,
+  // which works regardless of how the bundle is loaded (eval / <script> / etc.).
+  footer: { js: '\nif (typeof ObsidiPdfEditor !== "undefined") { globalThis.ObsidiPdfEditor = ObsidiPdfEditor; }' },
 };
 
 if (isWatch) {
