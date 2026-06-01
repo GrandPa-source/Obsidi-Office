@@ -41,7 +41,7 @@ import {
   RenderLayer,
   RenderPluginPackage,
 } from '@embedpdf/plugin-render/preact';
-import { ZoomPluginPackage } from '@embedpdf/plugin-zoom/preact';
+import { ZoomPluginPackage, useZoom } from '@embedpdf/plugin-zoom/preact';
 import { InteractionManagerPluginPackage, PagePointerProvider } from '@embedpdf/plugin-interaction-manager/preact';
 import { SelectionPluginPackage, SelectionLayer } from '@embedpdf/plugin-selection/preact';
 import { HistoryPluginPackage } from '@embedpdf/plugin-history/preact';
@@ -78,81 +78,247 @@ const INSTANCES = new WeakMap<HTMLElement, ActiveInstance>();
 let lastContainer: HTMLElement | null = null;
 
 // ---------------------------------------------------------------------------
-// Toolbar (markup tools) — exercises the annotation plugin via useAnnotation.
+// Toolbar — OnlyOffice-style compact single-row strip.
+//
+// Visual spec: light grey chrome (#f7f7f8), ~36px tall, 28px square monochrome
+// Lucide-style inline-SVG icon buttons, brand-accent (#204295) active state,
+// thin vertical separators between groups. Hover/active states require a CSS
+// class (can't be inline), injected once via injectToolbarStyles().
 // ---------------------------------------------------------------------------
 
-function Toolbar({ documentId }: { documentId: string }) {
+const TB = 'oo-pdftb-'; // scoped class prefix
+
+let _stylesInjected = false;
+function injectToolbarStyles() {
+  if (_stylesInjected || typeof document === 'undefined') return;
+  _stylesInjected = true;
+  const css = `
+.${TB}bar{display:flex;align-items:center;flex-wrap:wrap;gap:2px;
+  height:auto;min-height:38px;padding:3px 6px;box-sizing:border-box;
+  background:#f7f7f8;border-bottom:1px solid #e0e0e0;
+  font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
+.${TB}btn{display:inline-flex;align-items:center;justify-content:center;
+  width:28px;height:28px;padding:0;margin:0;border:none;border-radius:4px;
+  background:transparent;color:#444;cursor:pointer;flex:0 0 auto;
+  transition:background .12s,color .12s;}
+.${TB}btn:hover:not(:disabled):not(.${TB}active){background:#ececec;}
+.${TB}btn.${TB}active{background:#204295;color:#fff;}
+.${TB}btn:disabled{opacity:.4;cursor:default;}
+.${TB}btn svg{width:18px;height:18px;display:block;}
+.${TB}sep{width:1px;align-self:stretch;margin:4px 5px;background:#dcdcdc;
+  flex:0 0 auto;}
+.${TB}zoom{display:inline-flex;align-items:center;gap:1px;flex:0 0 auto;}
+.${TB}pct{min-width:46px;text-align:center;font-size:12px;color:#444;
+  user-select:none;padding:0 2px;}
+`;
+  const el = document.createElement('style');
+  el.setAttribute('data-oo-pdftb', '');
+  el.textContent = css;
+  document.head.appendChild(el);
+}
+
+// --- Lucide-style line icons (stroke=currentColor, 18px viewBox 24). ---------
+type IconProps = { d?: string };
+const Svg = (children: any) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    {children}
+  </svg>
+);
+
+const ICONS = {
+  // mouse-pointer (Select)
+  select: Svg(<><path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z" /><path d="m13 13 6 6" /></>),
+  // type (Text / freeText)
+  text: Svg(<><path d="M4 7V5h16v2" /><path d="M9 19h6" /><path d="M12 5v14" /></>),
+  // highlighter (Highlight)
+  highlight: Svg(<><path d="m9 11-6 6v3h9l3-3" /><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4" /></>),
+  // pen-tool (Pen / ink)
+  pen: Svg(<><path d="M12 19l7-7 3 3-7 7-3-3z" /><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18z" /><path d="M2 2l7.586 7.586" /><circle cx="11" cy="11" r="2" /></>),
+  // square (Shapes — rectangle for now)
+  shapes: Svg(<rect x="4" y="4" width="16" height="16" rx="1" />),
+  // signature / pen-line (Sign)
+  sign: Svg(<><path d="M3 17c3 0 4-7 6-7s2 5 4 5 2-3 4-3" /><path d="M3 21h18" /></>),
+  // eraser-ish redaction (Redact) — strikethrough block
+  redact: Svg(<><rect x="3" y="9" width="18" height="6" rx="1" /><path d="M3 3l18 18" /></>),
+  // trash-2 (Delete)
+  trash: Svg(<><path d="M3 6h18" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M10 11v6" /><path d="M14 11v6" /></>),
+  // minus / plus (Zoom)
+  minus: Svg(<path d="M5 12h14" />),
+  plus: Svg(<><path d="M12 5v14" /><path d="M5 12h14" /></>),
+  // save (floppy disk)
+  save: Svg(<><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><path d="M17 21v-8H7v8" /><path d="M7 3v5h8" /></>),
+};
+
+const Sep = () => <span class={`${TB}sep`} aria-hidden="true" />;
+
+function Toolbar({
+  documentId,
+  save,
+}: {
+  documentId: string;
+  save: () => Promise<void>;
+}) {
+  injectToolbarStyles();
+
   const { provides: annotationApi, state } = useAnnotation(documentId);
+  const { provides: zoomApi, state: zoomState } = useZoom(documentId);
+
   // AnnotationDocumentState: activeToolId is the currently-armed tool; a
   // non-empty selectedUids means an annotation is selected (selectedUid is the
   // deprecated single-selection alias kept as a fallback).
   const activeTool = state?.activeToolId ?? null;
-  const selectedUid =
+  const hasSelection =
     (state?.selectedUids && state.selectedUids.length > 0) || state?.selectedUid
       ? true
       : false;
 
+  // Select == "no active tool" (pointer/idle) state.
+  const isSelect = activeTool == null;
+
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState(0);
+
+  // Toggle a tool: clicking the active tool again disarms it (back to Select).
   const tool = (id: string) =>
     annotationApi?.setActiveTool(activeTool === id ? null : id);
+
+  const selectMode = () => annotationApi?.setActiveTool(null);
 
   const deleteSelected = () => {
     const sel = annotationApi?.getSelectedAnnotation();
     if (sel) annotationApi?.deleteAnnotation(sel.object.pageIndex, sel.object.id);
   };
 
-  const btn = (id: string, label: string) => (
+  const onSaveClick = useCallback(async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await save();
+      setSavedAt(Date.now());
+    } catch (e) {
+      console.error('[pdf-editor] toolbar save failed', e);
+    } finally {
+      setSaving(false);
+    }
+  }, [save, saving]);
+
+  // Brief "Saved" affordance after a successful save.
+  useEffect(() => {
+    if (!savedAt) return;
+    const t = setTimeout(() => setSavedAt(0), 1500);
+    return () => clearTimeout(t);
+  }, [savedAt]);
+
+  // Current zoom as a percentage (currentZoomLevel is the actual scale factor).
+  const zoomPct = Math.round((zoomState?.currentZoomLevel ?? 1) * 100);
+
+  const iconBtn = (
+    key: keyof typeof ICONS,
+    title: string,
+    opts: {
+      active?: boolean;
+      disabled?: boolean;
+      onClick?: () => void;
+      testid?: string;
+    } = {},
+  ) => (
     <button
       type="button"
-      data-tool={id}
-      onClick={() => tool(id)}
-      style={{
-        padding: '4px 10px',
-        marginRight: 4,
-        border: '1px solid #c5c5c5',
-        borderRadius: 4,
-        background: activeTool === id ? '#204295' : '#fff',
-        color: activeTool === id ? '#fff' : '#222',
-        cursor: 'pointer',
-      }}
+      class={`${TB}btn${opts.active ? ` ${TB}active` : ''}`}
+      title={title}
+      aria-label={title}
+      aria-pressed={opts.active ? 'true' : undefined}
+      data-testid={opts.testid}
+      disabled={opts.disabled}
+      onClick={opts.onClick}
     >
-      {label}
+      {ICONS[key]}
     </button>
   );
 
   return (
-    <div
-      data-testid="pdf-toolbar"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '6px 8px',
-        borderBottom: '1px solid #ddd',
-        background: '#fafafa',
-        flexWrap: 'wrap',
-      }}
-    >
-      {btn('freeText', 'Text')}
-      {btn('highlight', 'Highlight')}
-      {btn('ink', 'Pen')}
-      {btn('square', 'Box')}
-      <button
-        type="button"
-        data-testid="pdf-delete"
-        onClick={deleteSelected}
-        disabled={!selectedUid}
-        style={{
-          padding: '4px 10px',
-          marginLeft: 8,
-          border: '1px solid #c5c5c5',
-          borderRadius: 4,
-          background: '#fff',
-          cursor: selectedUid ? 'pointer' : 'not-allowed',
-          opacity: selectedUid ? 1 : 0.5,
-        }}
-      >
-        Delete
-      </button>
+    <div class={`${TB}bar`} data-testid="pdf-toolbar" role="toolbar" aria-label="PDF tools">
+      {/* Select / pointer */}
+      {iconBtn('select', 'Select', {
+        active: isSelect,
+        onClick: selectMode,
+        testid: 'pdf-tool-select',
+      })}
+
+      <Sep />
+
+      {/* Markup tools */}
+      {iconBtn('text', 'Text', {
+        active: activeTool === 'freeText',
+        onClick: () => tool('freeText'),
+        testid: 'pdf-tool-freeText',
+      })}
+      {iconBtn('highlight', 'Highlight', {
+        active: activeTool === 'highlight',
+        onClick: () => tool('highlight'),
+        testid: 'pdf-tool-highlight',
+      })}
+      {iconBtn('pen', 'Pen', {
+        active: activeTool === 'ink',
+        onClick: () => tool('ink'),
+        testid: 'pdf-tool-ink',
+      })}
+      {iconBtn('shapes', 'Shapes', {
+        active: activeTool === 'square',
+        onClick: () => tool('square'),
+        testid: 'pdf-tool-square',
+      })}
+      {iconBtn('trash', 'Delete selection', {
+        disabled: !hasSelection,
+        onClick: deleteSelected,
+        testid: 'pdf-delete',
+      })}
+
+      <Sep />
+
+      {/* Sign — deferred (signature plugin not registered). TODO P2 */}
+      {iconBtn('sign', 'Sign (coming soon)', { disabled: true, testid: 'pdf-tool-sign' })}
+
+      <Sep />
+
+      {/* Redact — deferred (redaction plugin not registered, destructive). TODO P4 */}
+      {iconBtn('redact', 'Redact (coming soon)', { disabled: true, testid: 'pdf-tool-redact' })}
+
+      <Sep />
+
+      {/* Zoom */}
+      <span class={`${TB}zoom`}>
+        {iconBtn('minus', 'Zoom out', {
+          disabled: !zoomApi,
+          onClick: () => zoomApi?.zoomOut(),
+          testid: 'pdf-zoom-out',
+        })}
+        <span class={`${TB}pct`} data-testid="pdf-zoom-pct">
+          {zoomPct}%
+        </span>
+        {iconBtn('plus', 'Zoom in', {
+          disabled: !zoomApi,
+          onClick: () => zoomApi?.zoomIn(),
+          testid: 'pdf-zoom-in',
+        })}
+      </span>
+
+      <Sep />
+
+      {/* Save */}
+      {iconBtn('save', saving ? 'Saving…' : savedAt ? 'Saved' : 'Save (Ctrl+S)', {
+        active: !!savedAt,
+        disabled: saving,
+        onClick: onSaveClick,
+        testid: 'pdf-save',
+      })}
     </div>
   );
 }
@@ -166,11 +332,14 @@ function PdfEditorApp({
   fileBytes,
   author,
   onRegistry,
+  save,
 }: {
   engine: PdfEngine;
   fileBytes: Uint8Array;
   author: string;
   onRegistry: (r: PluginRegistry) => Promise<void>;
+  /** Save the current document via the host onSave callback (toolbar Save / Ctrl+S). */
+  save: () => Promise<void>;
 }) {
   // Build a stable ArrayBuffer copy of the incoming bytes for the document
   // manager (it expects an ArrayBuffer it can own).
@@ -208,7 +377,7 @@ function PdfEditorApp({
               {({ isLoaded }) =>
                 isLoaded ? (
                   <>
-                    <Toolbar documentId={activeDocumentId} />
+                    <Toolbar documentId={activeDocumentId} save={save} />
                     <Viewport
                       documentId={activeDocumentId}
                       style={{ flex: 1, backgroundColor: '#f1f3f5', overflow: 'auto' }}
@@ -324,6 +493,14 @@ async function mountPdfEditor(
     registry = r;
   };
 
+  // Single save closure shared by the in-toolbar Save button, Ctrl+S, and the
+  // public savePdfEditor() API — they must all run the exact same save path
+  // (deselect + await commit, then saveAsCopy) via saveViaRegistry.
+  const save = async (): Promise<void> => {
+    if (!registry) throw new Error('Editor not initialized yet.');
+    await saveViaRegistry(registry, opts.onSave);
+  };
+
   // Mount the Preact tree.
   render(
     <PdfEditorApp
@@ -331,15 +508,13 @@ async function mountPdfEditor(
       fileBytes={fileBytes}
       author={opts.author ?? 'Obsidi-Office'}
       onRegistry={onRegistry}
+      save={save}
     />,
     container,
   );
 
   const instance: ActiveInstance = {
-    save: async () => {
-      if (!registry) throw new Error('Editor not initialized yet.');
-      await saveViaRegistry(registry, opts.onSave);
-    },
+    save,
     destroy: () => {
       try {
         render(null, container); // unmount Preact tree (triggers EmbedPDF cleanup -> registry.destroy())
