@@ -1198,6 +1198,19 @@ function EditorBody({
   // PDF-EMBEDPDF PoC A3 — staged (not yet applied) edits.
   const [pendingEdits, setPendingEdits] = useState<Array<ActiveEdit & { newText: string }>>([]);
 
+  // PDF-EMBEDPDF PoC A4 — confirm modal state (0 = closed; N = "replace N regions?")
+  const [confirmCount, setConfirmCount] = useState(0);
+  const confirmResolver = useRef<((v: boolean) => void) | null>(null);
+  const confirmReplace = (n: number) => new Promise<boolean>((resolve) => {
+    confirmResolver.current = resolve;
+    setConfirmCount(n);
+  });
+  const resolveConfirm = (v: boolean) => {
+    setConfirmCount(0);
+    const r = confirmResolver.current; confirmResolver.current = null;
+    r?.(v);
+  };
+
   // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
   const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
     const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
@@ -1219,7 +1232,7 @@ function EditorBody({
     return picked;
   }, []);
 
-  // PDF-EMBEDPDF PoC A2+A3 — test hooks (merged so standalone.html's runs() survives).
+  // PDF-EMBEDPDF PoC A2+A3+A4 — test hooks (merged so standalone.html's runs() survives).
   useEffect(() => {
     (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
       editState: () => ({ editTextOn, activeEdit }),
@@ -1227,8 +1240,32 @@ function EditorBody({
       setMode: (v: boolean) => setEditTextOn(v),
       pendingCount: () => pendingEdits.length,
       pending: () => pendingEdits.map((p) => ({ text: p.text, newText: p.newText, pageIndex: p.pageIndex })),
+      confirmCount: () => confirmCount,
     });
-  }, [editTextOn, activeEdit, onPickLine, pendingEdits]);
+  }, [editTextOn, activeEdit, onPickLine, pendingEdits, confirmCount]);
+
+  // PDF-EMBEDPDF PoC A4 — register the apply-pending-edits hook for saveViaRegistry.
+  // Shows the confirm modal, then applies each staged edit via applyTextEdit, then
+  // clears pendingEdits. Returns false if the user cancels (save is aborted).
+  // No autosave exists in this bundle — there is no autosave path to suppress here.
+  useEffect(() => {
+    _applyPendingEdits = async (registry: PluginRegistry) => {
+      if (pendingEdits.length === 0) return true;
+      const proceed = await confirmReplace(pendingEdits.length);
+      if (!proceed) return false;
+      const engine = registry.getEngine() as any;
+      const dm = registry.getPlugin<any>('document-manager')?.provides();
+      const doc = dm?.getActiveDocument();
+      if (!doc) return false;
+      for (const ed of pendingEdits) {
+        const page = doc.pages?.[ed.pageIndex];
+        if (page) await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, ed.fontSize);
+      }
+      setPendingEdits([]);
+      return true;
+    };
+    return () => { _applyPendingEdits = null; };
+  }, [pendingEdits]);
 
   return (
     <>
@@ -1303,6 +1340,46 @@ function EditorBody({
           />
         </Viewport>
       </div>
+      {/* PDF-EMBEDPDF PoC A4 — confirm modal: shown when a save with staged edits is triggered. */}
+      {confirmCount > 0 ? (
+        <div
+          data-testid="pdf-edit-confirm-modal"
+          style={{
+            position: 'fixed', inset: 0, zIndex: 50,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            background: 'rgba(0,0,0,0.35)',
+          }}
+        >
+          <div style={{
+            background: 'var(--oo-ribbon-bg,#fff)', color: 'var(--oo-tab-active-text,#111)',
+            padding: '18px 20px', borderRadius: 6, minWidth: 320, maxWidth: 420,
+            boxShadow: '0 8px 30px rgba(0,0,0,0.35)',
+          }}>
+            <div style={{ fontWeight: 600, marginBottom: 8 }}>Replace text?</div>
+            <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>
+              Permanently replace {confirmCount} text region{confirmCount === 1 ? '' : 's'}? The original text will be removed.
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+              <button
+                type="button"
+                data-testid="pdf-edit-confirm-no"
+                onClick={() => resolveConfirm(false)}
+                style={{ padding: '5px 12px' }}
+              >Cancel</button>
+              <button
+                type="button"
+                data-testid="pdf-edit-confirm-yes"
+                onClick={() => resolveConfirm(true)}
+                style={{
+                  padding: '5px 12px',
+                  background: 'var(--oo-accent,#204295)', color: '#fff',
+                  border: 'none', borderRadius: 4,
+                }}
+              >Replace</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 }
@@ -1394,6 +1471,13 @@ function PdfEditorApp({
 // Save helper: pull live doc from registry + saveAsCopy.
 // ---------------------------------------------------------------------------
 
+// PDF-EMBEDPDF PoC A4 — EditorBody registers an apply-pending-edits hook here so
+// the module-level save path (saveViaRegistry) can flush staged text edits into
+// the live PDFium doc BEFORE saveAsCopy. Returns false if the user cancels the
+// confirm (abort the save). No autosave exists in this bundle, so there is no
+// autosave path to suppress.
+let _applyPendingEdits: ((registry: PluginRegistry) => Promise<boolean>) | null = null;
+
 async function saveViaRegistry(
   registry: PluginRegistry,
   onSave: (bytes: Uint8Array) => Promise<void>,
@@ -1402,6 +1486,13 @@ async function saveViaRegistry(
   const docManager = registry.getPlugin<any>('document-manager')?.provides();
   const doc = docManager?.getActiveDocument?.();
   if (!engine || !doc) throw new Error('No active document to save.');
+
+  // A4: flush staged "Edit Text" edits (redact original + flatten replacement)
+  // into the live doc before serialization. Aborts the save if the user cancels.
+  if (_applyPendingEdits) {
+    const proceed = await _applyPendingEdits(registry);
+    if (!proceed) return;
+  }
 
   // CRITICAL: flush the annotation plugin's pending changes into the in-memory
   // PDFium document BEFORE saveAsCopy serializes it.
