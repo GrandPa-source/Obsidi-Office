@@ -565,12 +565,13 @@ function RailBtn({
 
 // PDF-EMBEDPDF PoC A3 — textarea overlay positioned inside the page container.
 // Staged edit is committed (Enter / blur) or discarded (Escape).
-function TextEditBox({ edit, scale, onCommit, onCancel }: {
-  edit: ActiveEdit; scale: number;
+function TextEditBox({ edit, onCommit, onCancel }: {
+  edit: ActiveEdit;
   onCommit: (newText: string) => void; onCancel: () => void;
 }) {
   const [val, setVal] = useState(edit.text);
   const o = edit.rect.origin, s = edit.rect.size;
+  const sx = edit.sx, sy = edit.sy;
   // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
   // box, which can fire a trailing blur -> a second onCommit. The ref makes
   // commit/cancel fire-once; it resets per mount (each new pick is a fresh box).
@@ -581,8 +582,8 @@ function TextEditBox({ edit, scale, onCommit, onCancel }: {
     <textarea
       class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
       value={val}
-      style={{ position: 'absolute', left: o.x * scale, top: o.y * scale,
-        width: s.width * scale, height: s.height * scale, fontSize: edit.fontSize * scale,
+      style={{ position: 'absolute', left: o.x * sx, top: o.y * sy,
+        width: s.width * sx, height: s.height * sy, fontSize: edit.fontSize * sy,
         lineHeight: 1.05, fontFamily: 'Helvetica, Arial, sans-serif', color: '#000',
         background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
         resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
@@ -1178,7 +1179,11 @@ function Chrome({
 // ---------------------------------------------------------------------------
 
 // PDF-EMBEDPDF PoC A2 — result of a line pick in editText mode.
-type ActiveEdit = { pageIndex: number; rect: any; text: string; fontSize: number };
+// sx/sy = CSS px per PDF point, measured from the overlay rect ÷ page point size
+// at pick time. Used to place/size the edit box. (The Scroller layout's `scale`
+// field is unreliable — undefined at runtime — so we derive the factor from
+// measured geometry instead.)
+type ActiveEdit = { pageIndex: number; rect: any; text: string; fontSize: number; sx: number; sy: number };
 
 function EditorBody({
   documentId,
@@ -1222,11 +1227,20 @@ function EditorBody({
     const hit = editText.runAtPoint(runs, px, py);
     if (!hit) return null;
     const line = editText.lineRuns(runs, hit);
+    // Measure CSS px per point from the overlay rect ÷ the page's point size, so
+    // the edit box is sized/placed correctly regardless of zoom (no reliance on
+    // the Scroller layout's unreliable `scale`).
+    const ov = document.querySelector(`[data-testid="pdf-edit-overlay-${pageIndex}"]`);
+    const ovr = ov?.getBoundingClientRect();
+    const pts = (page as any).size;
+    const sx = ovr && pts?.width ? ovr.width / pts.width : 1;
+    const sy = ovr && pts?.height ? ovr.height / pts.height : 1;
     const picked: ActiveEdit = {
       pageIndex,
       rect: editText.unionRect(line),
       text: line.map((r: any) => r.text).join('').replace(/\r?\n$/, ''),
       fontSize: hit.fontSize,
+      sx, sy,
     };
     setActiveEdit(picked);
     return picked;
@@ -1322,10 +1336,17 @@ function EditorBody({
                       data-testid={`pdf-edit-overlay-${pageIndex}`}
                       onClick={(e) => {
                         e.stopPropagation();
-                        const el = e.currentTarget as HTMLElement;
-                        const r = el.getBoundingClientRect();
-                        const px = (e.clientX - r.left) / scale;
-                        const py = (e.clientY - r.top) / scale;
+                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                        // Convert the screen click to PDF points using the page's
+                        // point size ÷ the overlay's on-screen size. (The layout
+                        // `scale` is unreliable — see ActiveEdit note.)
+                        const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
+                        const pg = reg?.getPlugin('document-manager')?.provides()
+                          ?.getActiveDocument()?.pages?.[pageIndex];
+                        const pts = pg?.size;
+                        const pw = pts?.width || r.width, ph = pts?.height || r.height;
+                        const px = (e.clientX - r.left) * (pw / r.width);
+                        const py = (e.clientY - r.top) * (ph / r.height);
                         onPickLine(pageIndex, px, py)
                           .catch((err) => console.warn('[pdf-editor] pick failed', err));
                       }}
@@ -1335,7 +1356,6 @@ function EditorBody({
                   {activeEdit && activeEdit.pageIndex === pageIndex ? (
                     <TextEditBox
                       edit={activeEdit}
-                      scale={scale}
                       onCommit={(newText) => {
                         if (newText !== activeEdit.text) {
                           setPendingEdits((prev) => [...prev, { ...activeEdit, newText }]);
