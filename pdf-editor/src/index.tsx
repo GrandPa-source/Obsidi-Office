@@ -1234,7 +1234,8 @@ function EditorBody({
                         const r = el.getBoundingClientRect();
                         const px = (e.clientX - r.left) / scale;
                         const py = (e.clientY - r.top) / scale;
-                        onPickLine(pageIndex, px, py);
+                        onPickLine(pageIndex, px, py)
+                          .catch((err) => console.warn('[pdf-editor] pick failed', err));
                       }}
                     />
                   ) : null}
