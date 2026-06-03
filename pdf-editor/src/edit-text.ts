@@ -57,11 +57,77 @@ export function unionRect(runs: TextRunLike[]): any {
   return { origin: { x, y }, size: { width: Math.max(...xe) - x, height: Math.max(...ye) - y } };
 }
 
+export interface Line {
+  rect: any;            // engine-native {origin,size}, PDF points
+  text: string;         // concatenated, trailing newline stripped
+  fontSize: number;     // points (dominant run)
+  pdfFont: number;      // PdfStandardFont enum for the saved overlay (Courier 0 / Helvetica 4 / Times 8)
+  cssFont: string;      // matching CSS font stack for on-screen + measuring
+  color: string;        // hex
+  runs: TextRunLike[];
+}
+
+// Map a run's font to the nearest of PDFium's standard fonts + a CSS stack.
+export function mapStandardFont(font: any): { pdfFont: number; cssFont: string } {
+  const name = String(font?.name || font?.family || '').toLowerCase();
+  if (/times|serif|georgia|roman/.test(name)) return { pdfFont: 8, cssFont: 'Times New Roman, Times, serif' };
+  if (/courier|mono|consol/.test(name)) return { pdfFont: 0, cssFont: 'Courier New, Courier, monospace' };
+  return { pdfFont: 4, cssFont: 'Helvetica, Arial, sans-serif' };
+}
+
+function hexColor(c: any): string {
+  if (!c) return '#000000';
+  const r = c.red ?? 0, g = c.green ?? 0, b = c.blue ?? 0;
+  const h = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+// Group runs sharing a baseline into visual lines (reuses the lineRuns tolerance).
+export function partitionLines(runs: TextRunLike[]): Line[] {
+  const sorted = runs.slice().sort((a, b) => a.rect.origin.y - b.rect.origin.y || a.rect.origin.x - b.rect.origin.x);
+  const used = new Set<TextRunLike>();
+  const lines: Line[] = [];
+  for (const r of sorted) {
+    if (used.has(r)) continue;
+    const group = lineRuns(sorted.filter((x) => !used.has(x)), r);
+    group.forEach((g) => used.add(g));
+    group.sort((a, b) => a.rect.origin.x - b.rect.origin.x);
+    const dom = group.reduce((p, c) => (c.fontSize > p.fontSize ? c : p), group[0]);
+    const fm = mapStandardFont(dom.font);
+    lines.push({
+      rect: unionRect(group),
+      text: group.map((g) => g.text).join('').replace(/\r?\n$/, ''),
+      fontSize: dom.fontSize,
+      pdfFont: fm.pdfFont, cssFont: fm.cssFont,
+      color: hexColor(dom.color),
+      runs: group,
+    });
+  }
+  return lines;
+}
+
+// Largest size <= start whose text fits maxWidth (and <= maxHeight). measureText
+// scales linearly with px size, so one proportional step is exact for width.
+let _measCtx: CanvasRenderingContext2D | null = null;
+export function fitFontSize(text: string, cssFont: string, maxWidthPt: number, maxHeightPt: number, startSizePt: number): number {
+  if (!text || typeof document === 'undefined') return Math.min(startSizePt, maxHeightPt);
+  if (!_measCtx) _measCtx = document.createElement('canvas').getContext('2d');
+  const ctx = _measCtx;
+  if (!ctx) return Math.min(startSizePt, maxHeightPt);
+  ctx.font = `${startSizePt}px ${cssFont}`;
+  const w = ctx.measureText(text).width || 1;
+  let size = startSizePt;
+  const budget = maxWidthPt * 0.98;
+  if (w > budget) size = startSizePt * (budget / w);
+  if (size > maxHeightPt) size = maxHeightPt;
+  return Math.max(4, size);
+}
+
 /** Apply one text edit: redact original rect, add replacement free-text, flatten it.
  *  Mirrors the feasibility-gate sequence exactly. Returns true on success. */
 export async function applyTextEdit(
   engine: PdfEngine, doc: any, page: any,
-  rect: any, newText: string, fontSize: number,
+  rect: any, newText: string, fontSize: number, pdfFont = 4,
 ): Promise<boolean> {
   const e = engine as any;
   const redOk = await toP(e.redactTextInRects(doc, page, [rect], { drawBlackBoxes: false }));
@@ -69,8 +135,8 @@ export async function applyTextEdit(
   const annot = {
     type: 3 /* FREETEXT */, pageIndex: page.index ?? 0,
     id: 'edit-' + (page.index ?? 0) + '-' + rect.origin.x + '-' + rect.origin.y + '-' + (++_editSeq),
-    rect, contents: newText, fontFamily: 4 /* Helvetica */,
-    fontSize: Math.max(8, Math.round(fontSize || 12)),
+    rect, contents: newText, fontFamily: pdfFont,
+    fontSize: Math.max(4, Math.round(fontSize || 12)),
     fontColor: '#000000', textAlign: 0, verticalAlign: 0, opacity: 1,
   };
   const id = await toP(e.createPageAnnotation(doc, page, annot));
