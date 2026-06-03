@@ -575,6 +575,10 @@ function TextEditBox({ edit, onCommit, onCancel }: {
   const [val, setVal] = useState(edit.text);
   const o = edit.rect.origin, s = edit.rect.size;
   const sx = edit.sx, sy = edit.sy;
+  // V3: render in the line's matched font/colour, and auto-fit the size to the
+  // line's width/height (re-fit on every keystroke) so the text matches the
+  // original and never overflows/wraps — the fix for "font grows / disappears".
+  const fitted = editText.fitFontSize(val, edit.cssFont, s.width, s.height, edit.fontSize);
   // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
   // box, which can fire a trailing blur -> a second onCommit. The ref makes
   // commit/cancel fire-once; it resets per mount (each new pick is a fresh box).
@@ -586,8 +590,8 @@ function TextEditBox({ edit, onCommit, onCancel }: {
       class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
       value={val}
       style={{ position: 'absolute', left: o.x * sx, top: o.y * sy,
-        width: s.width * sx, height: s.height * sy, fontSize: edit.fontSize * sy,
-        lineHeight: 1.05, fontFamily: 'Helvetica, Arial, sans-serif', color: '#000',
+        width: s.width * sx, height: s.height * sy, fontSize: fitted * sy,
+        lineHeight: 1.05, fontFamily: edit.cssFont, color: edit.color, whiteSpace: 'pre',
         background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
         resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
       onInput={(e) => setVal((e.target as HTMLTextAreaElement).value)}
