@@ -77,7 +77,11 @@ export function mapStandardFont(font: any): { pdfFont: number; cssFont: string }
 
 function hexColor(c: any): string {
   if (!c) return '#000000';
-  const r = c.red ?? 0, g = c.green ?? 0, b = c.blue ?? 0;
+  let r = c.red ?? 0, g = c.green ?? 0, b = c.blue ?? 0;
+  // EmbedPDF may return channels normalized 0–1 (PDF PDFReal) or as 0–255. If
+  // every channel is ≤ 1, treat them as 0–1 floats and scale up. (A genuine
+  // 0–255 colour with all channels ≤ 1 is indistinguishable from black anyway.)
+  if (r <= 1 && g <= 1 && b <= 1) { r *= 255; g *= 255; b *= 255; }
   const h = (n: number) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
   return `#${h(r)}${h(g)}${h(b)}`;
 }
