@@ -1394,6 +1394,10 @@ function EditorBody({
                   {/* PDF-EMBEDPDF PoC A3 — anchored pre-filled edit box. */}
                   {activeEdit && activeEdit.pageIndex === pageIndex ? (
                     <TextEditBox
+                      // key per active line so switching lines remounts the box with
+                      // a fresh `val` (and `done` guard) — otherwise the textarea
+                      // keeps the previous line's text at the new line's position.
+                      key={`${activeEdit.pageIndex}-${activeEdit.lineIndex}`}
                       edit={activeEdit}
                       onCommit={(newText) => {
                         if (newText !== activeEdit.text) {
