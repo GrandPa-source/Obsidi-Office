@@ -1210,6 +1210,11 @@ function EditorBody({
 
   // PDF-EMBEDPDF PoC A3 — staged (not yet applied) edits.
   const [pendingEdits, setPendingEdits] = useState<Array<ActiveEdit & { newText: string }>>([]);
+  // Synchronous mirror of pendingEdits. The save path reads this (not the state)
+  // because the save commits the open box via blur, and the blur's setPendingEdits
+  // hasn't flushed (nor has the _applyPendingEdits effect re-registered) by the
+  // time saveViaRegistry runs. The ref is updated synchronously in onCommit.
+  const pendingRef = useRef<Array<ActiveEdit & { newText: string }>>([]);
 
   // PDF-EMBEDPDF PoC A4 — confirm modal state (0 = closed; N = "replace N regions?")
   const [confirmCount, setConfirmCount] = useState(0);
@@ -1301,17 +1306,19 @@ function EditorBody({
   // No autosave exists in this bundle — there is no autosave path to suppress here.
   useEffect(() => {
     _applyPendingEdits = async (registry: PluginRegistry) => {
-      if (pendingEdits.length === 0) return true;
+      // Read the synchronous ref, not the (possibly stale-closure) state.
+      const edits = pendingRef.current;
+      if (edits.length === 0) return true;
       // Re-entrancy guard: a second save while a confirm is already pending would
       // overwrite confirmResolver and hang the first save. Block concurrent saves.
       if (confirmResolver.current) return false;
-      const proceed = await confirmReplace(pendingEdits.length);
+      const proceed = await confirmReplace(edits.length);
       if (!proceed) return false;
       const engine = registry.getEngine() as any;
       const dm = registry.getPlugin<any>('document-manager')?.provides();
       const doc = dm?.getActiveDocument();
       if (!doc) return false;
-      for (const ed of pendingEdits) {
+      for (const ed of edits) {
         const page = doc.pages?.[ed.pageIndex];
         if (!page) continue;
         // V4: bake the replacement in the line's mapped font, auto-fit to the line
@@ -1321,6 +1328,7 @@ function EditorBody({
         const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fitted, ed.pdfFont);
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
+      pendingRef.current = [];
       setPendingEdits([]);
       setScanVersion((v) => v + 1); // doc changed → refresh outlines to the new text
       return true;
@@ -1332,7 +1340,10 @@ function EditorBody({
       confirmResolver.current?.(false);
       confirmResolver.current = null;
     };
-  }, [pendingEdits]);
+    // Register ONCE. The hook reads pendingRef.current (live) + stable setters, so
+    // it must NOT re-register on pendingEdits changes — re-running mid-save would
+    // fire this cleanup and resolve the open confirm as cancelled (proceed=false).
+  }, []);
 
   return (
     <>
@@ -1401,7 +1412,10 @@ function EditorBody({
                       edit={activeEdit}
                       onCommit={(newText) => {
                         if (newText !== activeEdit.text) {
-                          setPendingEdits((prev) => [...prev, { ...activeEdit, newText }]);
+                          // Push to the ref synchronously (save reads the ref) AND
+                          // mirror to state (for the outline "edited" highlight).
+                          pendingRef.current = [...pendingRef.current, { ...activeEdit, newText }];
+                          setPendingEdits(pendingRef.current);
                         }
                         setActiveEdit(null);
                       }}
@@ -1560,6 +1574,16 @@ async function saveViaRegistry(
   const docManager = registry.getPlugin<any>('document-manager')?.provides();
   const doc = docManager?.getActiveDocument?.();
   if (!engine || !doc) throw new Error('No active document to save.');
+
+  // Commit any OPEN edit box first. Pressing Ctrl+S while the textarea is still
+  // focused never committed the in-progress edit, so it wasn't staged and the
+  // save serialized the unchanged doc. Blur fires the box's onBlur -> onCommit
+  // -> setPendingEdits; the macrotask wait lets that state flush and the
+  // _applyPendingEdits hook re-register with the newly-staged edit.
+  if (typeof document !== 'undefined') {
+    const ta = document.querySelector('[data-testid="pdf-textedit"]') as HTMLElement | null;
+    if (ta) { ta.blur(); await new Promise((r) => setTimeout(r, 0)); }
+  }
 
   // A4: flush staged "Edit Text" edits (redact original + flatten replacement)
   // into the live doc before serialization. Aborts the save if the user cancels.
