@@ -19,7 +19,9 @@
     "@embedpdf/plugin-interaction-manager": "2.14.3",
     "@embedpdf/plugin-render": "2.14.3",
     "@embedpdf/plugin-scroll": "2.14.3",
+    "@embedpdf/plugin-search": "^2.14.3",
     "@embedpdf/plugin-selection": "2.14.3",
+    "@embedpdf/plugin-thumbnail": "^2.14.3",
     "@embedpdf/plugin-viewport": "2.14.3",
     "@embedpdf/plugin-zoom": "2.14.3",
     "preact": "^10.24.3"

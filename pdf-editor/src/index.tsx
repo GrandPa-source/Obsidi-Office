@@ -54,6 +54,18 @@ import {
   AnnotationLayer,
   useAnnotation,
 } from '@embedpdf/plugin-annotation/preact';
+import {
+  ThumbnailPluginPackage,
+  ThumbnailsPane,
+  ThumbImg,
+} from '@embedpdf/plugin-thumbnail/preact';
+import type { ThumbMeta } from '@embedpdf/plugin-thumbnail';
+import {
+  SearchPluginPackage,
+  SearchLayer,
+  useSearch,
+} from '@embedpdf/plugin-search/preact';
+import type { SearchResult } from '@embedpdf/models';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -146,6 +158,11 @@ const IC = {
   pen: ['btn-pen-tool', 28], // big sprite (28x28)
   rect: ['btn-annotation-rectangle', 20],
   del: ['btn-cc-remove', 20],
+  // left rail (OnlyOffice's PDF-editor left-panel nav icons; all small, 20x20)
+  railSearch: ['btn-menu-search', 20],
+  railComments: ['btn-menu-comments', 20],
+  railThumbs: ['btn-menu-thumbs', 20],
+  railNav: ['btn-menu-navigation', 20],
 } as const;
 
 type IconSpec = readonly [string, number];
@@ -304,6 +321,118 @@ function injectChromeStyles() {
   color:var(--oo-tab-active-text);display:flex;align-items:center;gap:8px;}
 .${CX}-fileitem:hover{background:var(--oo-btn-hover) !important;}
 .${CX}-fileitem:disabled{opacity:.4;cursor:default;}
+
+/* ===================================================================== */
+/* Left rail + side panel (pass 2). The whole editor view becomes:        */
+/*   [tabbar] / [ribbon]  on top, then a horizontal row:                  */
+/*   [rail][panel?][document Viewport].                                    */
+/* ===================================================================== */
+
+/* the horizontal body row under the chrome */
+.${CX}-body{display:flex;flex:1;min-height:0;width:100%;}
+
+/* vertical icon strip down the left of the document area */
+.${CX}-rail{display:flex;flex-direction:column;align-items:center;gap:2px;
+  width:40px;flex:0 0 40px;padding:4px 0;box-sizing:border-box;
+  background:var(--oo-tabbar-bg);border-right:1px solid var(--oo-ribbon-border);}
+
+/* rail icon button — flatten Obsidian's global button chrome */
+.${CX}-railbtn{background-color:transparent !important;box-shadow:none !important;
+  border:none !important;}
+.${CX}-railbtn{display:inline-flex;align-items:center;justify-content:center;
+  position:relative;width:30px;height:30px;padding:0;border-radius:4px;
+  cursor:pointer;color:var(--oo-icon);flex:0 0 auto;transition:background .1s;}
+.${CX}-railbtn:hover:not(.${CX}-railbtn-active){background-color:var(--oo-btn-hover) !important;}
+.${CX}-railbtn.${CX}-railbtn-active{background-color:var(--oo-btn-active-bg) !important;}
+.${CX}-railbtn.${CX}-railbtn-active .oo-ic{color:var(--oo-btn-active-icon);}
+.${CX}-railbtn .oo-ic{width:20px;height:20px;}
+/* notification dot (Comments icon when annotations exist) */
+.${CX}-raildot{position:absolute;top:4px;right:4px;width:7px;height:7px;
+  border-radius:50%;background:var(--oo-accent-underline);
+  box-shadow:0 0 0 1.5px var(--oo-tabbar-bg);}
+
+/* the panel that opens to the right of the rail */
+.${CX}-panel{display:flex;flex-direction:column;width:220px;flex:0 0 220px;
+  min-height:0;background:var(--oo-ribbon-bg);
+  border-right:1px solid var(--oo-ribbon-border);overflow:hidden;}
+.${CX}-panel-head{display:flex;align-items:center;justify-content:space-between;
+  height:30px;flex:0 0 30px;padding:0 6px 0 10px;font-size:12px;font-weight:600;
+  color:var(--oo-tab-active-text);border-bottom:1px solid var(--oo-ribbon-border);
+  background:var(--oo-tabbar-bg);}
+.${CX}-panel-close{background-color:transparent !important;box-shadow:none !important;
+  border:none !important;display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;padding:0;border-radius:3px;cursor:pointer;
+  color:var(--oo-icon);font-size:15px;line-height:1;}
+.${CX}-panel-close:hover{background-color:var(--oo-btn-hover) !important;}
+.${CX}-panel-body{flex:1;min-height:0;overflow:hidden;display:flex;
+  flex-direction:column;}
+
+/* thumbnails list */
+.${CX}-thumblist{flex:1;min-height:0;}
+.${CX}-thumbcell{position:absolute;left:0;right:0;display:flex;flex-direction:column;
+  align-items:center;cursor:pointer;}
+.${CX}-thumbframe{box-sizing:border-box;border:2px solid transparent;border-radius:2px;
+  display:flex;align-items:center;justify-content:center;
+  background:var(--oo-tabbar-bg);overflow:hidden;}
+.${CX}-thumbcell:hover .${CX}-thumbframe{border-color:var(--oo-sep);}
+.${CX}-thumbcell.${CX}-thumbcell-active .${CX}-thumbframe{border-color:var(--oo-accent);}
+.${CX}-thumblabel{font-size:11px;color:var(--oo-label);line-height:1.4;
+  text-align:center;user-select:none;}
+.${CX}-thumbcell.${CX}-thumbcell-active .${CX}-thumblabel{color:var(--oo-btn-active-icon);
+  font-weight:600;}
+
+/* search panel */
+.${CX}-search-bar{display:flex;gap:4px;align-items:center;padding:8px;
+  border-bottom:1px solid var(--oo-ribbon-border);}
+.${CX}-search-input{flex:1;min-width:0;height:24px;padding:0 7px;font-size:12px;
+  border:1px solid var(--oo-sep);border-radius:3px;background:transparent;
+  color:var(--oo-tab-active-text);box-shadow:none !important;}
+.${CX}-search-nav{display:flex;align-items:center;justify-content:space-between;
+  gap:4px;padding:5px 8px;border-bottom:1px solid var(--oo-ribbon-border);}
+.${CX}-search-count{font-size:11px;color:var(--oo-label);white-space:nowrap;}
+.${CX}-search-navbtns{display:flex;gap:2px;}
+.${CX}-search-navbtn{background-color:transparent !important;box-shadow:none !important;
+  border:none !important;display:inline-flex;align-items:center;justify-content:center;
+  width:22px;height:22px;padding:0;border-radius:3px;cursor:pointer;
+  color:var(--oo-icon);}
+.${CX}-search-navbtn:hover:not(:disabled){background-color:var(--oo-btn-hover) !important;}
+.${CX}-search-navbtn:disabled{opacity:.4;cursor:default;}
+.${CX}-search-navbtn .oo-ic{width:16px;height:16px;}
+.${CX}-search-results{flex:1;min-height:0;overflow-y:auto;}
+.${CX}-search-item{background-color:transparent !important;box-shadow:none !important;
+  border:none !important;display:block;width:100%;text-align:left;
+  padding:6px 10px;font-size:12px;line-height:1.4;cursor:pointer;
+  color:var(--oo-tab-active-text);border-bottom:1px solid var(--oo-sep) !important;
+  /* Obsidian's global button rule (height:var(--input-height);white-space:nowrap)
+     bleeds in and clamps these MULTI-LINE list items to ~30px, so each item's
+     stacked spans overflow and collide with the next (the chrome's single-line
+     buttons never surfaced this). Let them size to content. */
+  height:auto !important;min-height:0 !important;white-space:normal !important;}
+.${CX}-search-item:hover{background-color:var(--oo-btn-hover) !important;}
+.${CX}-search-item.${CX}-search-item-active{background-color:var(--oo-btn-active-bg) !important;}
+.${CX}-search-item .oo-hit{font-weight:700;color:var(--oo-btn-active-icon);}
+.${CX}-search-item .oo-pg{font-size:10px;color:var(--oo-label);display:block;
+  margin-top:2px;}
+
+/* comments panel */
+.${CX}-comments{flex:1;min-height:0;overflow-y:auto;}
+.${CX}-comment-item{background-color:transparent !important;box-shadow:none !important;
+  border:none !important;display:block;width:100%;text-align:left;
+  padding:7px 10px;font-size:12px;line-height:1.4;cursor:pointer;
+  color:var(--oo-tab-active-text);border-bottom:1px solid var(--oo-sep) !important;
+  /* See .search-item: neutralize Obsidian's fixed button height so the
+     type/meta/body stack sizes to content instead of overlapping the next. */
+  height:auto !important;min-height:0 !important;white-space:normal !important;}
+.${CX}-comment-item:hover{background-color:var(--oo-btn-hover) !important;}
+.${CX}-comment-item.${CX}-comment-item-active{background-color:var(--oo-btn-active-bg) !important;}
+.${CX}-comment-type{display:block;font-weight:600;color:var(--oo-btn-active-icon);}
+.${CX}-comment-meta{font-size:10px;color:var(--oo-label);display:block;margin-top:2px;}
+.${CX}-comment-body{display:block;margin-top:3px;color:var(--oo-tab-active-text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+
+/* empty / hint states */
+.${CX}-panel-empty{padding:14px 12px;font-size:12px;color:var(--oo-label);
+  line-height:1.5;}
 `;
   const el = document.createElement('style');
   el.setAttribute('data-oo-pdfchrome', '');
@@ -396,6 +525,286 @@ function WideBtn({
 function Group({ children, testid }: { children: any; testid?: string }) {
   return (
     <div class={`${CX}-group`} data-testid={testid}>{children}</div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Left rail + side panels (pass 2). OnlyOffice's PDF editor has a vertical icon
+// rail down the left of the document area; clicking an icon opens a panel beside
+// it; clicking the active icon closes it. Only one panel is open at a time.
+// ---------------------------------------------------------------------------
+
+type RailId = 'thumbnails' | 'search' | 'comments';
+
+// One flat icon button in the left rail.
+function RailBtn({
+  icon, title, active, dot, onClick, testid,
+}: {
+  icon: IconSpec; title: string;
+  active?: boolean; dot?: boolean; onClick?: () => void; testid?: string;
+}) {
+  return (
+    <button
+      type="button"
+      class={`${CX}-railbtn${active ? ` ${CX}-railbtn-active` : ''}`}
+      title={title}
+      aria-label={title}
+      aria-pressed={active ? 'true' : 'false'}
+      data-testid={testid}
+      onClick={onClick}
+    >
+      <Ic spec={icon} />
+      {dot ? <span class={`${CX}-raildot`} data-testid={`${testid}-dot`} aria-hidden="true" /> : null}
+    </button>
+  );
+}
+
+// --- Thumbnails panel -------------------------------------------------------
+// Uses @embedpdf/plugin-thumbnail's <ThumbnailsPane> (windowed render-prop list)
+// + <ThumbImg> (renders one page bitmap to a blob URL). Clicking a thumbnail
+// navigates the main document via the scroll plugin; the current page is
+// highlighted.
+function ThumbnailsPanel({ documentId }: { documentId: string }) {
+  const { provides: scrollApi, state: scrollState } = useScroll(documentId);
+  const curPage = scrollState?.currentPage ?? 1; // 1-based
+  return (
+    <div class={`${CX}-panel-body`} data-testid="pdf-panel-thumbnails">
+      <ThumbnailsPane documentId={documentId} className={`${CX}-thumblist`}>
+        {(m: ThumbMeta) => {
+          const isActive = m.pageIndex + 1 === curPage;
+          return (
+            <div
+              key={m.pageIndex}
+              class={`${CX}-thumbcell${isActive ? ` ${CX}-thumbcell-active` : ''}`}
+              style={{ top: m.top, height: m.wrapperHeight }}
+              data-testid={`pdf-thumb-${m.pageIndex}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => scrollApi?.scrollToPage({ pageNumber: m.pageIndex + 1 })}
+            >
+              <div
+                class={`${CX}-thumbframe`}
+                style={{ width: m.width, height: m.height }}
+              >
+                <ThumbImg
+                  documentId={documentId}
+                  meta={m}
+                  style={{ width: m.width, height: m.height, display: 'block' }}
+                />
+              </div>
+              <div class={`${CX}-thumblabel`} style={{ height: m.labelHeight }}>
+                {m.pageIndex + 1}
+              </div>
+            </div>
+          );
+        }}
+      </ThumbnailsPane>
+    </div>
+  );
+}
+
+// --- Search panel -----------------------------------------------------------
+// Uses @embedpdf/plugin-search's useSearch(): startSearch() opens a session,
+// searchAllPages(q) finds matches, goToResult/nextResult/previousResult jump +
+// activate a hit; the per-page <SearchLayer> (added in the Scroller) paints the
+// highlight. Results show context (before/<hit>/after) + page number.
+function SearchPanel({ documentId }: { documentId: string }) {
+  const { provides: searchApi, state: searchState } = useSearch(documentId);
+  const [query, setQuery] = useState('');
+  const [submitted, setSubmitted] = useState(false);
+
+  // Start a search session when the panel mounts; stop it on unmount so the
+  // highlight layer clears when the panel closes.
+  useEffect(() => {
+    if (!searchApi) return;
+    searchApi.startSearch();
+    return () => { try { searchApi.stopSearch(); } catch (_) { /* noop */ } };
+  }, [searchApi]);
+
+  const results = searchState?.results ?? [];
+  const activeIdx = searchState?.activeResultIndex ?? -1;
+  const loading = !!searchState?.loading;
+
+  const runSearch = useCallback(() => {
+    if (!searchApi) return;
+    const q = query.trim();
+    setSubmitted(true);
+    if (!q) return;
+    const task = searchApi.searchAllPages(q);
+    // PdfTask resolves when the full-document search completes; state updates
+    // reactively via useSearch, so we don't need the resolved value here.
+    task?.wait?.(() => { /* state-driven */ }, () => { /* ignore */ });
+  }, [searchApi, query]);
+
+  return (
+    <div class={`${CX}-panel-body`} data-testid="pdf-panel-search">
+      <div class={`${CX}-search-bar`}>
+        <input
+          class={`${CX}-search-input`}
+          data-testid="pdf-search-input"
+          type="text"
+          placeholder="Find in document"
+          value={query}
+          aria-label="Find in document"
+          onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
+          onKeyDown={(e) => { if ((e as KeyboardEvent).key === 'Enter') runSearch(); }}
+        />
+      </div>
+      <div class={`${CX}-search-nav`}>
+        <span class={`${CX}-search-count`} data-testid="pdf-search-count">
+          {loading ? 'Searching…'
+            : results.length === 0
+              ? (submitted ? 'No matches' : ' ')
+              : `${activeIdx >= 0 ? activeIdx + 1 : 1} / ${results.length}`}
+        </span>
+        <div class={`${CX}-search-navbtns`}>
+          <button type="button" class={`${CX}-search-navbtn`}
+            data-testid="pdf-search-prev" title="Previous match"
+            disabled={results.length === 0}
+            onClick={() => searchApi?.previousResult()}>
+            <Ic spec={IC.prevPage} />
+          </button>
+          <button type="button" class={`${CX}-search-navbtn`}
+            data-testid="pdf-search-next" title="Next match"
+            disabled={results.length === 0}
+            onClick={() => searchApi?.nextResult()}>
+            <Ic spec={IC.nextPage} />
+          </button>
+        </div>
+      </div>
+      <div class={`${CX}-search-results`} data-testid="pdf-search-results">
+        {results.map((r: SearchResult, i: number) => (
+          <button
+            type="button"
+            key={i}
+            class={`${CX}-search-item${i === activeIdx ? ` ${CX}-search-item-active` : ''}`}
+            data-testid={`pdf-search-result-${i}`}
+            onClick={() => searchApi?.goToResult(i)}
+          >
+            <span>
+              {r.context?.before}
+              <span class="oo-hit">{r.context?.match}</span>
+              {r.context?.after}
+            </span>
+            <span class="oo-pg">Page {r.pageIndex + 1}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// --- Comments panel ---------------------------------------------------------
+// Lists existing annotations from the already-registered annotation plugin
+// (via useAnnotation state.byUid). Clicking one selects it + scrolls to its
+// page. A notification dot on the rail's Comments icon shows when any exist.
+const ANNOT_TYPE_LABEL: Record<number, string> = {
+  1: 'Text', 3: 'Free text', 4: 'Line', 5: 'Rectangle', 6: 'Ellipse',
+  8: 'Polyline', 9: 'Highlight', 10: 'Underline', 11: 'Squiggly',
+  12: 'Strikeout', 13: 'Stamp', 15: 'Ink',
+};
+
+function CommentsPanel({ documentId }: { documentId: string }) {
+  const { provides: annotationApi, state } = useAnnotation(documentId);
+  const { provides: scrollApi } = useScroll(documentId);
+
+  // Flatten byUid -> array; keep deterministic order by page then id.
+  const items = Object.values(state?.byUid ?? {})
+    .map((t: any) => t?.object)
+    .filter((o: any) => o && o.type !== 16 /* skip POPUP */)
+    .sort((a: any, b: any) =>
+      a.pageIndex - b.pageIndex || String(a.id).localeCompare(String(b.id)));
+
+  const selectedUids = state?.selectedUids ?? [];
+  const isSel = (o: any) => selectedUids.includes(o.id);
+
+  const onSelect = (o: any) => {
+    try { annotationApi?.selectAnnotation(o.pageIndex, o.id); } catch (_) { /* noop */ }
+    scrollApi?.scrollToPage({ pageNumber: o.pageIndex + 1 });
+  };
+
+  return (
+    <div class={`${CX}-panel-body`} data-testid="pdf-panel-comments">
+      {items.length === 0 ? (
+        <div class={`${CX}-panel-empty`} data-testid="pdf-comments-empty">
+          No comments yet. Use the Comment tab to add highlights, notes, shapes
+          and ink, and they'll appear here.
+        </div>
+      ) : (
+        <div class={`${CX}-comments`}>
+          {items.map((o: any) => (
+            <button
+              type="button"
+              key={o.id}
+              class={`${CX}-comment-item${isSel(o) ? ` ${CX}-comment-item-active` : ''}`}
+              data-testid={`pdf-comment-${o.id}`}
+              onClick={() => onSelect(o)}
+            >
+              <span class={`${CX}-comment-type`}>
+                {ANNOT_TYPE_LABEL[o.type] ?? `Type ${o.type}`}
+              </span>
+              <span class={`${CX}-comment-meta`}>
+                Page {o.pageIndex + 1}{o.author ? ` · ${o.author}` : ''}
+              </span>
+              {o.contents
+                ? <span class={`${CX}-comment-body`}>{o.contents}</span>
+                : null}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The rail + (optional) open panel. Renders to the left of the document area.
+function LeftRailAndPanel({
+  documentId, openPanel, setOpenPanel,
+}: {
+  documentId: string;
+  openPanel: RailId | null;
+  setOpenPanel: (p: RailId | null) => void;
+}) {
+  const { state: annotState } = useAnnotation(documentId);
+  const hasComments = Object.values(annotState?.byUid ?? {})
+    .some((t: any) => t?.object && t.object.type !== 16);
+
+  const toggle = (id: RailId) => setOpenPanel(openPanel === id ? null : id);
+
+  const PANEL_TITLE: Record<RailId, string> = {
+    thumbnails: 'Page Thumbnails',
+    search: 'Search',
+    comments: 'Comments',
+  };
+
+  return (
+    <>
+      <div class={`${CX}-rail`} data-testid="pdf-rail" role="toolbar" aria-label="Side panels">
+        <RailBtn icon={IC.railThumbs} title="Page Thumbnails"
+          active={openPanel === 'thumbnails'} onClick={() => toggle('thumbnails')}
+          testid="pdf-rail-thumbnails" />
+        <RailBtn icon={IC.railSearch} title="Search"
+          active={openPanel === 'search'} onClick={() => toggle('search')}
+          testid="pdf-rail-search" />
+        <RailBtn icon={IC.railComments} title="Comments" dot={hasComments}
+          active={openPanel === 'comments'} onClick={() => toggle('comments')}
+          testid="pdf-rail-comments" />
+      </div>
+      {openPanel ? (
+        <div class={`${CX}-panel`} data-testid={`pdf-panel-${openPanel}`} key={openPanel}>
+          <div class={`${CX}-panel-head`}>
+            <span data-testid="pdf-panel-title">{PANEL_TITLE[openPanel]}</span>
+            <button type="button" class={`${CX}-panel-close`}
+              title="Close panel" aria-label="Close panel"
+              data-testid="pdf-panel-close"
+              onClick={() => setOpenPanel(null)}>×</button>
+          </div>
+          {openPanel === 'thumbnails' ? <ThumbnailsPanel documentId={documentId} />
+            : openPanel === 'search' ? <SearchPanel documentId={documentId} />
+              : <CommentsPanel documentId={documentId} />}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -713,6 +1122,69 @@ function Chrome({
 }
 
 // ---------------------------------------------------------------------------
+// Editor body: chrome on top, then a horizontal row [rail][panel?][viewport].
+// Owns the open-panel state so the rail + panel stay in sync. Rendered only once
+// the document is loaded (so all the plugin hooks have a live document).
+// ---------------------------------------------------------------------------
+
+function EditorBody({
+  documentId,
+  save,
+  onClose,
+}: {
+  documentId: string;
+  save: () => Promise<void>;
+  onClose?: () => void;
+}) {
+  const [openPanel, setOpenPanel] = useState<RailId | null>(null);
+
+  return (
+    <>
+      <Chrome documentId={documentId} save={save} onClose={onClose} />
+      <div class={`${CX}-body`} data-testid="pdf-body">
+        <LeftRailAndPanel
+          documentId={documentId}
+          openPanel={openPanel}
+          setOpenPanel={setOpenPanel}
+        />
+        <Viewport
+          documentId={documentId}
+          style={{ flex: 1, minWidth: 0, backgroundColor: '#f1f3f5', overflow: 'auto' }}
+        >
+          <Scroller
+            documentId={documentId}
+            renderPage={(page) => {
+              // Scroller's declared param is PageLayout, but at runtime it
+              // also spreads scale/rotation/document (RenderPageProps).
+              const { width, height, pageIndex, scale, rotation } =
+                page as RenderPageProps;
+              return (
+                <PagePointerProvider
+                  documentId={documentId}
+                  pageIndex={pageIndex}
+                  style={{ width, height, position: 'relative' }}
+                >
+                  <RenderLayer documentId={documentId} pageIndex={pageIndex} scale={scale} />
+                  <SelectionLayer documentId={documentId} pageIndex={pageIndex} scale={scale} />
+                  {/* Search highlights (only paints when a search session is active). */}
+                  <SearchLayer documentId={documentId} pageIndex={pageIndex} scale={scale} />
+                  <AnnotationLayer
+                    documentId={documentId}
+                    pageIndex={pageIndex}
+                    scale={scale}
+                    rotation={rotation}
+                  />
+                </PagePointerProvider>
+              );
+            }}
+          />
+        </Viewport>
+      </div>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Editor root component
 // ---------------------------------------------------------------------------
 
@@ -754,6 +1226,14 @@ function PdfEditorApp({
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(HistoryPluginPackage),
       createPluginRegistration(AnnotationPluginPackage, { annotationAuthor: author }),
+      // Left-rail feature plugins (pass 2).
+      // Thumbnail requires `render` (above) + optionally uses `scroll` (above).
+      createPluginRegistration(ThumbnailPluginPackage, {
+        width: 140,
+        gap: 10,
+        labelHeight: 18,
+      }),
+      createPluginRegistration(SearchPluginPackage),
     ];
   });
 
@@ -768,39 +1248,11 @@ function PdfEditorApp({
             <DocumentContent documentId={activeDocumentId}>
               {({ isLoaded }) =>
                 isLoaded ? (
-                  <>
-                    <Chrome documentId={activeDocumentId} save={save} onClose={onClose} />
-                    <Viewport
-                      documentId={activeDocumentId}
-                      style={{ flex: 1, backgroundColor: '#f1f3f5', overflow: 'auto' }}
-                    >
-                      <Scroller
-                        documentId={activeDocumentId}
-                        renderPage={(page) => {
-                          // Scroller's declared param is PageLayout, but at runtime it
-                          // also spreads scale/rotation/document (RenderPageProps).
-                          const { width, height, pageIndex, scale, rotation } =
-                            page as RenderPageProps;
-                          return (
-                          <PagePointerProvider
-                            documentId={activeDocumentId}
-                            pageIndex={pageIndex}
-                            style={{ width, height, position: 'relative' }}
-                          >
-                            <RenderLayer documentId={activeDocumentId} pageIndex={pageIndex} scale={scale} />
-                            <SelectionLayer documentId={activeDocumentId} pageIndex={pageIndex} scale={scale} />
-                            <AnnotationLayer
-                              documentId={activeDocumentId}
-                              pageIndex={pageIndex}
-                              scale={scale}
-                              rotation={rotation}
-                            />
-                          </PagePointerProvider>
-                          );
-                        }}
-                      />
-                    </Viewport>
-                  </>
+                  <EditorBody
+                    documentId={activeDocumentId}
+                    save={save}
+                    onClose={onClose}
+                  />
                 ) : (
                   <div style={{ padding: 16 }}>Loading document…</div>
                 )
