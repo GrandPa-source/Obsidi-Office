@@ -16,8 +16,11 @@ export interface TextRunLike {
 const toP = (t: any): Promise<any> =>
   !t ? Promise.resolve(t)
   : typeof t.toPromise === 'function' ? t.toPromise()
+  // t.wait(onFulfilled, onRejected) — EmbedPDF Tasks use the two-callback pattern, not Node error-first.
   : typeof t.wait === 'function' ? new Promise((res, rej) => t.wait(res, rej))
   : typeof t.then === 'function' ? t : Promise.resolve(t);
+
+let _editSeq = 0;
 
 /** All runs on the page (reading order). */
 export async function getRuns(engine: PdfEngine, doc: any, page: any): Promise<TextRunLike[]> {
@@ -45,6 +48,7 @@ export function lineRuns(runs: TextRunLike[], clicked: TextRunLike): TextRunLike
 
 /** Bounding rect over a set of runs (engine-native Rect shape). */
 export function unionRect(runs: TextRunLike[]): any {
+  if (runs.length === 0) throw new Error('unionRect: requires at least one run');
   const xs = runs.map((r) => r.rect.origin.x);
   const ys = runs.map((r) => r.rect.origin.y);
   const xe = runs.map((r) => r.rect.origin.x + r.rect.size.width);
@@ -64,7 +68,7 @@ export async function applyTextEdit(
   if (!redOk) return false;
   const annot = {
     type: 3 /* FREETEXT */, pageIndex: page.index ?? 0,
-    id: 'edit-' + (page.index ?? 0) + '-' + rect.origin.x + '-' + rect.origin.y,
+    id: 'edit-' + (page.index ?? 0) + '-' + rect.origin.x + '-' + rect.origin.y + '-' + (++_editSeq),
     rect, contents: newText, fontFamily: 4 /* Helvetica */,
     fontSize: Math.max(8, Math.round(fontSize || 12)),
     fontColor: '#000000', textAlign: 0, verticalAlign: 0, opacity: 1,
