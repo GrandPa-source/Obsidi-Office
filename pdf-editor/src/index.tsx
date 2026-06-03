@@ -429,6 +429,9 @@ function injectChromeStyles() {
 .${CX}-comment-meta{font-size:10px;color:var(--oo-label);display:block;margin-top:2px;}
 .${CX}-comment-body{display:block;margin-top:3px;color:var(--oo-tab-active-text);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.${CX}-line-outline{box-sizing:border-box;border:1px solid rgba(120,150,220,0.35);border-radius:2px;cursor:text;background:transparent;}
+.${CX}-line-outline:hover{border-color:var(--oo-accent);background:rgba(120,150,220,0.08);}
+.${CX}-line-edited{border-color:var(--oo-accent-underline);}
 
 /* PDF-EMBEDPDF PoC A3 — textarea edit box reset (fights Obsidian global textarea styles) */
 .${CX}-textedit{background-color:#fff !important;box-shadow:none !important;
@@ -1183,7 +1186,8 @@ function Chrome({
 // at pick time. Used to place/size the edit box. (The Scroller layout's `scale`
 // field is unreliable — undefined at runtime — so we derive the factor from
 // measured geometry instead.)
-type ActiveEdit = { pageIndex: number; rect: any; text: string; fontSize: number; sx: number; sy: number };
+type ActiveEdit = { pageIndex: number; lineIndex: number; rect: any; text: string;
+  fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number };
 
 function EditorBody({
   documentId,
@@ -1216,6 +1220,26 @@ function EditorBody({
     r?.(v);
   };
 
+  // PDF-EMBEDPDF PoC V2 — precomputed line rects per page (populated when editTextOn).
+  const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
+  useEffect(() => {
+    if (!editTextOn) { setLinesByPage({}); return; }
+    let cancelled = false;
+    (async () => {
+      const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
+      const eng = reg?.getEngine();
+      const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
+      if (!doc) return;
+      const map: Record<number, any> = {};
+      for (const page of doc.pages) {
+        const runs = await editText.getRuns(eng, doc, page);
+        map[page.index] = { ptW: page.size.width, ptH: page.size.height, lines: editText.partitionLines(runs) };
+      }
+      if (!cancelled) setLinesByPage(map);
+    })().catch((e) => console.warn('[pdf-editor] line scan failed', e));
+    return () => { cancelled = true; };
+  }, [editTextOn, pendingEdits.length]);
+
   // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
   const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
     const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
@@ -1237,9 +1261,13 @@ function EditorBody({
     const sy = ovr && pts?.height ? ovr.height / pts.height : 1;
     const picked: ActiveEdit = {
       pageIndex,
+      lineIndex: -1,
       rect: editText.unionRect(line),
       text: line.map((r: any) => r.text).join('').replace(/\r?\n$/, ''),
       fontSize: hit.fontSize,
+      cssFont: (hit as any).cssFont ?? '',
+      pdfFont: (hit as any).pdfFont ?? 0,
+      color: (hit as any).color ?? '#000000',
       sx, sy,
     };
     setActiveEdit(picked);
@@ -1255,8 +1283,9 @@ function EditorBody({
       pendingCount: () => pendingEdits.length,
       pending: () => pendingEdits.map((p) => ({ text: p.text, newText: p.newText, pageIndex: p.pageIndex })),
       confirmCount: () => confirmCount,
+      lineCount: (p: number) => (linesByPage[p]?.lines.length ?? 0),
     });
-  }, [editTextOn, activeEdit, onPickLine, pendingEdits, confirmCount]);
+  }, [editTextOn, activeEdit, onPickLine, pendingEdits, confirmCount, linesByPage]);
 
   // PDF-EMBEDPDF PoC A4 — register the apply-pending-edits hook for saveViaRegistry.
   // Shows the confirm modal, then applies each staged edit via applyTextEdit, then
@@ -1329,29 +1358,26 @@ function EditorBody({
                     scale={scale}
                     rotation={rotation}
                   />
-                  {/* PDF-EMBEDPDF PoC A2 — capture page-space clicks in editText mode. */}
-                  {editTextOn ? (
-                    <div
-                      style={{ position: 'absolute', inset: 0, cursor: 'text', zIndex: 10 }}
-                      data-testid={`pdf-edit-overlay-${pageIndex}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                        // Convert the screen click to PDF points using the page's
-                        // point size ÷ the overlay's on-screen size. (The layout
-                        // `scale` is unreliable — see ActiveEdit note.)
-                        const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
-                        const pg = reg?.getPlugin('document-manager')?.provides()
-                          ?.getActiveDocument()?.pages?.[pageIndex];
-                        const pts = pg?.size;
-                        const pw = pts?.width || r.width, ph = pts?.height || r.height;
-                        const px = (e.clientX - r.left) * (pw / r.width);
-                        const py = (e.clientY - r.top) * (ph / r.height);
-                        onPickLine(pageIndex, px, py)
-                          .catch((err) => console.warn('[pdf-editor] pick failed', err));
-                      }}
-                    />
-                  ) : null}
+                  {/* PDF-EMBEDPDF PoC V2 — outline every text line; click to edit. */}
+                  {editTextOn && linesByPage[pageIndex] ? linesByPage[pageIndex].lines.map((ln: any, i: number) => {
+                    const { ptW, ptH } = linesByPage[pageIndex];
+                    const o = ln.rect.origin, s = ln.rect.size;
+                    const edited = pendingEdits.some((p) => p.pageIndex === pageIndex && p.lineIndex === i);
+                    return (
+                      <div key={i} data-testid={`pdf-line-${pageIndex}-${i}`}
+                        class={`${CX}-line-outline${edited ? ` ${CX}-line-edited` : ''}`}
+                        style={{ position: 'absolute', left: `${o.x / ptW * 100}%`, top: `${o.y / ptH * 100}%`,
+                          width: `${s.width / ptW * 100}%`, height: `${s.height / ptH * 100}%`, zIndex: 10 }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                          const sx = r.width / s.width, sy = r.height / s.height;
+                          setActiveEdit({ pageIndex, lineIndex: i, rect: ln.rect, text: ln.text,
+                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy });
+                        }}
+                      />
+                    );
+                  }) : null}
                   {/* PDF-EMBEDPDF PoC A3 — anchored pre-filled edit box. */}
                   {activeEdit && activeEdit.pageIndex === pageIndex ? (
                     <TextEditBox
