@@ -1222,6 +1222,10 @@ function EditorBody({
 
   // PDF-EMBEDPDF PoC V2 — precomputed line rects per page (populated when editTextOn).
   const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
+  // Bumped only after edits are APPLIED to the doc (in _applyPendingEdits) so the
+  // line scan refreshes to the new text. Staging an edit does NOT change the doc,
+  // so it must not trigger an (all-pages) rescan — hence scanVersion, not pendingEdits.
+  const [scanVersion, setScanVersion] = useState(0);
   useEffect(() => {
     if (!editTextOn) { setLinesByPage({}); return; }
     let cancelled = false;
@@ -1238,7 +1242,7 @@ function EditorBody({
       if (!cancelled) setLinesByPage(map);
     })().catch((e) => console.warn('[pdf-editor] line scan failed', e));
     return () => { cancelled = true; };
-  }, [editTextOn, pendingEdits.length]);
+  }, [editTextOn, scanVersion]);
 
   // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
   const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
@@ -1310,6 +1314,7 @@ function EditorBody({
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
       setPendingEdits([]);
+      setScanVersion((v) => v + 1); // doc changed → refresh outlines to the new text
       return true;
     };
     // On unmount, null the hook AND resolve any in-flight confirm as cancelled so
