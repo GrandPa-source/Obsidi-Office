@@ -31,3 +31,21 @@ Implemented via subagent-driven development; every task spec+quality reviewed an
 **Known limitation (spec non-goal, no reflow):** the edit box uses the picked run's rect as its width. Re-editing a SHORT replacement with a longer word wraps it within that narrow box (observed "SECOND" → runs "SECO"+"ND"). Replacing original full-width lines with similar-length text does not wrap. Future enhancement: widen the box toward the page margin.
 
 **Deployed** dist/pdf-editor.js to OB_Testing (sha256 match). main.js/sprites/wasm unchanged. **PENDING: user desktop smoke** on a real multi-page PDF in Obsidian.
+
+## Edit Text v2 (Acrobat-like all-lines) — V1–V4 shipped (2026-06-03)
+
+Pivoted from click-to-pick to outline-all-lines after the real-Obsidian smoke failed
+(layout `scale` undefined → NaN click coords) and the substitute-font overlay grew/wrapped.
+Spec: `…/specs/2026-06-03-pdf-edit-text-v2-all-lines-design.md`. Commits `b4ddaf3..` on `pdf-editor-embedpdf`.
+
+- **V1** `edit-text.ts`: `partitionLines` (runs→visual lines), `mapStandardFont` (font→PDFium standard + CSS), `fitFontSize` (auto-fit via canvas measureText), `applyTextEdit` gains `pdfFont`. hexColor normalizes 0–1/0–255.
+- **V2** outlines layer: Edit Text mode scans pages → renders a subtle outline `<div>` per line (`%`-positioned, zoom-independent), `pdf-line-<p>-<i>`; click activates that line. Replaces the broken click-overlay → **no screen→point click math** (the NaN bug is structurally gone). Rescan only after edits APPLY (scanVersion), not per stage.
+- **V3** `TextEditBox`: renders in the line's matched font/colour, auto-fit size per keystroke.
+- **V4** save: bakes each changed line in the mapped font at the auto-fit size.
+
+**Harness verification (REAL dispatched clicks + zoom, per the prior lesson):**
+- 2 outlines on the sample; geometry exact at 100% AND 50% zoom; real click activates the right line + opens the box.
+- Box matched font; heading fits 23px in a 28px box (NOT oversized); long text shrinks 23→9px, no overflow.
+- Long replacement saved as ONE run at 316pt ≤ 321pt original width (no wrap/overflow); original gone; re-editable (outlines refresh post-save, re-click pre-fills new text).
+
+**PENDING: required real-Obsidian desktop smoke** on a genuine multi-line text PDF (the gate that the prior version failed). Deployed to OB_Testing (sha match). main.js/sprites/wasm unchanged. Dormant A2 `onPickLine`/`pick` left for post-smoke cleanup (harmless).
