@@ -87,6 +87,16 @@
             },
           );
           window.__poc.mounted = true;
+          window.__editapi = {
+            async runs() {
+              const reg = window.ObsidiPdfEditor.getRegistry();
+              const dm = reg.getPlugin('document-manager').provides();
+              const doc = dm.getActiveDocument();
+              const page = doc.pages[0];
+              const m = window.ObsidiPdfEditor.__editText;
+              return (await m.getRuns(reg.getEngine(), doc, page)).map(r => r.text);
+            },
+          };
           status('mounted — render should be visible');
         } catch (e) {
           window.__poc.error = String((e && e.stack) || e);

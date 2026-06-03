@@ -1456,4 +1456,7 @@ function getRegistry(container?: HTMLElement): PluginRegistry | null {
 }
 
 // Exported as the IIFE globalName `ObsidiPdfEditor`.
-export { mountPdfEditor, savePdfEditor, unmountPdfEditor, getRegistry };
+import * as editText from './edit-text';
+// PDF-EMBEDPDF PoC — re-export edit-text glue so window.ObsidiPdfEditor.__editText resolves.
+const __editText = editText;
+export { mountPdfEditor, savePdfEditor, unmountPdfEditor, getRegistry, __editText };
