@@ -1314,7 +1314,11 @@ function EditorBody({
       for (const ed of pendingEdits) {
         const page = doc.pages?.[ed.pageIndex];
         if (!page) continue;
-        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, ed.fontSize);
+        // V4: bake the replacement in the line's mapped font, auto-fit to the line
+        // width/height so the saved overlay never overflows/wraps (same fit as the
+        // on-screen box → WYSIWYG).
+        const fitted = editText.fitFontSize(ed.newText, ed.cssFont, ed.rect.size.width, ed.rect.size.height, ed.fontSize);
+        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fitted, ed.pdfFont);
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
       setPendingEdits([]);
