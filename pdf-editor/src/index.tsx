@@ -430,6 +430,10 @@ function injectChromeStyles() {
 .${CX}-comment-body{display:block;margin-top:3px;color:var(--oo-tab-active-text);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
+/* PDF-EMBEDPDF PoC A3 — textarea edit box reset (fights Obsidian global textarea styles) */
+.${CX}-textedit{background-color:#fff !important;box-shadow:none !important;
+  border:1px solid var(--oo-accent) !important;border-radius:0;outline:none;}
+
 /* empty / hint states */
 .${CX}-panel-empty{padding:14px 12px;font-size:12px;color:var(--oo-label);
   line-height:1.5;}
@@ -556,6 +560,35 @@ function RailBtn({
       <Ic spec={icon} />
       {dot ? <span class={`${CX}-raildot`} data-testid={`${testid}-dot`} aria-hidden="true" /> : null}
     </button>
+  );
+}
+
+// PDF-EMBEDPDF PoC A3 — textarea overlay positioned inside the page container.
+// Staged edit is committed (Enter / blur) or discarded (Escape).
+function TextEditBox({ edit, scale, onCommit, onCancel }: {
+  edit: ActiveEdit; scale: number;
+  onCommit: (newText: string) => void; onCancel: () => void;
+}) {
+  const [val, setVal] = useState(edit.text);
+  const o = edit.rect.origin, s = edit.rect.size;
+  return (
+    <textarea
+      class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
+      value={val}
+      style={{ position: 'absolute', left: o.x * scale, top: o.y * scale,
+        width: s.width * scale, height: s.height * scale, fontSize: edit.fontSize * scale,
+        lineHeight: 1.05, fontFamily: 'Helvetica, Arial, sans-serif', color: '#000',
+        background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
+        resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
+      onInput={(e) => setVal((e.target as HTMLTextAreaElement).value)}
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        const k = e as KeyboardEvent;
+        if (k.key === 'Escape') { e.preventDefault(); onCancel(); }
+        else if (k.key === 'Enter' && !k.shiftKey) { e.preventDefault(); onCommit(val); }
+      }}
+      onBlur={() => onCommit(val)}
+    />
   );
 }
 
@@ -1156,6 +1189,9 @@ function EditorBody({
   const [editTextOn, setEditTextOn] = useState(false);
   const [activeEdit, setActiveEdit] = useState<ActiveEdit | null>(null);
 
+  // PDF-EMBEDPDF PoC A3 — staged (not yet applied) edits.
+  const [pendingEdits, setPendingEdits] = useState<Array<ActiveEdit & { newText: string }>>([]);
+
   // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
   const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
     const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
@@ -1177,14 +1213,16 @@ function EditorBody({
     return picked;
   }, []);
 
-  // PDF-EMBEDPDF PoC A2 — test hooks (merged so standalone.html's runs() survives).
+  // PDF-EMBEDPDF PoC A2+A3 — test hooks (merged so standalone.html's runs() survives).
   useEffect(() => {
     (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
       editState: () => ({ editTextOn, activeEdit }),
       pick: (pageIndex: number, px: number, py: number) => onPickLine(pageIndex, px, py),
       setMode: (v: boolean) => setEditTextOn(v),
+      pendingCount: () => pendingEdits.length,
+      pending: () => pendingEdits.map((p) => ({ text: p.text, newText: p.newText, pageIndex: p.pageIndex })),
     });
-  }, [editTextOn, activeEdit, onPickLine]);
+  }, [editTextOn, activeEdit, onPickLine, pendingEdits]);
 
   return (
     <>
@@ -1237,6 +1275,20 @@ function EditorBody({
                         onPickLine(pageIndex, px, py)
                           .catch((err) => console.warn('[pdf-editor] pick failed', err));
                       }}
+                    />
+                  ) : null}
+                  {/* PDF-EMBEDPDF PoC A3 — anchored pre-filled edit box. */}
+                  {activeEdit && activeEdit.pageIndex === pageIndex ? (
+                    <TextEditBox
+                      edit={activeEdit}
+                      scale={scale}
+                      onCommit={(newText) => {
+                        if (newText !== activeEdit.text) {
+                          setPendingEdits((prev) => [...prev, { ...activeEdit, newText }]);
+                        }
+                        setActiveEdit(null);
+                      }}
+                      onCancel={() => setActiveEdit(null)}
                     />
                   ) : null}
                 </PagePointerProvider>
