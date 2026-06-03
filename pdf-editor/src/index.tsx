@@ -818,10 +818,14 @@ function Chrome({
   documentId,
   save,
   onClose,
+  editTextOn,
+  setEditTextOn,
 }: {
   documentId: string;
   save: () => Promise<void>;
   onClose?: () => void;
+  editTextOn: boolean;
+  setEditTextOn: (v: boolean) => void;
 }) {
   injectChromeStyles();
 
@@ -1019,10 +1023,17 @@ function Chrome({
         </div>
       </Group>
 
-      {/* 2. Edit Text — large labelled (disabled) */}
+      {/* 2. Edit Text — large labelled; PDF-EMBEDPDF PoC A2 */}
       <Group testid="pdf-group-edittext">
-        <BigBtn icon={IC.editText} caption="Edit Text" title="Edit Text (coming soon)"
-          disabled testid="pdf-edit-text" />
+        <BigBtn icon={IC.editText} caption="Edit Text" title="Edit existing text"
+          active={editTextOn}
+          onClick={() => {
+            const next = !editTextOn;
+            setEditTextOn(next);
+            annotationApi?.setActiveTool(null); // exclusive with annotation tools
+            if (next) { try { imApi?.activateDefaultMode?.(); } catch (_) {} }
+          }}
+          testid="pdf-edit-text" />
       </Group>
 
       {/* 3. Hand + Select — large labelled buttons */}
@@ -1127,6 +1138,9 @@ function Chrome({
 // the document is loaded (so all the plugin hooks have a live document).
 // ---------------------------------------------------------------------------
 
+// PDF-EMBEDPDF PoC A2 — result of a line pick in editText mode.
+type ActiveEdit = { pageIndex: number; rect: any; text: string; fontSize: number };
+
 function EditorBody({
   documentId,
   save,
@@ -1138,9 +1152,44 @@ function EditorBody({
 }) {
   const [openPanel, setOpenPanel] = useState<RailId | null>(null);
 
+  // PDF-EMBEDPDF PoC A2 — edit-text mode state.
+  const [editTextOn, setEditTextOn] = useState(false);
+  const [activeEdit, setActiveEdit] = useState<ActiveEdit | null>(null);
+
+  // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
+  const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
+    const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
+    const dm = reg?.getPlugin('document-manager')?.provides();
+    const doc = dm?.getActiveDocument();
+    const page = doc?.pages?.[pageIndex];
+    if (!doc || !page) return null;
+    const runs = await editText.getRuns(reg.getEngine(), doc, page);
+    const hit = editText.runAtPoint(runs, px, py);
+    if (!hit) return null;
+    const line = editText.lineRuns(runs, hit);
+    const picked: ActiveEdit = {
+      pageIndex,
+      rect: editText.unionRect(line),
+      text: line.map((r: any) => r.text).join('').replace(/\r?\n$/, ''),
+      fontSize: hit.fontSize,
+    };
+    setActiveEdit(picked);
+    return picked;
+  }, []);
+
+  // PDF-EMBEDPDF PoC A2 — test hooks (merged so standalone.html's runs() survives).
+  useEffect(() => {
+    (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
+      editState: () => ({ editTextOn, activeEdit }),
+      pick: (pageIndex: number, px: number, py: number) => onPickLine(pageIndex, px, py),
+      setMode: (v: boolean) => setEditTextOn(v),
+    });
+  }, [editTextOn, activeEdit, onPickLine]);
+
   return (
     <>
-      <Chrome documentId={documentId} save={save} onClose={onClose} />
+      <Chrome documentId={documentId} save={save} onClose={onClose}
+        editTextOn={editTextOn} setEditTextOn={setEditTextOn} />
       <div class={`${CX}-body`} data-testid="pdf-body">
         <LeftRailAndPanel
           documentId={documentId}
@@ -1174,6 +1223,21 @@ function EditorBody({
                     scale={scale}
                     rotation={rotation}
                   />
+                  {/* PDF-EMBEDPDF PoC A2 — capture page-space clicks in editText mode. */}
+                  {editTextOn ? (
+                    <div
+                      style={{ position: 'absolute', inset: 0, cursor: 'text', zIndex: 10 }}
+                      data-testid={`pdf-edit-overlay-${pageIndex}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const el = e.currentTarget as HTMLElement;
+                        const r = el.getBoundingClientRect();
+                        const px = (e.clientX - r.left) / scale;
+                        const py = (e.clientY - r.top) / scale;
+                        onPickLine(pageIndex, px, py);
+                      }}
+                    />
+                  ) : null}
                 </PagePointerProvider>
               );
             }}
