@@ -1251,6 +1251,9 @@ function EditorBody({
   useEffect(() => {
     _applyPendingEdits = async (registry: PluginRegistry) => {
       if (pendingEdits.length === 0) return true;
+      // Re-entrancy guard: a second save while a confirm is already pending would
+      // overwrite confirmResolver and hang the first save. Block concurrent saves.
+      if (confirmResolver.current) return false;
       const proceed = await confirmReplace(pendingEdits.length);
       if (!proceed) return false;
       const engine = registry.getEngine() as any;
@@ -1259,12 +1262,20 @@ function EditorBody({
       if (!doc) return false;
       for (const ed of pendingEdits) {
         const page = doc.pages?.[ed.pageIndex];
-        if (page) await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, ed.fontSize);
+        if (!page) continue;
+        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, ed.fontSize);
+        if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
       setPendingEdits([]);
       return true;
     };
-    return () => { _applyPendingEdits = null; };
+    // On unmount, null the hook AND resolve any in-flight confirm as cancelled so
+    // an awaiting saveViaRegistry doesn't hang forever.
+    return () => {
+      _applyPendingEdits = null;
+      confirmResolver.current?.(false);
+      confirmResolver.current = null;
+    };
   }, [pendingEdits]);
 
   return (
