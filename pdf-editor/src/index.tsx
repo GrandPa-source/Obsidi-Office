@@ -571,6 +571,12 @@ function TextEditBox({ edit, scale, onCommit, onCancel }: {
 }) {
   const [val, setVal] = useState(edit.text);
   const o = edit.rect.origin, s = edit.rect.size;
+  // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
+  // box, which can fire a trailing blur -> a second onCommit. The ref makes
+  // commit/cancel fire-once; it resets per mount (each new pick is a fresh box).
+  const done = useRef(false);
+  const commit = (text: string) => { if (done.current) return; done.current = true; onCommit(text); };
+  const cancel = () => { if (done.current) return; done.current = true; onCancel(); };
   return (
     <textarea
       class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
@@ -584,10 +590,10 @@ function TextEditBox({ edit, scale, onCommit, onCancel }: {
       onClick={(e) => e.stopPropagation()}
       onKeyDown={(e) => {
         const k = e as KeyboardEvent;
-        if (k.key === 'Escape') { e.preventDefault(); onCancel(); }
-        else if (k.key === 'Enter' && !k.shiftKey) { e.preventDefault(); onCommit(val); }
+        if (k.key === 'Escape') { e.preventDefault(); cancel(); }
+        else if (k.key === 'Enter' && !k.shiftKey) { e.preventDefault(); commit(val); }
       }}
-      onBlur={() => onCommit(val)}
+      onBlur={() => commit(val)}
     />
   );
 }
