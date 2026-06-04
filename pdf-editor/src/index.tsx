@@ -579,7 +579,7 @@ function TextEditBox({ edit, onCommit, onCancel }: {
   // widening the box (toward the page edge) so the text fits on one line; only
   // shrink as a last resort (re-computed each keystroke). Matches the saved
   // overlay (same fitBox) so on-screen == saved.
-  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight);
+  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight, edit.maxRight);
   const fitted = fit.fontSize;
   const boxW = fit.width;
   // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
@@ -1195,7 +1195,7 @@ function Chrome({
 // measured geometry instead.)
 type ActiveEdit = { pageIndex: number; lineIndex: number; rect: any; text: string;
   fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number;
-  pageW: number; weight: string };
+  pageW: number; weight: string; maxRight: number };
 
 function EditorBody({
   documentId,
@@ -1286,6 +1286,7 @@ function EditorBody({
       pdfFont: (hit as any).pdfFont ?? 0,
       color: (hit as any).color ?? '#000000',
       sx, sy, pageW: pts?.width ?? 0, weight: (hit as any).weight ?? 'normal',
+      maxRight: Infinity,   // legacy click-to-pick path: whole-line box, grow to page edge
     };
     setActiveEdit(picked);
     return picked;
@@ -1301,7 +1302,7 @@ function EditorBody({
       const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
       const page = doc?.pages?.[edit.pageIndex];
       if (!engine || !doc || !page) return;
-      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight);
+      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight, edit.maxRight);
       const overlayRect = { origin: edit.rect.origin, size: { width: fit.width, height: edit.rect.size.height } };
       await editText.applyTextEdit(engine, doc, page, edit.rect, newText, fit.fontSize, edit.pdfFont, overlayRect);
       try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [edit.pageIndex])); } catch (_) { /* noop */ }
@@ -1346,7 +1347,7 @@ function EditorBody({
         // V4+: bake the replacement at the PRESERVED original size in the line's
         // mapped font, widening the overlay box (same fitBox as the on-screen box
         // → WYSIWYG) so the saved text fits one line and never wraps/cuts off.
-        const fit = editText.fitBox(ed.newText, ed.cssFont, ed.fontSize, ed.rect, ed.pageW, ed.text);
+        const fit = editText.fitBox(ed.newText, ed.cssFont, ed.fontSize, ed.rect, ed.pageW, ed.text, ed.weight, ed.maxRight);
         const overlayRect = { origin: ed.rect.origin, size: { width: fit.width, height: ed.rect.size.height } };
         const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fit.fontSize, ed.pdfFont, overlayRect);
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
@@ -1429,7 +1430,7 @@ function EditorBody({
                           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           const sx = r.width / s.width, sy = r.height / s.height;
                           setActiveEdit({ pageIndex, lineIndex: i, rect: ln.rect, text: ln.text,
-                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW, weight: ln.weight });
+                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW, weight: ln.weight, maxRight: ln.maxRight });
                         }}
                       />
                     );

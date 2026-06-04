@@ -65,7 +65,16 @@ export interface Line {
   cssFont: string;      // matching CSS font stack for on-screen + measuring
   weight: string;       // 'bold' | 'normal' — matched from the original font name
   color: string;        // hex
+  maxRight: number;     // PDF-points x the box may grow to (next segment's left edge; Infinity = page edge)
   runs: TextRunLike[];
+}
+
+// Overlay-style key for a run: the maximal span reproducible as ONE FreeText is a
+// run of identical mapped font + weight + size + colour. Adjacent runs with the
+// same key merge into one editable segment; a change in any field splits.
+function styleKeyOf(run: TextRunLike): string {
+  const fm = mapStandardFont(run.font);
+  return `${fm.pdfFont}|${fm.weight}|${fm.cssFont}|${Math.round(run.fontSize)}|${hexColor(run.color)}`;
 }
 
 // Map a run's font to the nearest of PDFium's standard fonts + a CSS stack + weight.
@@ -101,16 +110,45 @@ export function partitionLines(runs: TextRunLike[]): Line[] {
     const group = lineRuns(sorted.filter((x) => !used.has(x)), r);
     group.forEach((g) => used.add(g));
     group.sort((a, b) => a.rect.origin.x - b.rect.origin.x);
-    const dom = group.reduce((p, c) => (c.fontSize > p.fontSize ? c : p), group[0]);
-    const fm = mapStandardFont(dom.font);
-    lines.push({
-      rect: unionRect(group),
-      text: group.map((g) => g.text).join('').replace(/\r?\n$/, ''),
-      fontSize: dom.fontSize,
-      pdfFont: fm.pdfFont, cssFont: fm.cssFont, weight: fm.weight,
-      color: hexColor(dom.color),
-      runs: group,
-    });
+    // Sub-split the line into style-homogeneous SEGMENTS — one editable box per
+    // run of identical overlay style. A mixed line (bold "To:" + regular value)
+    // becomes two boxes, each keeping its own weight/font; untouched segments keep
+    // their original glyphs when a neighbour is edited (only the edited box is
+    // redacted). Whitespace-only runs never force a split — the separating space
+    // stays attached to the preceding segment.
+    const segments: TextRunLike[][] = [];
+    let cur: TextRunLike[] = [];
+    let curKey: string | null = null;
+    for (const run of group) {
+      const ws = /^\s*$/.test(run.text);
+      const key = ws ? curKey : styleKeyOf(run);
+      if (cur.length && curKey !== null && key !== null && key !== curKey) {
+        segments.push(cur);
+        cur = [];
+      }
+      cur.push(run);
+      if (!ws) curKey = key;            // only real text defines a segment's style
+    }
+    if (cur.length) segments.push(cur);
+    for (let si = 0; si < segments.length; si++) {
+      const seg = segments[si];
+      // Representative run = most characters (the bulk of the segment).
+      const dom = seg.reduce((p, c) => (c.charCount > p.charCount ? c : p), seg[0]);
+      const fm = mapStandardFont(dom.font);
+      const next = segments[si + 1];
+      // The box may grow up to the next segment's left edge (no reflow → boxes
+      // must not overlap); the last/only segment may grow to the page edge.
+      const maxRight = next ? next[0].rect.origin.x : Infinity;
+      lines.push({
+        rect: unionRect(seg),
+        text: seg.map((g) => g.text).join('').replace(/\r?\n$/, ''),
+        fontSize: dom.fontSize,
+        pdfFont: fm.pdfFont, cssFont: fm.cssFont, weight: fm.weight,
+        color: hexColor(dom.color),
+        maxRight,
+        runs: seg,
+      });
+    }
   }
   return lines;
 }
@@ -151,7 +189,7 @@ export function measureTextWidthPt(text: string, cssFont: string, sizePt: number
  * overflows the one-line box → the cut-off bug).
  */
 export function fitBox(
-  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number, origText?: string, weight = '',
+  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number, origText?: string, weight = '', maxRight = Infinity,
 ): { fontSize: number; width: number } {
   const SAFETY = 1.1;                        // pad measured width so PDFium never wraps
   const x = rect.origin.x, w0 = rect.size.width, h = rect.size.height;
@@ -168,7 +206,12 @@ export function fitBox(
   }
   let fontSize = Math.min(baseSize, h > 0 ? h : baseSize);   // never taller than the line
   const need = measureTextWidthPt(text, cssFont, fontSize, weight) * SAFETY || w0;
-  const maxW = Math.max(w0, (pageWidthPt || x + w0) - x - 6);     // can extend to ~6pt from page edge
+  // Right boundary the box may grow to: the next segment's left edge (finite → keep
+  // a 1pt gap so it can't overlap the neighbour) or the page edge (Infinity → ~6pt
+  // margin). If the text still won't fit, the shrink branch below reduces the size.
+  const rightEdge = Number.isFinite(maxRight) ? maxRight : (pageWidthPt || x + w0);
+  const gap = Number.isFinite(maxRight) ? 1 : 6;
+  const maxW = Math.max(w0, rightEdge - x - gap);
   let width = w0;
   if (need <= w0) {
     width = w0;                              // fits in the original box at original size
