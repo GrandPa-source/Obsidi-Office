@@ -18,7 +18,7 @@
 import { render } from 'preact';
 import { useEffect, useRef, useState, useCallback } from 'preact/hooks';
 
-import { createPluginRegistration } from '@embedpdf/core';
+import { createPluginRegistration, refreshPages } from '@embedpdf/core';
 import type { PluginRegistry } from '@embedpdf/core';
 import { EmbedPDF } from '@embedpdf/core/preact';
 import { createPdfiumEngine } from '@embedpdf/engines/pdfium-direct-engine';
@@ -1333,6 +1333,15 @@ function EditorBody({
         const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fit.fontSize, ed.pdfFont, overlayRect);
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
+      // The redact+flatten mutated the PDFium doc via direct engine calls, which
+      // EmbedPDF's render layer doesn't observe — without this the page canvas
+      // keeps showing the OLD text ("the removed part comes back"). Dispatch the
+      // core REFRESH_PAGES action so the edited pages re-render.
+      try {
+        const store = (registry as any).getStore?.();
+        const editedPages = Array.from(new Set(edits.map((e) => e.pageIndex)));
+        if (store && doc.id) store.dispatch(refreshPages(doc.id, editedPages));
+      } catch (e) { console.warn('[pdf-editor] refreshPages failed', e); }
       pendingRef.current = [];
       setPendingEdits([]);
       setScanVersion((v) => v + 1); // doc changed → refresh outlines to the new text
