@@ -575,10 +575,13 @@ function TextEditBox({ edit, onCommit, onCancel }: {
   const [val, setVal] = useState(edit.text);
   const o = edit.rect.origin, s = edit.rect.size;
   const sx = edit.sx, sy = edit.sy;
-  // V3: render in the line's matched font/colour, and auto-fit the size to the
-  // line's width/height (re-fit on every keystroke) so the text matches the
-  // original and never overflows/wraps — the fix for "font grows / disappears".
-  const fitted = editText.fitFontSize(val, edit.cssFont, s.width, s.height, edit.fontSize);
+  // V3+: render in the line's matched font/colour at the PRESERVED original size,
+  // widening the box (toward the page edge) so the text fits on one line; only
+  // shrink as a last resort (re-computed each keystroke). Matches the saved
+  // overlay (same fitBox) so on-screen == saved.
+  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW);
+  const fitted = fit.fontSize;
+  const boxW = fit.width;
   // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
   // box, which can fire a trailing blur -> a second onCommit. The ref makes
   // commit/cancel fire-once; it resets per mount (each new pick is a fresh box).
@@ -590,7 +593,7 @@ function TextEditBox({ edit, onCommit, onCancel }: {
       class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
       value={val}
       style={{ position: 'absolute', left: o.x * sx, top: o.y * sy,
-        width: s.width * sx, height: s.height * sy, fontSize: fitted * sy,
+        width: boxW * sx, height: s.height * sy, fontSize: fitted * sy,
         lineHeight: 1.05, fontFamily: edit.cssFont, color: edit.color, whiteSpace: 'pre',
         background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
         resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
@@ -1191,7 +1194,8 @@ function Chrome({
 // field is unreliable — undefined at runtime — so we derive the factor from
 // measured geometry instead.)
 type ActiveEdit = { pageIndex: number; lineIndex: number; rect: any; text: string;
-  fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number };
+  fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number;
+  pageW: number };
 
 function EditorBody({
   documentId,
@@ -1281,7 +1285,7 @@ function EditorBody({
       cssFont: (hit as any).cssFont ?? '',
       pdfFont: (hit as any).pdfFont ?? 0,
       color: (hit as any).color ?? '#000000',
-      sx, sy,
+      sx, sy, pageW: pts?.width ?? 0,
     };
     setActiveEdit(picked);
     return picked;
@@ -1321,11 +1325,12 @@ function EditorBody({
       for (const ed of edits) {
         const page = doc.pages?.[ed.pageIndex];
         if (!page) continue;
-        // V4: bake the replacement in the line's mapped font, auto-fit to the line
-        // width/height so the saved overlay never overflows/wraps (same fit as the
-        // on-screen box → WYSIWYG).
-        const fitted = editText.fitFontSize(ed.newText, ed.cssFont, ed.rect.size.width, ed.rect.size.height, ed.fontSize);
-        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fitted, ed.pdfFont);
+        // V4+: bake the replacement at the PRESERVED original size in the line's
+        // mapped font, widening the overlay box (same fitBox as the on-screen box
+        // → WYSIWYG) so the saved text fits one line and never wraps/cuts off.
+        const fit = editText.fitBox(ed.newText, ed.cssFont, ed.fontSize, ed.rect, ed.pageW);
+        const overlayRect = { origin: ed.rect.origin, size: { width: fit.width, height: ed.rect.size.height } };
+        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fit.fontSize, ed.pdfFont, overlayRect);
         if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
       }
       pendingRef.current = [];
@@ -1397,7 +1402,7 @@ function EditorBody({
                           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           const sx = r.width / s.width, sy = r.height / s.height;
                           setActiveEdit({ pageIndex, lineIndex: i, rect: ln.rect, text: ln.text,
-                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy });
+                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW });
                         }}
                       />
                     );

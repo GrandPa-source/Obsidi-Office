@@ -127,19 +127,60 @@ export function fitFontSize(text: string, cssFont: string, maxWidthPt: number, m
   return Math.max(4, size);
 }
 
+/** Canvas text width (px≈pt) for the given CSS font at sizePt. */
+export function measureTextWidthPt(text: string, cssFont: string, sizePt: number): number {
+  if (!text || typeof document === 'undefined') return 0;
+  if (!_measCtx) _measCtx = document.createElement('canvas').getContext('2d');
+  if (!_measCtx) return text.length * sizePt * 0.5;
+  _measCtx.font = `${sizePt}px ${cssFont}`;
+  return _measCtx.measureText(text).width;
+}
+
+/**
+ * Decide the overlay box width + font size for a replacement, PRESERVING the
+ * original size when possible. The box is widened (toward the page right edge)
+ * so the text fits on one line at the original size; only if it can't fit even
+ * at full page width do we shrink. A generous safety factor keeps PDFium's
+ * FreeText from wrapping (canvas measureText slightly under-reports PDFium's
+ * standard-font widths, and any overflow makes FreeText wrap to a 2nd line that
+ * overflows the one-line box → the cut-off bug).
+ */
+export function fitBox(
+  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number,
+): { fontSize: number; width: number } {
+  const SAFETY = 1.1;                        // pad measured width so PDFium never wraps
+  const x = rect.origin.x, w0 = rect.size.width, h = rect.size.height;
+  let fontSize = Math.min(origSizePt, h > 0 ? h : origSizePt);   // never taller than the line
+  const need = measureTextWidthPt(text, cssFont, fontSize) * SAFETY || w0;
+  const maxW = Math.max(w0, (pageWidthPt || x + w0) - x - 6);     // can extend to ~6pt from page edge
+  let width = w0;
+  if (need <= w0) {
+    width = w0;                              // fits in the original box at original size
+  } else if (need <= maxW) {
+    width = need;                            // widen the box, keep the size
+  } else {
+    width = maxW;                            // shrink to fit the widest allowed box
+    fontSize = Math.max(4, fontSize * (maxW / need));
+  }
+  return { fontSize, width };
+}
+
 /** Apply one text edit: redact original rect, add replacement free-text, flatten it.
  *  Mirrors the feasibility-gate sequence exactly. Returns true on success. */
 export async function applyTextEdit(
   engine: PdfEngine, doc: any, page: any,
-  rect: any, newText: string, fontSize: number, pdfFont = 4,
+  rect: any, newText: string, fontSize: number, pdfFont = 4, overlayRect?: any,
 ): Promise<boolean> {
   const e = engine as any;
+  // Redact the ORIGINAL line rect; place the new text in the (possibly wider)
+  // overlay rect so it fits on one line at the preserved size.
+  const oRect = overlayRect || rect;
   const redOk = await toP(e.redactTextInRects(doc, page, [rect], { drawBlackBoxes: false }));
   if (!redOk) return false;
   const annot = {
     type: 3 /* FREETEXT */, pageIndex: page.index ?? 0,
-    id: 'edit-' + (page.index ?? 0) + '-' + rect.origin.x + '-' + rect.origin.y + '-' + (++_editSeq),
-    rect, contents: newText, fontFamily: pdfFont,
+    id: 'edit-' + (page.index ?? 0) + '-' + oRect.origin.x + '-' + oRect.origin.y + '-' + (++_editSeq),
+    rect: oRect, contents: newText, fontFamily: pdfFont,
     fontSize: Math.max(4, Math.round(fontSize || 12)),
     fontColor: '#000000', textAlign: 0, verticalAlign: 0, opacity: 1,
   };
