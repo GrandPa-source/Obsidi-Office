@@ -247,3 +247,31 @@ export async function applyTextEdit(
   const flatOk = await toP(e.flattenAnnotation(doc, page, { ...annot, id: id || annot.id }));
   return !!flatOk;
 }
+
+/**
+ * Build the FreeText annotation params for an EDITABLE box from a partitioned
+ * Line (Edit PDF mode). Unlike applyTextEdit this is NOT flattened — the caller
+ * passes it to the annotation plugin's createAnnotation() so it stays a live,
+ * selectable/movable/resizable/rotatable object. We generate the `id` ourselves
+ * because createAnnotation returns void and PdfFreeTextAnnoObject requires an id.
+ * Field names/enum values verified against @embedpdf/models PdfFreeTextAnnoObject:
+ * fontFamily is a PdfStandardFont enum whose values equal our mapped pdfFont
+ * (Helvetica 4 / Helvetica_Bold 5 / Times 8/9 / Courier 0/1), so weight is
+ * already encoded in pdfFont — no separate flag. textAlign 0 = Left, vAlign 0 = Top.
+ */
+export function buildFreeTextFromLine(line: Line, pageIndex: number, freeTextSubtype = 3): any {
+  const o = line.rect.origin;
+  return {
+    type: freeTextSubtype,
+    pageIndex,
+    id: 'edit-' + pageIndex + '-' + Math.round(o.x) + '-' + Math.round(o.y) + '-' + (++_editSeq),
+    rect: line.rect,
+    contents: line.text,
+    fontFamily: line.pdfFont,
+    fontSize: Math.max(4, Math.round(line.fontSize || 12)),
+    fontColor: line.color || '#000000',
+    textAlign: 0,     // PdfTextAlignment.Left
+    verticalAlign: 0, // PdfVerticalAlignment.Top
+    opacity: 1,
+  };
+}
