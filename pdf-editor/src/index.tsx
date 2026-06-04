@@ -1073,18 +1073,36 @@ function Chrome({
         </div>
       </Group>
 
-      {/* 2. Edit Text — large labelled; PDF-EMBEDPDF PoC A2 */}
-      <Group testid="pdf-group-edittext">
-        <BigBtn icon={IC.editText} caption="Edit Text" title="Edit existing text"
-          active={editTextOn}
+      {/* 2. Edit PDF — master toggle; gates the content-editing group (OnlyOffice-style) */}
+      <Group testid="pdf-group-editpdf">
+        <BigBtn icon={IC.editText} caption="Edit PDF" title="Edit PDF content"
+          active={editPdfOn}
           onClick={() => {
-            const next = !editTextOn;
-            setEditTextOn(next);
-            annotationApi?.setActiveTool(null); // exclusive with annotation tools
-            if (next) { try { imApi?.activateDefaultMode?.(); } catch (_) {} }
+            const next = !editPdfOn;
+            setEditPdfOn(next);
+            if (!next) { setEditTextOn(false); annotationApi?.setActiveTool(null); }
           }}
-          testid="pdf-edit-text" />
+          testid="pdf-edit-pdf" />
       </Group>
+
+      {/* 2b. Content-editing group — only when Edit PDF is on */}
+      {editPdfOn ? (
+        <Group testid="pdf-group-content">
+          <BigBtn icon={IC.editText} caption="Edit Text" title="Outline & edit text lines"
+            active={editTextOn}
+            onClick={() => {
+              const next = !editTextOn;
+              setEditTextOn(next);
+              annotationApi?.setActiveTool(null); // exclusive with annotation tools
+              if (next) { try { imApi?.activateDefaultMode?.(); } catch (_) {} }
+            }}
+            testid="pdf-edit-text" />
+          <BigBtn icon={IC.text} caption="Insert Text" title="Insert a new text box"
+            active={activeTool === 'freeText'}
+            onClick={() => tool('freeText')}
+            testid="pdf-insert-text" />
+        </Group>
+      ) : null}
 
       {/* 3. Hand + Select — large labelled buttons */}
       <Group testid="pdf-group-tools">
@@ -1210,6 +1228,9 @@ function EditorBody({
 
   // PDF-EMBEDPDF PoC A2 — edit-text mode state.
   const [editTextOn, setEditTextOn] = useState(false);
+  // Edit PDF master toggle (OnlyOffice-style): gates the content-editing ribbon
+  // group. editTextOn is the sub-mode that dashes text lines for click-to-edit.
+  const [editPdfOn, setEditPdfOn] = useState(false);
   const [activeEdit, setActiveEdit] = useState<ActiveEdit | null>(null);
 
   // PDF-EMBEDPDF PoC A3 — staged (not yet applied) edits.
