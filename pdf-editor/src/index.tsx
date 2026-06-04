@@ -1291,6 +1291,24 @@ function EditorBody({
     return picked;
   }, []);
 
+  // Apply ONE edit to the live doc immediately (redact original + flatten the
+  // mapped/auto-fit replacement), refresh the page render, and re-scan outlines.
+  // Chained on _editApplyChain so a save can await any in-flight apply.
+  const applyEditNow = useCallback((edit: ActiveEdit, newText: string) => {
+    _editApplyChain = _editApplyChain.then(async () => {
+      const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
+      const engine = reg?.getEngine();
+      const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
+      const page = doc?.pages?.[edit.pageIndex];
+      if (!engine || !doc || !page) return;
+      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text);
+      const overlayRect = { origin: edit.rect.origin, size: { width: fit.width, height: edit.rect.size.height } };
+      await editText.applyTextEdit(engine, doc, page, edit.rect, newText, fit.fontSize, edit.pdfFont, overlayRect);
+      try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [edit.pageIndex])); } catch (_) { /* noop */ }
+      setScanVersion((v) => v + 1); // re-scan outlines to the new text (re-editable)
+    }).catch((e) => console.warn('[pdf-editor] apply edit failed', e));
+  }, []);
+
   // PDF-EMBEDPDF PoC A2+A3+A4 — test hooks (merged so standalone.html's runs() survives).
   useEffect(() => {
     (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
@@ -1425,12 +1443,9 @@ function EditorBody({
                       key={`${activeEdit.pageIndex}-${activeEdit.lineIndex}`}
                       edit={activeEdit}
                       onCommit={(newText) => {
-                        if (newText !== activeEdit.text) {
-                          // Push to the ref synchronously (save reads the ref) AND
-                          // mirror to state (for the outline "edited" highlight).
-                          pendingRef.current = [...pendingRef.current, { ...activeEdit, newText }];
-                          setPendingEdits(pendingRef.current);
-                        }
+                        // Apply-on-commit: the edit lands in the doc + render right
+                        // away, so clicking out shows it instead of reverting.
+                        if (newText !== activeEdit.text) applyEditNow(activeEdit, newText);
                         setActiveEdit(null);
                       }}
                       onCancel={() => setActiveEdit(null)}
@@ -1579,6 +1594,11 @@ function PdfEditorApp({
 // confirm (abort the save). No autosave exists in this bundle, so there is no
 // autosave path to suppress.
 let _applyPendingEdits: ((registry: PluginRegistry) => Promise<boolean>) | null = null;
+// PDF-EMBEDPDF PoC — apply-on-commit: edits are applied to the live doc the moment
+// the box is committed (click-out / Enter / switch / save-blur), so the page shows
+// them immediately instead of reverting until save. Each apply chains here so the
+// save path can await any in-flight commit-apply before saveAsCopy.
+let _editApplyChain: Promise<void> = Promise.resolve();
 
 async function saveViaRegistry(
   registry: PluginRegistry,
@@ -1589,22 +1609,15 @@ async function saveViaRegistry(
   const doc = docManager?.getActiveDocument?.();
   if (!engine || !doc) throw new Error('No active document to save.');
 
-  // Commit any OPEN edit box first. Pressing Ctrl+S while the textarea is still
-  // focused never committed the in-progress edit, so it wasn't staged and the
-  // save serialized the unchanged doc. Blur fires the box's onBlur -> onCommit
-  // -> setPendingEdits; the macrotask wait lets that state flush and the
-  // _applyPendingEdits hook re-register with the newly-staged edit.
+  // Commit any OPEN edit box first (blur fires onCommit, which applies the edit to
+  // the live doc), then wait for ALL in-flight commit-applies to finish so the
+  // serialized doc includes them. Apply-on-commit means there are no "staged"
+  // edits to flush here — they're already in the doc.
   if (typeof document !== 'undefined') {
     const ta = document.querySelector('[data-testid="pdf-textedit"]') as HTMLElement | null;
-    if (ta) { ta.blur(); await new Promise((r) => setTimeout(r, 0)); }
+    if (ta) ta.blur();
   }
-
-  // A4: flush staged "Edit Text" edits (redact original + flatten replacement)
-  // into the live doc before serialization. Aborts the save if the user cancels.
-  if (_applyPendingEdits) {
-    const proceed = await _applyPendingEdits(registry);
-    if (!proceed) return;
-  }
+  await _editApplyChain;
 
   // CRITICAL: flush the annotation plugin's pending changes into the in-memory
   // PDFium document BEFORE saveAsCopy serializes it.
