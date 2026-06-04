@@ -1543,7 +1543,13 @@ function PdfEditorApp({
       createPluginRegistration(InteractionManagerPluginPackage),
       createPluginRegistration(SelectionPluginPackage),
       createPluginRegistration(HistoryPluginPackage),
-      createPluginRegistration(AnnotationPluginPackage, { annotationAuthor: author }),
+      createPluginRegistration(AnnotationPluginPackage, {
+        annotationAuthor: author,
+        // Edit PDF mode: text boxes (FreeText) are rotatable like OnlyOffice. The
+        // default freeText tool is drag+resize only; this partial override is
+        // deep-merged with the default tool (AnnotationToolOverride).
+        tools: [{ id: 'freeText', interaction: { isRotatable: true } as any }],
+      }),
       // Left-rail feature plugins (pass 2).
       // Thumbnail requires `render` (above) + optionally uses `scroll` (above).
       createPluginRegistration(ThumbnailPluginPackage, {
