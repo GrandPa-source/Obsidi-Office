@@ -63,16 +63,21 @@ export interface Line {
   fontSize: number;     // points (dominant run)
   pdfFont: number;      // PdfStandardFont enum for the saved overlay (Courier 0 / Helvetica 4 / Times 8)
   cssFont: string;      // matching CSS font stack for on-screen + measuring
+  weight: string;       // 'bold' | 'normal' — matched from the original font name
   color: string;        // hex
   runs: TextRunLike[];
 }
 
-// Map a run's font to the nearest of PDFium's standard fonts + a CSS stack.
-export function mapStandardFont(font: any): { pdfFont: number; cssFont: string } {
+// Map a run's font to the nearest of PDFium's standard fonts + a CSS stack + weight.
+// PDFium only ships regular/bold of Helvetica/Times/Courier; match the weight when
+// the original is bold/semibold so the edit isn't visibly lighter than the line.
+export function mapStandardFont(font: any): { pdfFont: number; cssFont: string; weight: string } {
   const name = String(font?.name || font?.family || '').toLowerCase();
-  if (/times|serif|georgia|roman/.test(name)) return { pdfFont: 8, cssFont: 'Times New Roman, Times, serif' };
-  if (/courier|mono|consol/.test(name)) return { pdfFont: 0, cssFont: 'Courier New, Courier, monospace' };
-  return { pdfFont: 4, cssFont: 'Helvetica, Arial, sans-serif' };
+  const bold = /bold|semibold|black|heavy|[-_ ](bd|sb|blk)\b/.test(name);
+  const weight = bold ? 'bold' : 'normal';
+  if (/times|serif|georgia|roman/.test(name)) return { pdfFont: bold ? 9 : 8, cssFont: 'Times New Roman, Times, serif', weight };
+  if (/courier|mono|consol/.test(name)) return { pdfFont: bold ? 1 : 0, cssFont: 'Courier New, Courier, monospace', weight };
+  return { pdfFont: bold ? 5 : 4, cssFont: 'Helvetica, Arial, sans-serif', weight };
 }
 
 function hexColor(c: any): string {
@@ -102,7 +107,7 @@ export function partitionLines(runs: TextRunLike[]): Line[] {
       rect: unionRect(group),
       text: group.map((g) => g.text).join('').replace(/\r?\n$/, ''),
       fontSize: dom.fontSize,
-      pdfFont: fm.pdfFont, cssFont: fm.cssFont,
+      pdfFont: fm.pdfFont, cssFont: fm.cssFont, weight: fm.weight,
       color: hexColor(dom.color),
       runs: group,
     });
@@ -127,12 +132,12 @@ export function fitFontSize(text: string, cssFont: string, maxWidthPt: number, m
   return Math.max(4, size);
 }
 
-/** Canvas text width (px≈pt) for the given CSS font at sizePt. */
-export function measureTextWidthPt(text: string, cssFont: string, sizePt: number): number {
+/** Canvas text width (px≈pt) for the given CSS font at sizePt (+ optional weight). */
+export function measureTextWidthPt(text: string, cssFont: string, sizePt: number, weight = ''): number {
   if (!text || typeof document === 'undefined') return 0;
   if (!_measCtx) _measCtx = document.createElement('canvas').getContext('2d');
   if (!_measCtx) return text.length * sizePt * 0.5;
-  _measCtx.font = `${sizePt}px ${cssFont}`;
+  _measCtx.font = `${weight ? weight + ' ' : ''}${sizePt}px ${cssFont}`;
   return _measCtx.measureText(text).width;
 }
 
@@ -146,7 +151,7 @@ export function measureTextWidthPt(text: string, cssFont: string, sizePt: number
  * overflows the one-line box → the cut-off bug).
  */
 export function fitBox(
-  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number, origText?: string,
+  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number, origText?: string, weight = '',
 ): { fontSize: number; width: number } {
   const SAFETY = 1.1;                        // pad measured width so PDFium never wraps
   const x = rect.origin.x, w0 = rect.size.width, h = rect.size.height;
@@ -158,11 +163,11 @@ export function fitBox(
   // visually matches the original. Clamped to avoid extremes.
   let baseSize = origSizePt;
   if (origText && w0 > 0) {
-    const subW = measureTextWidthPt(origText, cssFont, origSizePt);
+    const subW = measureTextWidthPt(origText, cssFont, origSizePt, weight);
     if (subW > 0) baseSize = origSizePt * Math.max(0.6, Math.min(1.15, w0 / subW));
   }
   let fontSize = Math.min(baseSize, h > 0 ? h : baseSize);   // never taller than the line
-  const need = measureTextWidthPt(text, cssFont, fontSize) * SAFETY || w0;
+  const need = measureTextWidthPt(text, cssFont, fontSize, weight) * SAFETY || w0;
   const maxW = Math.max(w0, (pageWidthPt || x + w0) - x - 6);     // can extend to ~6pt from page edge
   let width = w0;
   if (need <= w0) {

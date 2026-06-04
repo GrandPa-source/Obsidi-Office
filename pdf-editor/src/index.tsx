@@ -579,7 +579,7 @@ function TextEditBox({ edit, onCommit, onCancel }: {
   // widening the box (toward the page edge) so the text fits on one line; only
   // shrink as a last resort (re-computed each keystroke). Matches the saved
   // overlay (same fitBox) so on-screen == saved.
-  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text);
+  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight);
   const fitted = fit.fontSize;
   const boxW = fit.width;
   // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
@@ -594,7 +594,7 @@ function TextEditBox({ edit, onCommit, onCancel }: {
       value={val}
       style={{ position: 'absolute', left: o.x * sx, top: o.y * sy,
         width: boxW * sx, height: s.height * sy, fontSize: fitted * sy,
-        lineHeight: 1.05, fontFamily: edit.cssFont, color: edit.color, whiteSpace: 'pre',
+        lineHeight: 1.05, fontFamily: edit.cssFont, fontWeight: edit.weight, color: edit.color, whiteSpace: 'pre',
         background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
         resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
       onInput={(e) => setVal((e.target as HTMLTextAreaElement).value)}
@@ -1195,7 +1195,7 @@ function Chrome({
 // measured geometry instead.)
 type ActiveEdit = { pageIndex: number; lineIndex: number; rect: any; text: string;
   fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number;
-  pageW: number };
+  pageW: number; weight: string };
 
 function EditorBody({
   documentId,
@@ -1285,7 +1285,7 @@ function EditorBody({
       cssFont: (hit as any).cssFont ?? '',
       pdfFont: (hit as any).pdfFont ?? 0,
       color: (hit as any).color ?? '#000000',
-      sx, sy, pageW: pts?.width ?? 0,
+      sx, sy, pageW: pts?.width ?? 0, weight: (hit as any).weight ?? 'normal',
     };
     setActiveEdit(picked);
     return picked;
@@ -1301,7 +1301,7 @@ function EditorBody({
       const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
       const page = doc?.pages?.[edit.pageIndex];
       if (!engine || !doc || !page) return;
-      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text);
+      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight);
       const overlayRect = { origin: edit.rect.origin, size: { width: fit.width, height: edit.rect.size.height } };
       await editText.applyTextEdit(engine, doc, page, edit.rect, newText, fit.fontSize, edit.pdfFont, overlayRect);
       try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [edit.pageIndex])); } catch (_) { /* noop */ }
@@ -1429,7 +1429,7 @@ function EditorBody({
                           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
                           const sx = r.width / s.width, sy = r.height / s.height;
                           setActiveEdit({ pageIndex, lineIndex: i, rect: ln.rect, text: ln.text,
-                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW });
+                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW, weight: ln.weight });
                         }}
                       />
                     );
