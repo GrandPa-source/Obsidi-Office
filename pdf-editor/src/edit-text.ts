@@ -146,11 +146,22 @@ export function measureTextWidthPt(text: string, cssFont: string, sizePt: number
  * overflows the one-line box → the cut-off bug).
  */
 export function fitBox(
-  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number,
+  text: string, cssFont: string, origSizePt: number, rect: any, pageWidthPt: number, origText?: string,
 ): { fontSize: number; width: number } {
   const SAFETY = 1.1;                        // pad measured width so PDFium never wraps
   const x = rect.origin.x, w0 = rect.size.width, h = rect.size.height;
-  let fontSize = Math.min(origSizePt, h > 0 ? h : origSizePt);   // never taller than the line
+  // Calibrate the substitute-font size to the ORIGINAL font's rendered footprint.
+  // PDFium only has the 14 standard fonts (Helvetica/Times/Courier), which render
+  // larger than e.g. Segoe UI at the same point size — so a "preserved" 15pt looks
+  // bigger. The original text occupied w0 at origSize in ITS font; if our substitute
+  // renders that same text wider, scale the size down by the ratio so the edit
+  // visually matches the original. Clamped to avoid extremes.
+  let baseSize = origSizePt;
+  if (origText && w0 > 0) {
+    const subW = measureTextWidthPt(origText, cssFont, origSizePt);
+    if (subW > 0) baseSize = origSizePt * Math.max(0.6, Math.min(1.15, w0 / subW));
+  }
+  let fontSize = Math.min(baseSize, h > 0 ? h : baseSize);   // never taller than the line
   const need = measureTextWidthPt(text, cssFont, fontSize) * SAFETY || w0;
   const maxW = Math.max(w0, (pageWidthPt || x + w0) - x - 6);     // can extend to ~6pt from page edge
   let width = w0;
