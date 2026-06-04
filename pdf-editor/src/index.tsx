@@ -429,7 +429,7 @@ function injectChromeStyles() {
 .${CX}-comment-meta{font-size:10px;color:var(--oo-label);display:block;margin-top:2px;}
 .${CX}-comment-body{display:block;margin-top:3px;color:var(--oo-tab-active-text);
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.${CX}-line-outline{box-sizing:border-box;border:1px solid rgba(120,150,220,0.35);border-radius:2px;cursor:text;background:transparent;}
+.${CX}-line-outline{box-sizing:border-box;border:1px dashed rgba(120,150,220,0.55);border-radius:2px;cursor:text;background:transparent;}
 .${CX}-line-outline:hover{border-color:var(--oo-accent);background:rgba(120,150,220,0.08);}
 .${CX}-line-edited{border-color:var(--oo-accent-underline);}
 
