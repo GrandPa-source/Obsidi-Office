@@ -1321,6 +1321,13 @@ function measureGlyphTopPt(pageIndex: number, rect: any, ptSize: { width: number
     const natH = isImg ? (src as HTMLImageElement).naturalHeight : (src as HTMLCanvasElement).height;
     if (!natW || !natH) return null;
     const pxX = natW / ptSize.width, pxY = natH / ptSize.height;
+    // 1 CSS pixel expressed in points (for the overlay-offset bias below). The
+    // FreeText is an HTML overlay whose rendered text sits ~1 CSS px BELOW the
+    // original PDFium glyphs in Electron/Obsidian (observed in-app; the headless
+    // harness shows 0). Subtracting 1 CSS px from the measured glyph top cancels
+    // it at any zoom/DPR (kept proportional, not a fixed point value).
+    const ir = (src as HTMLElement).getBoundingClientRect();
+    const onePxPt = ir.height > 0 ? ptSize.height / ir.height : 0;
     const rx0 = Math.max(0, Math.floor(rect.origin.x * pxX));
     const rx1 = Math.min(natW, Math.ceil((rect.origin.x + rect.size.width) * pxX));
     const ry0 = Math.max(0, Math.floor((rect.origin.y - 1) * pxY));
@@ -1342,9 +1349,8 @@ function measureGlyphTopPt(pageIndex: number, rect: any, ptSize: { width: number
         const i = (y * W + x) * 4;
         const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
         if (data[i + 3] > 40 && lum < 128) {
-          // If the row just above has faint ink (AA edge), the true top is ~0.5px
-          // higher — nudge up by half a device pixel for a better perceptual match.
-          return ((ry0 + y) - 0.5) / pxY;
+          // Glyph top in points, minus the 1-CSS-px Electron overlay bias.
+          return ((ry0 + y) / pxY) - onePxPt;
         }
       }
     }
