@@ -1720,9 +1720,44 @@ async function saveViaRegistry(
     }
   }
 
+  // Serialize the live doc (text edits are FreeText annotations at this point).
   const ab: ArrayBuffer = await engine.saveAsCopy(doc).toPromise();
-  const bytes = new Uint8Array(ab);
-  await onSave(bytes);
+  let outBytes = new Uint8Array(ab);
+
+  // FLATTEN-ON-SAVE: bake every text box (FreeText) into the page content stream so
+  // the SAVED file has edited/inserted text as real page text — re-outlined like
+  // the original on reopen, indistinguishable from native content (extractable,
+  // selectable). Done in a THROWAWAY copy of the just-saved bytes so the LIVE
+  // editing session keeps its FreeText objects (you can keep moving/formatting
+  // after saving). Non-text annotations (highlights, ink, shapes, sticky comments)
+  // are subtype != FreeText and are left untouched. Falls back to the un-flattened
+  // bytes if anything goes wrong, so saving never breaks.
+  try {
+    const e: any = engine;
+    const toP = (t: any) => t?.toPromise ? t.toPromise()
+      : (t?.wait ? new Promise((res, rej) => t.wait(res, rej)) : Promise.resolve(t));
+    const tempId = 'oo-flatten-' + (doc.id || 'doc') + '-' + Math.floor(performance.now());
+    const temp = await toP(e.openDocumentBuffer({ id: tempId, content: ab }));
+    let flattened = 0;
+    for (const p of (temp.pages || [])) {
+      const annos = await toP(e.getPageAnnotations(temp, p));
+      for (const a of (annos || [])) {
+        if (a?.type === 3 /* PdfAnnotationSubtype.FREETEXT */) {
+          await toP(e.flattenAnnotation(temp, p, a));
+          flattened++;
+        }
+      }
+    }
+    if (flattened > 0) {
+      const flatAb: ArrayBuffer = await toP(e.saveAsCopy(temp));
+      outBytes = new Uint8Array(flatAb);
+    }
+    try { await toP(e.closeDocument(temp)); } catch (_) { /* noop */ }
+  } catch (err) {
+    console.warn('[pdf-editor] flatten-on-save failed; saving with editable text boxes instead', err);
+  }
+
+  await onSave(outBytes);
 }
 
 // ---------------------------------------------------------------------------
