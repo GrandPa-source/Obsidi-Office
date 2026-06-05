@@ -971,8 +971,13 @@ function Chrome({
   const ftSize = ftSelected ? Math.round(selObj.fontSize ?? 12) : null;
   const ftAlign = ftSelected ? (selObj.textAlign ?? 0) : -1;
   const ftVAlign = ftSelected ? (selObj.verticalAlign ?? 0) : -1;
-  const ftColor = ftSelected ? (selObj.fontColor || '#000000') : '#000000';
-  const ftBg = ftSelected ? (selObj.color || '#ffffff') : '#ffffff';
+  // <input type=color> only accepts #rrggbb — a FreeText's fontColor/fill can be
+  // 'transparent', a named colour, or rgb()/#rgb, which would throw a console
+  // warning and blank the swatch. Coerce to a 6-digit hex, else a sensible default.
+  const hex6 = (c: any, fallback: string) =>
+    (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c)) ? c : fallback;
+  const ftColor = ftSelected ? hex6(selObj.fontColor, '#000000') : '#000000';
+  const ftBg = ftSelected ? hex6(selObj.color, '#ffffff') : '#ffffff';
   const ftStyles = !!ftVar && editText.familyHasStyles(ftVar.family);
   const patchFt = (patch: any) => {
     if (!ftSelected) return;
@@ -1444,6 +1449,40 @@ function EditorBody({
       el.removeEventListener('pointercancel', up, true);
     };
   }, [handOn]);
+
+  // Match Insert Text defaults to the document's DOMINANT body text (size + font),
+  // so newly inserted text blends in instead of a fixed 14pt. Sampled once on load
+  // by total character count across page 1's runs.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const reg = (globalThis as any).ObsidiPdfEditor?.getRegistry?.();
+      const eng = reg?.getEngine();
+      const dm = reg?.getPlugin('document-manager')?.provides();
+      const doc = dm?.getActiveDocument?.();
+      const page = doc?.pages?.[0];
+      const setToolDefaults = (annoApiBody as any)?.setToolDefaults;
+      if (!eng || !doc || !page || typeof setToolDefaults !== 'function') return;
+      const runs = await editText.getRuns(eng, doc, page);
+      if (cancelled || !runs.length) return;
+      const bySize: Record<number, { chars: number; run: any }> = {};
+      for (const r of runs) {
+        const k = Math.round(r.fontSize || 0);
+        if (!k) continue;
+        const slot = bySize[k] || (bySize[k] = { chars: 0, run: r });
+        slot.chars += (r.charCount || r.text?.length || 0);
+      }
+      let domSize = 0, best = -1, domRun: any = null;
+      for (const k in bySize) {
+        if (bySize[k].chars > best) { best = bySize[k].chars; domSize = +k; domRun = bySize[k].run; }
+      }
+      if (!domSize || cancelled) return;
+      const fm = editText.mapStandardFont(domRun.font);
+      try { setToolDefaults('freeText', { fontSize: domSize, fontFamily: fm.pdfFont }); } catch (_) { /* noop */ }
+    })().catch(() => { /* noop */ });
+    return () => { cancelled = true; };
+  }, [annoApiBody]);
+
   // Precomputed line rects per page (populated when editTextOn → dashed outlines).
   const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
   // Bumped after a line is converted to a FreeText (in convertLineToFreeText) so the
@@ -1549,9 +1588,13 @@ function EditorBody({
       const sxv = pr.width / ptSize.width, syv = pr.height / ptSize.height;
       const left = pr.left + r.origin.x * sxv, top = pr.top + r.origin.y * syv;
       const right = left + r.size.width * sxv, bottom = top + r.size.height * syv;
-      const M = 26; // margin so clicking the handles (incl. rotation, ~20px above) keeps selection
+      // Keep selection when clicking a handle. The ROTATION handle sits well ABOVE
+      // the box (~20–36px up), so the top margin must be larger than the side/bottom
+      // ones — otherwise grabbing it deselects the box and the rotate never starts.
+      const M = 28;       // side / bottom (resize handles ~6–12px out)
+      const MTOP = 52;    // above the box (clears the rotation handle + its connector)
       const inside = e.clientX >= left - M && e.clientX <= right + M &&
-                     e.clientY >= top - M && e.clientY <= bottom + M;
+                     e.clientY >= top - MTOP && e.clientY <= bottom + M;
       if (!inside) { try { annoApi.deselectAnnotation(); } catch (_) { /* noop */ } }
     };
     document.addEventListener('pointerdown', onDown, true);
