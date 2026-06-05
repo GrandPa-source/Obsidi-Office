@@ -1331,6 +1331,32 @@ function EditorBody({
     }).catch((e) => console.warn('[pdf-editor] apply edit failed', e));
   }, []);
 
+  // Edit PDF mode: convert a clicked text line into an editable FreeText annotation.
+  // Redacts the original glyphs, creates a matched-font FreeText in their place
+  // (NOT flattened → stays a live object), and selects it so EmbedPDF renders the
+  // move/resize/rotate handles + double-click edit. Serialized on _editApplyChain.
+  const FREETEXT_SUBTYPE = 3; // PdfAnnotationSubtype.FREETEXT (confirmed in @embedpdf/models)
+  const convertLineToFreeText = useCallback((pageIndex: number, line: any) => {
+    _editApplyChain = _editApplyChain.then(async () => {
+      const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
+      const engine = reg?.getEngine();
+      const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
+      const page = doc?.pages?.[pageIndex];
+      if (!engine || !doc || !page || !annotationApi) return;
+      // 1) Redact the original line glyphs (no black box) so they don't show under the box.
+      const t = (engine as any).redactTextInRects(doc, page, [line.rect], { drawBlackBoxes: false });
+      await (t?.toPromise ? t.toPromise()
+        : new Promise((res, rej) => (t?.wait ? t.wait(res, rej) : res(t))));
+      // 2) Create the live FreeText (matched font/size/colour; we own the id).
+      const annot = editText.buildFreeTextFromLine(line, pageIndex, FREETEXT_SUBTYPE);
+      annotationApi.createAnnotation(pageIndex, annot);
+      // 3) Refresh the page render + select the box (handles + double-click edit).
+      try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [pageIndex])); } catch (_) { /* noop */ }
+      try { annotationApi.selectAnnotation(pageIndex, annot.id); } catch (_) { /* noop */ }
+      setScanVersion((v) => v + 1); // re-scan outlines (the converted line is now an object)
+    }).catch((e) => console.warn('[pdf-editor] convertLineToFreeText failed', e));
+  }, [annotationApi]);
+
   // PDF-EMBEDPDF PoC A2+A3+A4 — test hooks (merged so standalone.html's runs() survives).
   useEffect(() => {
     (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
@@ -1436,43 +1462,24 @@ function EditorBody({
                     scale={scale}
                     rotation={rotation}
                   />
-                  {/* PDF-EMBEDPDF PoC V2 — outline every text line; click to edit. */}
+                  {/* Edit PDF mode — dash every text line; click converts it to an
+                      editable FreeText box (move/resize/rotate/edit via EmbedPDF). */}
                   {editTextOn && linesByPage[pageIndex] ? linesByPage[pageIndex].lines.map((ln: any, i: number) => {
                     const { ptW, ptH } = linesByPage[pageIndex];
                     const o = ln.rect.origin, s = ln.rect.size;
-                    const edited = pendingEdits.some((p) => p.pageIndex === pageIndex && p.lineIndex === i);
                     return (
                       <div key={i} data-testid={`pdf-line-${pageIndex}-${i}`}
-                        class={`${CX}-line-outline${edited ? ` ${CX}-line-edited` : ''}`}
+                        class={`${CX}-line-outline`}
                         style={{ position: 'absolute', left: `${o.x / ptW * 100}%`, top: `${o.y / ptH * 100}%`,
                           width: `${s.width / ptW * 100}%`, height: `${s.height / ptH * 100}%`, zIndex: 10 }}
                         onClick={(e) => {
                           e.stopPropagation();
-                          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                          const sx = r.width / s.width, sy = r.height / s.height;
-                          setActiveEdit({ pageIndex, lineIndex: i, rect: ln.rect, text: ln.text,
-                            fontSize: ln.fontSize, cssFont: ln.cssFont, pdfFont: ln.pdfFont, color: ln.color, sx, sy, pageW: ptW, weight: ln.weight, maxRight: ln.maxRight });
+                          annotationApi?.setActiveTool(null);   // select mode → handles + drag-to-move
+                          convertLineToFreeText(pageIndex, ln);
                         }}
                       />
                     );
                   }) : null}
-                  {/* PDF-EMBEDPDF PoC A3 — anchored pre-filled edit box. */}
-                  {activeEdit && activeEdit.pageIndex === pageIndex ? (
-                    <TextEditBox
-                      // key per active line so switching lines remounts the box with
-                      // a fresh `val` (and `done` guard) — otherwise the textarea
-                      // keeps the previous line's text at the new line's position.
-                      key={`${activeEdit.pageIndex}-${activeEdit.lineIndex}`}
-                      edit={activeEdit}
-                      onCommit={(newText) => {
-                        // Apply-on-commit: the edit lands in the doc + render right
-                        // away, so clicking out shows it instead of reverting.
-                        if (newText !== activeEdit.text) applyEditNow(activeEdit, newText);
-                        setActiveEdit(null);
-                      }}
-                      onCancel={() => setActiveEdit(null)}
-                    />
-                  ) : null}
                 </PagePointerProvider>
               );
             }}
