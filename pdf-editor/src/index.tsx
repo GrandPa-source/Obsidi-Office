@@ -1301,6 +1301,50 @@ function Chrome({
   );
 }
 
+// Measure the ON-SCREEN top (in PDF points) of the original glyphs for a line, by
+// scanning the rendered page bitmap inside its rect. Used to align a replacement
+// FreeText to the original baseline (the run's rect top is the font ascent line,
+// which sits above the glyphs by a font-specific top leading). Returns null if the
+// page bitmap can't be read (caller falls back to a proportional estimate). Must
+// be called while the original glyphs are still rendered (before redaction).
+function measureGlyphTopPt(pageIndex: number, rect: any, ptSize: { width: number; height: number }): number | null {
+  try {
+    if (typeof document === 'undefined' || !ptSize?.width || !ptSize?.height) return null;
+    const pageEl = document.querySelector(`[data-testid="pdf-page-${pageIndex}"]`);
+    const container = (pageEl as HTMLElement | null)?.parentElement;
+    if (!container) return null;
+    const src = (container.querySelector('canvas') as HTMLCanvasElement | null)
+      || (container.querySelector('img') as HTMLImageElement | null);
+    if (!src) return null;
+    const isImg = src.tagName === 'IMG';
+    const natW = isImg ? (src as HTMLImageElement).naturalWidth : (src as HTMLCanvasElement).width;
+    const natH = isImg ? (src as HTMLImageElement).naturalHeight : (src as HTMLCanvasElement).height;
+    if (!natW || !natH) return null;
+    const pxX = natW / ptSize.width, pxY = natH / ptSize.height;
+    const rx0 = Math.max(0, Math.floor(rect.origin.x * pxX));
+    const rx1 = Math.min(natW, Math.ceil((rect.origin.x + rect.size.width) * pxX));
+    const ry0 = Math.max(0, Math.floor((rect.origin.y - 2) * pxY));
+    const ry1 = Math.min(natH, Math.ceil((rect.origin.y + rect.size.height + 2) * pxY));
+    const W = rx1 - rx0, H = ry1 - ry0;
+    if (W <= 0 || H <= 0) return null;
+    const c = document.createElement('canvas'); c.width = natW; c.height = natH;
+    const ctx = c.getContext('2d'); if (!ctx) return null;
+    ctx.drawImage(src as CanvasImageSource, 0, 0, natW, natH);
+    const data = ctx.getImageData(rx0, ry0, W, H).data;
+    // First row containing an ink pixel (non-near-white, opaque). Works for any
+    // text colour since the page background is light.
+    for (let y = 0; y < H; y++) {
+      let hits = 0;
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+        if (data[i + 3] > 40 && lum < 170) { if (++hits >= 2) return (ry0 + y) / pxY; }
+      }
+    }
+    return null;
+  } catch (_) { return null; }
+}
+
 // ---------------------------------------------------------------------------
 // Editor body: chrome on top, then a horizontal row [rail][panel?][viewport].
 // Owns the open-panel state so the rail + panel stay in sync. Rendered only once
@@ -1362,24 +1406,28 @@ function EditorBody({
       if (!engine || !doc || !page || !annoApi) return;
       // Ensure select mode so the new box gets handles + drag-to-move (not a tool).
       try { annoApi.setActiveTool(null); } catch (_) { /* noop */ }
-      // 1) Redact the original line glyphs (no black box) so they don't show under the box.
+      // Width: fitBox so the wider substitute font (Helvetica) doesn't clip the
+      // text at the original line rect; widen toward the page edge / next segment,
+      // shrinking the size only as a last resort.
+      const fit = editText.fitBox(line.text, line.cssFont, line.fontSize, line.rect,
+        page.size?.width ?? 0, line.text, line.weight, line.maxRight);
+      // Vertical: the run's rect top is the font's ascent line; the original
+      // glyphs sit a little below it (top leading, font-specific), and EmbedPDF
+      // renders a FreeText with its cap at the rect top — so without compensation
+      // the replacement lands too HIGH and the text visibly "jumps" on conversion.
+      // MEASURE the original glyph top by scanning the still-rendered page (exact,
+      // font-independent); fall back to ~0.21em if the bitmap can't be read. Must
+      // run BEFORE the redact below removes the glyphs.
+      const measuredTopPt = measureGlyphTopPt(pageIndex, line.rect, page.size);
+      const topLead = measuredTopPt != null
+        ? Math.max(0, Math.min(line.rect.size.height * 0.8, measuredTopPt - line.rect.origin.y))
+        : 0.21 * fit.fontSize;
+      // Redact the original line glyphs (no black box) so they don't show under the box.
       const t = (engine as any).redactTextInRects(doc, page, [line.rect], { drawBlackBoxes: false });
       await (t?.toPromise ? t.toPromise()
         : new Promise((res, rej) => (t?.wait ? t.wait(res, rej) : res(t))));
-      // 2) Create the live FreeText (matched font/size/colour; we own the id).
-      //    Seed the box width via fitBox so the wider substitute font (Helvetica)
-      //    doesn't clip the text at the original line rect; widen toward the page
-      //    edge (or the next segment), shrinking the size only as a last resort.
-      const fit = editText.fitBox(line.text, line.cssFont, line.fontSize, line.rect,
-        page.size?.width ?? 0, line.text, line.weight, line.maxRight);
-      // The run's rect top is the font's ascent line; the original glyphs sit a
-      // little below it (top leading). EmbedPDF renders a FreeText with its cap at
-      // the rect top, so without compensation the replacement lands ~0.23em too
-      // HIGH and the text visibly "jumps up" on conversion. Nudge the box down by
-      // the top leading so the replacement sits on the original glyphs. (Measured
-      // 0.236em for the demo font → 0px residual; exact leading is font-specific,
-      // so this removes the bulk of the shift across fonts.)
-      const topLead = 0.23 * fit.fontSize;
+      // Create the live FreeText (matched font/size/colour; we own the id), nudged
+      // down by the measured top leading so it sits on the original glyphs.
       const seededLine = {
         ...line,
         rect: {
