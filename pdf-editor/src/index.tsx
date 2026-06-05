@@ -1227,7 +1227,17 @@ function EditorBody({
       await (t?.toPromise ? t.toPromise()
         : new Promise((res, rej) => (t?.wait ? t.wait(res, rej) : res(t))));
       // 2) Create the live FreeText (matched font/size/colour; we own the id).
-      const annot = editText.buildFreeTextFromLine(line, pageIndex, FREETEXT_SUBTYPE);
+      //    Seed the box width via fitBox so the wider substitute font (Helvetica)
+      //    doesn't clip the text at the original line rect; widen toward the page
+      //    edge (or the next segment), shrinking the size only as a last resort.
+      const fit = editText.fitBox(line.text, line.cssFont, line.fontSize, line.rect,
+        page.size?.width ?? 0, line.text, line.weight, line.maxRight);
+      const seededLine = {
+        ...line,
+        rect: { origin: line.rect.origin, size: { width: fit.width, height: line.rect.size.height } },
+        fontSize: fit.fontSize,
+      };
+      const annot = editText.buildFreeTextFromLine(seededLine, pageIndex, FREETEXT_SUBTYPE);
       annoApi.createAnnotation(pageIndex, annot);
       // 3) Refresh the page render + select the box (handles + double-click edit).
       try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [pageIndex])); } catch (_) { /* noop */ }
@@ -1235,6 +1245,39 @@ function EditorBody({
       setScanVersion((v) => v + 1); // re-scan outlines (the converted line is now an object)
     }).catch((e) => console.warn('[pdf-editor] convertLineToFreeText failed', e));
   }, []);
+
+  // Click outside the selected FreeText box → deselect it. EmbedPDF keeps the
+  // selection on an empty-page click, so we drive it geometrically: on pointerdown,
+  // map the selected box's PDF rect to screen px (via the pdf-page-N reference) and
+  // deselect when the click falls outside it (+ a margin for the resize/rotate
+  // handles). Clicks on a line outline are left alone (they convert that line).
+  useEffect(() => {
+    if (!editTextOn) return;
+    const onDown = (e: PointerEvent) => {
+      const reg = (globalThis as any).ObsidiPdfEditor?.getRegistry?.();
+      const annoApi = reg?.getPlugin('annotation')?.provides();
+      const sel = annoApi?.getSelectedAnnotation?.();
+      if (!sel?.object) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('[data-testid^="pdf-line-"]')) return; // outline → convert, not deselect
+      const pageIndex = sel.object.pageIndex ?? 0;
+      const pageEl = document.querySelector(`[data-testid="pdf-page-${pageIndex}"]`);
+      const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
+      const ptSize = doc?.pages?.[pageIndex]?.size;
+      const r = sel.object.rect;
+      if (!pageEl || !ptSize || !r) return;
+      const pr = (pageEl as HTMLElement).getBoundingClientRect();
+      const sxv = pr.width / ptSize.width, syv = pr.height / ptSize.height;
+      const left = pr.left + r.origin.x * sxv, top = pr.top + r.origin.y * syv;
+      const right = left + r.size.width * sxv, bottom = top + r.size.height * syv;
+      const M = 26; // margin so clicking the handles (incl. rotation, ~20px above) keeps selection
+      const inside = e.clientX >= left - M && e.clientX <= right + M &&
+                     e.clientY >= top - M && e.clientY <= bottom + M;
+      if (!inside) { try { annoApi.deselectAnnotation(); } catch (_) { /* noop */ } }
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    return () => document.removeEventListener('pointerdown', onDown, true);
+  }, [editTextOn]);
 
   // Test hooks (standalone.html harness). Edit PDF mode + outline line counts.
   useEffect(() => {
@@ -1284,6 +1327,14 @@ function EditorBody({
                     scale={scale}
                     rotation={rotation}
                   />
+                  {/* Page-geometry reference (Edit PDF). pointer-events:none so it
+                      never intercepts; its bounding rect == the page in screen px,
+                      used by the click-outside-to-deselect handler to map the
+                      selected box's PDF rect to screen coordinates. */}
+                  {editTextOn ? (
+                    <div data-testid={`pdf-page-${pageIndex}`}
+                      style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 0 }} />
+                  ) : null}
                   {/* Edit PDF mode — dash every text line; click converts it to an
                       editable FreeText box (move/resize/rotate/edit via EmbedPDF). */}
                   {editTextOn && linesByPage[pageIndex] ? linesByPage[pageIndex].lines.map((ln: any, i: number) => {
