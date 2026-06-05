@@ -248,6 +248,48 @@ export async function applyTextEdit(
   return !!flatOk;
 }
 
+// --- Standard-font variant <-> family/bold/italic (for the formatting toolbar) ---
+// PDFium's 14 standard fonts encode weight+slant in the enum value. Bold/Italic
+// toggles and the font-family dropdown all resolve to one of these via compose/
+// decompose so they compose correctly (e.g. Bold on Times 8 -> Times_Bold 9).
+export type FontFamilyKey = 'helvetica' | 'times' | 'courier' | 'symbol' | 'zapf';
+
+export function fontVariant(pdfFont: number): { family: FontFamilyKey; bold: boolean; italic: boolean } {
+  switch (pdfFont) {
+    case 0: return { family: 'courier', bold: false, italic: false };
+    case 1: return { family: 'courier', bold: true, italic: false };
+    case 2: return { family: 'courier', bold: true, italic: true };
+    case 3: return { family: 'courier', bold: false, italic: true };
+    case 5: return { family: 'helvetica', bold: true, italic: false };
+    case 6: return { family: 'helvetica', bold: true, italic: true };
+    case 7: return { family: 'helvetica', bold: false, italic: true };
+    case 8: return { family: 'times', bold: false, italic: false };
+    case 9: return { family: 'times', bold: true, italic: false };
+    case 10: return { family: 'times', bold: true, italic: true };
+    case 11: return { family: 'times', bold: false, italic: true };
+    case 12: return { family: 'symbol', bold: false, italic: false };
+    case 13: return { family: 'zapf', bold: false, italic: false };
+    case 4:
+    default: return { family: 'helvetica', bold: false, italic: false };
+  }
+}
+
+export function composeFont(family: FontFamilyKey, bold: boolean, italic: boolean): number {
+  switch (family) {
+    case 'courier': return bold && italic ? 2 : bold ? 1 : italic ? 3 : 0;
+    case 'times': return bold && italic ? 10 : bold ? 9 : italic ? 11 : 8;
+    case 'symbol': return 12;
+    case 'zapf': return 13;
+    case 'helvetica':
+    default: return bold && italic ? 6 : bold ? 5 : italic ? 7 : 4;
+  }
+}
+
+/** Whether a family supports bold/italic variants (Symbol/ZapfDingbats do not). */
+export function familyHasStyles(family: FontFamilyKey): boolean {
+  return family === 'helvetica' || family === 'times' || family === 'courier';
+}
+
 /**
  * Build the FreeText annotation params for an EDITABLE box from a partitioned
  * Line (Edit PDF mode). Unlike applyTextEdit this is NOT flattened — the caller

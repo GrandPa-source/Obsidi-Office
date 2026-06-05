@@ -181,7 +181,7 @@ function injectChromeStyles() {
   --oo-tab-active-bg:#fff;--oo-ribbon-bg:#fff;--oo-ribbon-border:#e0e0e0;
   --oo-icon:#444;--oo-btn-hover:#ececec;--oo-btn-active-bg:#dae3f3;
   --oo-btn-active-icon:#204295;--oo-label:#444;--oo-sep:#dcdcdc;
-  --oo-filename:#555;
+  --oo-filename:#555;--oo-ctrl-bg:#fff;--oo-ctrl-border:#cfcfcf;
   font-family:system-ui,-apple-system,"Segoe UI",sans-serif;}
 .${CX}.theme-dark{
   --oo-accent:#3a64b4;--oo-accent-underline:#cc4444;
@@ -189,7 +189,7 @@ function injectChromeStyles() {
   --oo-tab-active-bg:#404040;--oo-ribbon-bg:#404040;--oo-ribbon-border:#2b2b2b;
   --oo-icon:#cccccc;--oo-btn-hover:#4f4f4f;--oo-btn-active-bg:#5c5c5c;
   --oo-btn-active-icon:#7aa2e3;--oo-label:#dcdcdc;--oo-sep:#5a5a5a;
-  --oo-filename:#bdbdbd;}
+  --oo-filename:#bdbdbd;--oo-ctrl-bg:#4a4a4a;--oo-ctrl-border:#5a5a5a;}
 
 /* hidden sprite host */
 .${CX}-sprites{position:absolute;width:0;height:0;overflow:hidden;}
@@ -239,6 +239,24 @@ function injectChromeStyles() {
 .${CX}-group-rows{display:flex;flex-direction:column;justify-content:center;
   gap:2px;}
 .${CX}-row{display:flex;align-items:center;gap:1px;}
+
+/* Edit PDF text-formatting controls. !important resets defeat Obsidian's global
+   input/select/button CSS bleed (the documented chrome-bleed lesson). */
+.${CX}-glyph,.oo-glyph{display:inline-flex;align-items:center;justify-content:center;
+  width:16px;height:16px;font-size:13px;line-height:1;color:var(--oo-icon);}
+.${CX}-fmt-select,.${CX}-fmt-size{height:22px;font-size:12px;
+  border:1px solid var(--oo-ctrl-border)!important;border-radius:3px;
+  background:var(--oo-ctrl-bg)!important;color:var(--oo-tab-active-text);
+  box-shadow:none!important;padding:0 4px;margin:0;flex:0 0 auto;}
+.${CX}-fmt-select{width:118px;}
+.${CX}-fmt-size{width:50px;}
+.${CX}-fmt-select:disabled,.${CX}-fmt-size:disabled{opacity:.45;}
+.${CX}-fmt-colorwrap{display:inline-flex;align-items:center;gap:1px;cursor:pointer;}
+.${CX}-fmt-color{width:20px;height:20px;padding:0!important;margin:0;
+  border:1px solid var(--oo-ctrl-border)!important;border-radius:3px;
+  background:transparent!important;box-shadow:none!important;cursor:pointer;flex:0 0 auto;}
+.${CX}-fmt-color:disabled{opacity:.45;cursor:default;}
+.${CX}-btn-small:disabled{opacity:.4;cursor:default;}
 
 /* small icon-only button (~22px) — clipboard cluster, page nav steppers */
 .${CX}-btn-small{display:inline-flex;align-items:center;justify-content:center;
@@ -533,6 +551,38 @@ function Group({ children, testid }: { children: any; testid?: string }) {
   return (
     <div class={`${CX}-group`} data-testid={testid}>{children}</div>
   );
+}
+
+// Text/markup-glyph formatting button (B/I/U/S, A-/A+, alignment SVGs) styled to
+// match the small icon buttons. `label` may be text or an inline SVG element.
+function FmtBtn({ label, title, active, disabled, onClick, testid, labelStyle }: {
+  label: any; title: string; active?: boolean; disabled?: boolean;
+  onClick?: () => void; testid?: string; labelStyle?: any;
+}) {
+  return (
+    <button type="button"
+      class={`${CX}-btn-small${active ? ` ${CX}-btn-active` : ''}`}
+      title={title} aria-label={title} aria-pressed={active ? 'true' : undefined}
+      disabled={disabled} data-testid={testid} onClick={onClick}>
+      <span class="oo-glyph" style={labelStyle}>{label}</span>
+    </button>
+  );
+}
+
+// Small alignment glyphs (horizontal L/C/R as anchored lines; vertical T/M/B as a
+// boxed bar). currentColor inherits the button's icon colour (incl. active state).
+function AlignIcon({ kind }: { kind: 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom' }) {
+  const ln = (x1: number, y: number, x2: number) =>
+    <line x1={x1} y1={y} x2={x2} y2={y} stroke="currentColor" stroke-width="1.3" stroke-linecap="round" />;
+  const box = <rect x="1.5" y="1.5" width="11" height="11" rx="1" fill="none" stroke="currentColor" stroke-width="1" />;
+  let body: any;
+  if (kind === 'left') body = [ln(1, 3, 13), ln(1, 7, 9), ln(1, 11, 13)];
+  else if (kind === 'center') body = [ln(1, 3, 13), ln(3, 7, 11), ln(1, 11, 13)];
+  else if (kind === 'right') body = [ln(1, 3, 13), ln(5, 7, 13), ln(1, 11, 13)];
+  else if (kind === 'top') body = [box, ln(3.5, 4, 10.5)];
+  else if (kind === 'middle') body = [box, ln(3.5, 7, 10.5)];
+  else body = [box, ln(3.5, 10, 10.5)];
+  return <svg width="14" height="14" viewBox="0 0 14 14" style={{ display: 'block' }}>{body}</svg>;
 }
 
 // ---------------------------------------------------------------------------
@@ -905,6 +955,29 @@ function Chrome({
     if (sel) annotationApi?.deleteAnnotation(sel.object.pageIndex, sel.object.id);
   };
 
+  // --- Edit PDF: live formatting of the SELECTED FreeText box ---
+  // Reads the selected box's current props (to drive control values + active
+  // states) and patches them via updateAnnotation (autoCommit re-renders the AP).
+  const selTracked = annotationApi?.getSelectedAnnotation?.() as any;
+  const selObj = selTracked?.object || null;
+  const ftSelected = !!selObj && selObj.type === 3; // PdfAnnotationSubtype.FREETEXT
+  const ftVar = ftSelected ? editText.fontVariant(selObj.fontFamily ?? 4) : null;
+  const ftSize = ftSelected ? Math.round(selObj.fontSize ?? 12) : null;
+  const ftAlign = ftSelected ? (selObj.textAlign ?? 0) : -1;
+  const ftVAlign = ftSelected ? (selObj.verticalAlign ?? 0) : -1;
+  const ftColor = ftSelected ? (selObj.fontColor || '#000000') : '#000000';
+  const ftBg = ftSelected ? (selObj.color || '#ffffff') : '#ffffff';
+  const ftStyles = !!ftVar && editText.familyHasStyles(ftVar.family);
+  const patchFt = (patch: any) => {
+    if (!ftSelected) return;
+    try { annotationApi?.updateAnnotation(selObj.pageIndex, selObj.id, patch); } catch (_) { /* noop */ }
+  };
+  const setFamily = (family: any) =>
+    patchFt({ fontFamily: editText.composeFont(family, !!ftVar?.bold, !!ftVar?.italic) });
+  const toggleBold = () => ftVar && patchFt({ fontFamily: editText.composeFont(ftVar.family, !ftVar.bold, ftVar.italic) });
+  const toggleItalic = () => ftVar && patchFt({ fontFamily: editText.composeFont(ftVar.family, ftVar.bold, !ftVar.italic) });
+  const setSize = (n: number) => patchFt({ fontSize: Math.max(4, Math.min(144, Math.round(n))) });
+
   const onSaveClick = useCallback(async () => {
     if (saving) return;
     setSaving(true);
@@ -1062,6 +1135,73 @@ function Chrome({
             active={activeTool === 'freeText'}
             onClick={() => tool('freeText')}
             testid="pdf-insert-text" />
+        </Group>
+      ) : null}
+
+      {/* 2c. Text formatting of the selected box (Edit PDF). Controls are enabled
+           only when a FreeText box is selected; underline/strikethrough are shown
+           disabled (not expressible on a FreeText annotation). */}
+      {editPdfOn ? (
+        <Group testid="pdf-group-format">
+          <div class={`${CX}-group-rows`}>
+            <div class={`${CX}-row`}>
+              <select class={`${CX}-fmt-select`} title="Font" data-testid="pdf-fmt-font"
+                disabled={!ftSelected} value={ftVar?.family ?? 'helvetica'}
+                onChange={(e) => setFamily((e.target as HTMLSelectElement).value)}>
+                <option value="helvetica">Helvetica</option>
+                <option value="times">Times New Roman</option>
+                <option value="courier">Courier New</option>
+                <option value="symbol">Symbol</option>
+                <option value="zapf">ZapfDingbats</option>
+              </select>
+              <select class={`${CX}-fmt-size`} title="Font size" data-testid="pdf-fmt-size"
+                disabled={!ftSelected} value={String(ftSize ?? '')}
+                onChange={(e) => setSize(Number((e.target as HTMLSelectElement).value))}>
+                {ftSize != null && ![8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].includes(ftSize)
+                  ? <option value={String(ftSize)}>{ftSize}</option> : null}
+                {[8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 32, 36, 48, 72].map((s) =>
+                  <option value={String(s)}>{s}</option>)}
+              </select>
+              <FmtBtn label="A−" title="Decrease font size" disabled={!ftSelected}
+                testid="pdf-fmt-size-dn" onClick={() => ftSize != null && setSize(ftSize - 1)} />
+              <FmtBtn label="A+" title="Increase font size" disabled={!ftSelected}
+                testid="pdf-fmt-size-up" onClick={() => ftSize != null && setSize(ftSize + 1)} />
+            </div>
+            <div class={`${CX}-row`}>
+              <FmtBtn label="B" title="Bold" labelStyle={{ fontWeight: 700 }}
+                active={!!ftVar?.bold} disabled={!ftSelected || !ftStyles}
+                testid="pdf-fmt-bold" onClick={toggleBold} />
+              <FmtBtn label="I" title="Italic" labelStyle={{ fontStyle: 'italic' }}
+                active={!!ftVar?.italic} disabled={!ftSelected || !ftStyles}
+                testid="pdf-fmt-italic" onClick={toggleItalic} />
+              <FmtBtn label="U" title="Underline — not available on PDF text boxes"
+                labelStyle={{ textDecoration: 'underline' }} disabled testid="pdf-fmt-underline" />
+              <FmtBtn label="S" title="Strikethrough — not available on PDF text boxes"
+                labelStyle={{ textDecoration: 'line-through' }} disabled testid="pdf-fmt-strike" />
+              <label class={`${CX}-fmt-colorwrap`} title="Font colour">
+                <span class="oo-glyph">A</span>
+                <input type="color" class={`${CX}-fmt-color`} disabled={!ftSelected} value={ftColor}
+                  data-testid="pdf-fmt-color" onInput={(e) => patchFt({ fontColor: (e.target as HTMLInputElement).value })} />
+              </label>
+              <label class={`${CX}-fmt-colorwrap`} title="Highlight (box fill) colour">
+                <span class="oo-glyph">▮</span>
+                <input type="color" class={`${CX}-fmt-color`} disabled={!ftSelected} value={ftBg}
+                  data-testid="pdf-fmt-bg" onInput={(e) => patchFt({ color: (e.target as HTMLInputElement).value })} />
+              </label>
+              <FmtBtn label={<AlignIcon kind="left" />} title="Align left" active={ftAlign === 0}
+                disabled={!ftSelected} testid="pdf-fmt-align-left" onClick={() => patchFt({ textAlign: 0 })} />
+              <FmtBtn label={<AlignIcon kind="center" />} title="Align centre" active={ftAlign === 1}
+                disabled={!ftSelected} testid="pdf-fmt-align-center" onClick={() => patchFt({ textAlign: 1 })} />
+              <FmtBtn label={<AlignIcon kind="right" />} title="Align right" active={ftAlign === 2}
+                disabled={!ftSelected} testid="pdf-fmt-align-right" onClick={() => patchFt({ textAlign: 2 })} />
+              <FmtBtn label={<AlignIcon kind="top" />} title="Align top" active={ftVAlign === 0}
+                disabled={!ftSelected} testid="pdf-fmt-valign-top" onClick={() => patchFt({ verticalAlign: 0 })} />
+              <FmtBtn label={<AlignIcon kind="middle" />} title="Align middle" active={ftVAlign === 1}
+                disabled={!ftSelected} testid="pdf-fmt-valign-middle" onClick={() => patchFt({ verticalAlign: 1 })} />
+              <FmtBtn label={<AlignIcon kind="bottom" />} title="Align bottom" active={ftVAlign === 2}
+                disabled={!ftSelected} testid="pdf-fmt-valign-bottom" onClick={() => patchFt({ verticalAlign: 2 })} />
+            </div>
+          </div>
         </Group>
       ) : null}
 
@@ -1259,6 +1399,9 @@ function EditorBody({
       const sel = annoApi?.getSelectedAnnotation?.();
       if (!sel?.object) return;
       const target = e.target as HTMLElement | null;
+      // Only deselect for clicks INSIDE the page area — never the ribbon/toolbar
+      // (clicking a formatting control must keep the box selected).
+      if (!target?.closest?.('[data-testid="pdf-body"]')) return;
       if (target?.closest?.('[data-testid^="pdf-line-"]')) return; // outline → convert, not deselect
       const pageIndex = sel.object.pageIndex ?? 0;
       const pageEl = document.querySelector(`[data-testid="pdf-page-${pageIndex}"]`);
