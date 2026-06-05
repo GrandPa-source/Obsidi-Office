@@ -884,6 +884,8 @@ function Chrome({
   setEditPdfOn,
   editTextOn,
   setEditTextOn,
+  handOn,
+  setHandOn,
 }: {
   documentId: string;
   save: () => Promise<void>;
@@ -892,6 +894,8 @@ function Chrome({
   setEditPdfOn: (v: boolean) => void;
   editTextOn: boolean;
   setEditTextOn: (v: boolean) => void;
+  handOn: boolean;
+  setHandOn: (v: boolean) => void;
 }) {
   injectChromeStyles();
 
@@ -939,21 +943,18 @@ function Chrome({
   const canUndo = !!histScope?.canUndo();
   const canRedo = !!histScope?.canRedo();
 
-  // Tools.
-  const tool = (id: string) =>
+  // Tools. Selecting any annotation tool, or Select, exits Hand (pan) mode.
+  const tool = (id: string) => {
+    setHandOn(false);
     annotationApi?.setActiveTool(activeTool === id ? null : id);
-  const selectMode = () => annotationApi?.setActiveTool(null);
+  };
+  const selectMode = () => { setHandOn(false); annotationApi?.setActiveTool(null); };
+  // Hand = grab-to-pan (implemented in EditorBody's pan effect, gated on handOn).
+  // Disarm any annotation tool so pointer drags pan instead of drawing/selecting.
   const handMode = () => {
-    // No dedicated pan plugin is registered; Select/Hand share the default
-    // (non-annotation) interaction mode. We disarm any annotation tool and ask
-    // the interaction manager for its default mode + a grab cursor so Hand is a
-    // meaningful, distinct affordance (drag-to-pan already works via the
-    // scroller). If the interaction manager is unavailable this degrades to the
-    // same behaviour as Select.
     annotationApi?.setActiveTool(null);
-    try {
-      imApi?.activateDefaultMode?.();
-    } catch (_) { /* noop */ }
+    try { imApi?.activateDefaultMode?.(); } catch (_) { /* noop */ }
+    setHandOn(true);
   };
   const deleteSelected = () => {
     const sel = annotationApi?.getSelectedAnnotation();
@@ -1212,10 +1213,10 @@ function Chrome({
 
       {/* 3. Hand + Select — large labelled buttons */}
       <Group testid="pdf-group-tools">
-        <BigBtn icon={IC.hand} caption="Hand" title="Hand (pan)"
-          onClick={handMode} testid="pdf-hand" />
+        <BigBtn icon={IC.hand} caption="Hand" title="Hand (drag to pan)"
+          active={handOn} onClick={handMode} testid="pdf-hand" />
         <BigBtn icon={IC.select} caption="Select" title="Select"
-          active={isSelect} onClick={selectMode} testid="pdf-select" />
+          active={isSelect && !handOn} onClick={selectMode} testid="pdf-select" />
       </Group>
 
       {/* 4. Page nav */}
@@ -1389,6 +1390,60 @@ function EditorBody({
   // (rendered over each FreeText) update as boxes are created/moved/resized/
   // selected/deleted. (Chrome also calls useAnnotation; multiple subscribers are fine.)
   const { provides: annoApiBody, state: annoStateBody } = useAnnotation(documentId);
+
+  // Hand tool: grab-to-pan the page. No @embedpdf/plugin-pan exists, so we drive
+  // the scroll container directly. Active only while handOn (toggled by the Hand
+  // button in Chrome).
+  const [handOn, setHandOn] = useState(false);
+  useEffect(() => {
+    if (!handOn || typeof document === 'undefined') return;
+    const root = document.querySelector('[data-testid="pdf-editor-root"]') as HTMLElement | null;
+    if (!root) return;
+    // The page viewport is the LARGEST scrollable element (a small side panel can
+    // also be overflow:auto, so "first match" picks the wrong one).
+    let sc: HTMLElement | null = null;
+    let best = 0;
+    for (const el of Array.from(root.querySelectorAll<HTMLElement>('*'))) {
+      const cs = getComputedStyle(el);
+      if (cs.overflow === 'auto' || cs.overflowY === 'auto' || cs.overflowY === 'scroll') {
+        const area = el.clientWidth * el.clientHeight;
+        if (area > best) { best = area; sc = el; }
+      }
+    }
+    if (!sc) return;
+    const el = sc;
+    const prevCursor = el.style.cursor;
+    el.style.cursor = 'grab';
+    let dragging = false, sx = 0, sy = 0, sl = 0, st = 0;
+    const down = (e: PointerEvent) => {
+      dragging = true; sx = e.clientX; sy = e.clientY; sl = el.scrollLeft; st = el.scrollTop;
+      el.style.cursor = 'grabbing';
+      try { el.setPointerCapture(e.pointerId); } catch (_) { /* noop */ }
+      e.preventDefault(); e.stopPropagation();
+    };
+    const move = (e: PointerEvent) => {
+      if (!dragging) return;
+      el.scrollLeft = sl - (e.clientX - sx);
+      el.scrollTop = st - (e.clientY - sy);
+      e.preventDefault();
+    };
+    const up = (e: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false; el.style.cursor = 'grab';
+      try { el.releasePointerCapture(e.pointerId); } catch (_) { /* noop */ }
+    };
+    el.addEventListener('pointerdown', down, true);
+    el.addEventListener('pointermove', move, true);
+    el.addEventListener('pointerup', up, true);
+    el.addEventListener('pointercancel', up, true);
+    return () => {
+      el.style.cursor = prevCursor;
+      el.removeEventListener('pointerdown', down, true);
+      el.removeEventListener('pointermove', move, true);
+      el.removeEventListener('pointerup', up, true);
+      el.removeEventListener('pointercancel', up, true);
+    };
+  }, [handOn]);
   // Precomputed line rects per page (populated when editTextOn → dashed outlines).
   const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
   // Bumped after a line is converted to a FreeText (in convertLineToFreeText) so the
@@ -1532,7 +1587,8 @@ function EditorBody({
     <>
       <Chrome documentId={documentId} save={save} onClose={onClose}
         editPdfOn={editPdfOn} setEditPdfOn={setEditPdfOn}
-        editTextOn={editTextOn} setEditTextOn={setEditTextOn} />
+        editTextOn={editTextOn} setEditTextOn={setEditTextOn}
+        handOn={handOn} setHandOn={setHandOn} />
       <div class={`${CX}-body`} data-testid="pdf-body">
         <LeftRailAndPanel
           documentId={documentId}
