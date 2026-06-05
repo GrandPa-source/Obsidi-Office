@@ -1664,6 +1664,8 @@ function EditorBody({
                     pageIndex={pageIndex}
                     scale={scale}
                     rotation={rotation}
+                    // Smaller rotation handle, closer to the box (defaults 16 / 20).
+                    rotationUI={{ size: 12, margin: 12 }}
                   />
                   {/* Page-geometry reference (Edit PDF). pointer-events:none so it
                       never intercepts; its bounding rect == the page in screen px,
