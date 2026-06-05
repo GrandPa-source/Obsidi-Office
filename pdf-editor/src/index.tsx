@@ -450,6 +450,11 @@ function injectChromeStyles() {
 .${CX}-line-outline{box-sizing:border-box;border:1px dashed rgba(120,150,220,0.55);border-radius:2px;cursor:text;background:transparent;}
 .${CX}-line-outline:hover{border-color:var(--oo-accent);background:rgba(120,150,220,0.08);}
 .${CX}-line-edited{border-color:var(--oo-accent-underline);}
+/* Stop the page render (img/canvas) from starting a native drag — without this,
+   click-dragging the page background spawns a ghost thumbnail that follows the
+   cursor (Chromium/Electron image drag). */
+[data-testid="pdf-editor-root"] img,[data-testid="pdf-editor-root"] canvas{
+  -webkit-user-drag:none;user-drag:none;-webkit-touch-callout:none;}
 
 /* PDF-EMBEDPDF PoC A3 — textarea edit box reset (fights Obsidian global textarea styles) */
 .${CX}-textedit{background-color:#fff !important;box-shadow:none !important;
@@ -1655,10 +1660,20 @@ function PdfEditorApp({
       createPluginRegistration(HistoryPluginPackage),
       createPluginRegistration(AnnotationPluginPackage, {
         annotationAuthor: author,
-        // Edit PDF mode: text boxes (FreeText) are rotatable like OnlyOffice. The
-        // default freeText tool is drag+resize only; this partial override is
-        // deep-merged with the default tool (AnnotationToolOverride).
-        tools: [{ id: 'freeText', interaction: { isRotatable: true } as any }],
+        // Edit PDF mode tweaks to the FreeText ("Insert Text") tool, deep-merged
+        // with the default tool: (a) rotatable like OnlyOffice; (b) sensible text
+        // defaults — BLACK Helvetica 14pt (the library default is red); (c) after
+        // placing a box, deactivate the tool + select/edit it, so clicking out
+        // deselects and returns to Select instead of creating another box.
+        tools: [{
+          id: 'freeText',
+          interaction: { isRotatable: true },
+          defaults: {
+            fontColor: '#000000', fontFamily: 4 /* Helvetica */, fontSize: 14,
+            textAlign: 0, verticalAlign: 0, opacity: 1,
+          },
+          behavior: { deactivateToolAfterCreate: true, selectAfterCreate: true, editAfterCreate: true },
+        } as any],
       }),
       // Left-rail feature plugins (pass 2).
       // Thumbnail requires `render` (above) + optionally uses `scroll` (above).
