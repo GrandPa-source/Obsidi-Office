@@ -1323,22 +1323,29 @@ function measureGlyphTopPt(pageIndex: number, rect: any, ptSize: { width: number
     const pxX = natW / ptSize.width, pxY = natH / ptSize.height;
     const rx0 = Math.max(0, Math.floor(rect.origin.x * pxX));
     const rx1 = Math.min(natW, Math.ceil((rect.origin.x + rect.size.width) * pxX));
-    const ry0 = Math.max(0, Math.floor((rect.origin.y - 2) * pxY));
-    const ry1 = Math.min(natH, Math.ceil((rect.origin.y + rect.size.height + 2) * pxY));
+    const ry0 = Math.max(0, Math.floor((rect.origin.y - 1) * pxY));
+    const ry1 = Math.min(natH, Math.ceil((rect.origin.y + rect.size.height + 1) * pxY));
     const W = rx1 - rx0, H = ry1 - ry0;
     if (W <= 0 || H <= 0) return null;
     const c = document.createElement('canvas'); c.width = natW; c.height = natH;
     const ctx = c.getContext('2d'); if (!ctx) return null;
     ctx.drawImage(src as CanvasImageSource, 0, 0, natW, natH);
     const data = ctx.getImageData(rx0, ry0, W, H).data;
-    // First row containing an ink pixel (non-near-white, opaque). Works for any
-    // text colour since the page background is light.
+    // Topmost row containing a real ink pixel (a stroke that is clearly more than
+    // half-dark, lum < 128) — robust to anti-alias haloes and to thin/sparse cap
+    // tops at small font sizes (a single such pixel suffices, so we don't skip the
+    // faint first rows of small caps the way a ">=2 pixels" rule would). Works for
+    // any text colour since the page background is light. Sub-pixel: also weight by
+    // partial coverage on that row to land closer to the perceptual top.
     for (let y = 0; y < H; y++) {
-      let hits = 0;
       for (let x = 0; x < W; x++) {
         const i = (y * W + x) * 4;
         const lum = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
-        if (data[i + 3] > 40 && lum < 170) { if (++hits >= 2) return (ry0 + y) / pxY; }
+        if (data[i + 3] > 40 && lum < 128) {
+          // If the row just above has faint ink (AA edge), the true top is ~0.5px
+          // higher — nudge up by half a device pixel for a better perceptual match.
+          return ((ry0 + y) - 0.5) / pxY;
+        }
       }
     }
     return null;
