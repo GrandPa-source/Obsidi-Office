@@ -566,49 +566,6 @@ function RailBtn({
   );
 }
 
-// PDF-EMBEDPDF PoC A3 — textarea overlay positioned inside the page container.
-// Staged edit is committed (Enter / blur) or discarded (Escape).
-function TextEditBox({ edit, onCommit, onCancel }: {
-  edit: ActiveEdit;
-  onCommit: (newText: string) => void; onCancel: () => void;
-}) {
-  const [val, setVal] = useState(edit.text);
-  const o = edit.rect.origin, s = edit.rect.size;
-  const sx = edit.sx, sy = edit.sy;
-  // V3+: render in the line's matched font/colour at the PRESERVED original size,
-  // widening the box (toward the page edge) so the text fits on one line; only
-  // shrink as a last resort (re-computed each keystroke). Matches the saved
-  // overlay (same fitBox) so on-screen == saved.
-  const fit = editText.fitBox(val, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight, edit.maxRight);
-  const fitted = fit.fontSize;
-  const boxW = fit.width;
-  // Idempotency guard: Enter calls onCommit then setActiveEdit(null) unmounts the
-  // box, which can fire a trailing blur -> a second onCommit. The ref makes
-  // commit/cancel fire-once; it resets per mount (each new pick is a fresh box).
-  const done = useRef(false);
-  const commit = (text: string) => { if (done.current) return; done.current = true; onCommit(text); };
-  const cancel = () => { if (done.current) return; done.current = true; onCancel(); };
-  return (
-    <textarea
-      class={`${CX}-textedit`} data-testid="pdf-textedit" autoFocus
-      value={val}
-      style={{ position: 'absolute', left: o.x * sx, top: o.y * sy,
-        width: boxW * sx, height: s.height * sy, fontSize: fitted * sy,
-        lineHeight: 1.05, fontFamily: edit.cssFont, fontWeight: edit.weight, color: edit.color, whiteSpace: 'pre',
-        background: '#fff', border: '1px solid var(--oo-accent)', padding: 0, margin: 0,
-        resize: 'none', overflow: 'hidden', zIndex: 20, boxSizing: 'border-box' }}
-      onInput={(e) => setVal((e.target as HTMLTextAreaElement).value)}
-      onClick={(e) => e.stopPropagation()}
-      onKeyDown={(e) => {
-        const k = e as KeyboardEvent;
-        if (k.key === 'Escape') { e.preventDefault(); cancel(); }
-        else if (k.key === 'Enter' && !k.shiftKey) { e.preventDefault(); commit(val); }
-      }}
-      onBlur={() => commit(val)}
-    />
-  );
-}
-
 // --- Thumbnails panel -------------------------------------------------------
 // Uses @embedpdf/plugin-thumbnail's <ThumbnailsPane> (windowed render-prop list)
 // + <ThumbImg> (renders one page bitmap to a blob URL). Clicking a thumbnail
@@ -868,12 +825,16 @@ function Chrome({
   documentId,
   save,
   onClose,
+  editPdfOn,
+  setEditPdfOn,
   editTextOn,
   setEditTextOn,
 }: {
   documentId: string;
   save: () => Promise<void>;
   onClose?: () => void;
+  editPdfOn: boolean;
+  setEditPdfOn: (v: boolean) => void;
   editTextOn: boolean;
   setEditTextOn: (v: boolean) => void;
 }) {
@@ -1206,15 +1167,6 @@ function Chrome({
 // the document is loaded (so all the plugin hooks have a live document).
 // ---------------------------------------------------------------------------
 
-// PDF-EMBEDPDF PoC A2 — result of a line pick in editText mode.
-// sx/sy = CSS px per PDF point, measured from the overlay rect ÷ page point size
-// at pick time. Used to place/size the edit box. (The Scroller layout's `scale`
-// field is unreliable — undefined at runtime — so we derive the factor from
-// measured geometry instead.)
-type ActiveEdit = { pageIndex: number; lineIndex: number; rect: any; text: string;
-  fontSize: number; cssFont: string; pdfFont: number; color: string; sx: number; sy: number;
-  pageW: number; weight: string; maxRight: number };
-
 function EditorBody({
   documentId,
   save,
@@ -1231,34 +1183,10 @@ function EditorBody({
   // Edit PDF master toggle (OnlyOffice-style): gates the content-editing ribbon
   // group. editTextOn is the sub-mode that dashes text lines for click-to-edit.
   const [editPdfOn, setEditPdfOn] = useState(false);
-  const [activeEdit, setActiveEdit] = useState<ActiveEdit | null>(null);
-
-  // PDF-EMBEDPDF PoC A3 — staged (not yet applied) edits.
-  const [pendingEdits, setPendingEdits] = useState<Array<ActiveEdit & { newText: string }>>([]);
-  // Synchronous mirror of pendingEdits. The save path reads this (not the state)
-  // because the save commits the open box via blur, and the blur's setPendingEdits
-  // hasn't flushed (nor has the _applyPendingEdits effect re-registered) by the
-  // time saveViaRegistry runs. The ref is updated synchronously in onCommit.
-  const pendingRef = useRef<Array<ActiveEdit & { newText: string }>>([]);
-
-  // PDF-EMBEDPDF PoC A4 — confirm modal state (0 = closed; N = "replace N regions?")
-  const [confirmCount, setConfirmCount] = useState(0);
-  const confirmResolver = useRef<((v: boolean) => void) | null>(null);
-  const confirmReplace = (n: number) => new Promise<boolean>((resolve) => {
-    confirmResolver.current = resolve;
-    setConfirmCount(n);
-  });
-  const resolveConfirm = (v: boolean) => {
-    setConfirmCount(0);
-    const r = confirmResolver.current; confirmResolver.current = null;
-    r?.(v);
-  };
-
-  // PDF-EMBEDPDF PoC V2 — precomputed line rects per page (populated when editTextOn).
+  // Precomputed line rects per page (populated when editTextOn → dashed outlines).
   const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
-  // Bumped only after edits are APPLIED to the doc (in _applyPendingEdits) so the
-  // line scan refreshes to the new text. Staging an edit does NOT change the doc,
-  // so it must not trigger an (all-pages) rescan — hence scanVersion, not pendingEdits.
+  // Bumped after a line is converted to a FreeText (in convertLineToFreeText) so the
+  // outline scan refreshes (the converted line is now an object, no longer a run).
   const [scanVersion, setScanVersion] = useState(0);
   useEffect(() => {
     if (!editTextOn) { setLinesByPage({}); return; }
@@ -1278,58 +1206,6 @@ function EditorBody({
     return () => { cancelled = true; };
   }, [editTextOn, scanVersion]);
 
-  // PDF-EMBEDPDF PoC A2 — resolve a page-space point to the clicked line's run(s).
-  const onPickLine = useCallback(async (pageIndex: number, px: number, py: number) => {
-    const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
-    const dm = reg?.getPlugin('document-manager')?.provides();
-    const doc = dm?.getActiveDocument();
-    const page = doc?.pages?.[pageIndex];
-    if (!doc || !page) return null;
-    const runs = await editText.getRuns(reg.getEngine(), doc, page);
-    const hit = editText.runAtPoint(runs, px, py);
-    if (!hit) return null;
-    const line = editText.lineRuns(runs, hit);
-    // Measure CSS px per point from the overlay rect ÷ the page's point size, so
-    // the edit box is sized/placed correctly regardless of zoom (no reliance on
-    // the Scroller layout's unreliable `scale`).
-    const ov = document.querySelector(`[data-testid="pdf-edit-overlay-${pageIndex}"]`);
-    const ovr = ov?.getBoundingClientRect();
-    const pts = (page as any).size;
-    const sx = ovr && pts?.width ? ovr.width / pts.width : 1;
-    const sy = ovr && pts?.height ? ovr.height / pts.height : 1;
-    const picked: ActiveEdit = {
-      pageIndex,
-      lineIndex: -1,
-      rect: editText.unionRect(line),
-      text: line.map((r: any) => r.text).join('').replace(/\r?\n$/, ''),
-      fontSize: hit.fontSize,
-      cssFont: (hit as any).cssFont ?? '',
-      pdfFont: (hit as any).pdfFont ?? 0,
-      color: (hit as any).color ?? '#000000',
-      sx, sy, pageW: pts?.width ?? 0, weight: (hit as any).weight ?? 'normal',
-      maxRight: Infinity,   // legacy click-to-pick path: whole-line box, grow to page edge
-    };
-    setActiveEdit(picked);
-    return picked;
-  }, []);
-
-  // Apply ONE edit to the live doc immediately (redact original + flatten the
-  // mapped/auto-fit replacement), refresh the page render, and re-scan outlines.
-  // Chained on _editApplyChain so a save can await any in-flight apply.
-  const applyEditNow = useCallback((edit: ActiveEdit, newText: string) => {
-    _editApplyChain = _editApplyChain.then(async () => {
-      const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
-      const engine = reg?.getEngine();
-      const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
-      const page = doc?.pages?.[edit.pageIndex];
-      if (!engine || !doc || !page) return;
-      const fit = editText.fitBox(newText, edit.cssFont, edit.fontSize, edit.rect, edit.pageW, edit.text, edit.weight, edit.maxRight);
-      const overlayRect = { origin: edit.rect.origin, size: { width: fit.width, height: edit.rect.size.height } };
-      await editText.applyTextEdit(engine, doc, page, edit.rect, newText, fit.fontSize, edit.pdfFont, overlayRect);
-      try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [edit.pageIndex])); } catch (_) { /* noop */ }
-      setScanVersion((v) => v + 1); // re-scan outlines to the new text (re-editable)
-    }).catch((e) => console.warn('[pdf-editor] apply edit failed', e));
-  }, []);
 
   // Edit PDF mode: convert a clicked text line into an editable FreeText annotation.
   // Redacts the original glyphs, creates a matched-font FreeText in their place
@@ -1341,93 +1217,39 @@ function EditorBody({
       const reg = (globalThis as any).ObsidiPdfEditor.getRegistry?.();
       const engine = reg?.getEngine();
       const doc = reg?.getPlugin('document-manager')?.provides()?.getActiveDocument();
+      const annoApi = reg?.getPlugin('annotation')?.provides();
       const page = doc?.pages?.[pageIndex];
-      if (!engine || !doc || !page || !annotationApi) return;
+      if (!engine || !doc || !page || !annoApi) return;
+      // Ensure select mode so the new box gets handles + drag-to-move (not a tool).
+      try { annoApi.setActiveTool(null); } catch (_) { /* noop */ }
       // 1) Redact the original line glyphs (no black box) so they don't show under the box.
       const t = (engine as any).redactTextInRects(doc, page, [line.rect], { drawBlackBoxes: false });
       await (t?.toPromise ? t.toPromise()
         : new Promise((res, rej) => (t?.wait ? t.wait(res, rej) : res(t))));
       // 2) Create the live FreeText (matched font/size/colour; we own the id).
       const annot = editText.buildFreeTextFromLine(line, pageIndex, FREETEXT_SUBTYPE);
-      annotationApi.createAnnotation(pageIndex, annot);
+      annoApi.createAnnotation(pageIndex, annot);
       // 3) Refresh the page render + select the box (handles + double-click edit).
       try { reg.getStore?.()?.dispatch(refreshPages(doc.id, [pageIndex])); } catch (_) { /* noop */ }
-      try { annotationApi.selectAnnotation(pageIndex, annot.id); } catch (_) { /* noop */ }
+      try { annoApi.selectAnnotation(pageIndex, annot.id); } catch (_) { /* noop */ }
       setScanVersion((v) => v + 1); // re-scan outlines (the converted line is now an object)
     }).catch((e) => console.warn('[pdf-editor] convertLineToFreeText failed', e));
-  }, [annotationApi]);
+  }, []);
 
-  // PDF-EMBEDPDF PoC A2+A3+A4 — test hooks (merged so standalone.html's runs() survives).
+  // Test hooks (standalone.html harness). Edit PDF mode + outline line counts.
   useEffect(() => {
     (globalThis as any).__editapi = Object.assign((globalThis as any).__editapi || {}, {
-      editState: () => ({ editTextOn, activeEdit }),
-      pick: (pageIndex: number, px: number, py: number) => onPickLine(pageIndex, px, py),
+      editState: () => ({ editPdfOn, editTextOn }),
+      setEditPdf: (v: boolean) => setEditPdfOn(v),
       setMode: (v: boolean) => setEditTextOn(v),
-      pendingCount: () => pendingEdits.length,
-      pending: () => pendingEdits.map((p) => ({ text: p.text, newText: p.newText, pageIndex: p.pageIndex })),
-      confirmCount: () => confirmCount,
       lineCount: (p: number) => (linesByPage[p]?.lines.length ?? 0),
     });
-  }, [editTextOn, activeEdit, onPickLine, pendingEdits, confirmCount, linesByPage]);
-
-  // PDF-EMBEDPDF PoC A4 — register the apply-pending-edits hook for saveViaRegistry.
-  // Shows the confirm modal, then applies each staged edit via applyTextEdit, then
-  // clears pendingEdits. Returns false if the user cancels (save is aborted).
-  // No autosave exists in this bundle — there is no autosave path to suppress here.
-  useEffect(() => {
-    _applyPendingEdits = async (registry: PluginRegistry) => {
-      // Read the synchronous ref, not the (possibly stale-closure) state.
-      const edits = pendingRef.current;
-      if (edits.length === 0) return true;
-      // Re-entrancy guard: a second save while a confirm is already pending would
-      // overwrite confirmResolver and hang the first save. Block concurrent saves.
-      if (confirmResolver.current) return false;
-      const proceed = await confirmReplace(edits.length);
-      if (!proceed) return false;
-      const engine = registry.getEngine() as any;
-      const dm = registry.getPlugin<any>('document-manager')?.provides();
-      const doc = dm?.getActiveDocument();
-      if (!doc) return false;
-      for (const ed of edits) {
-        const page = doc.pages?.[ed.pageIndex];
-        if (!page) continue;
-        // V4+: bake the replacement at the PRESERVED original size in the line's
-        // mapped font, widening the overlay box (same fitBox as the on-screen box
-        // → WYSIWYG) so the saved text fits one line and never wraps/cuts off.
-        const fit = editText.fitBox(ed.newText, ed.cssFont, ed.fontSize, ed.rect, ed.pageW, ed.text, ed.weight, ed.maxRight);
-        const overlayRect = { origin: ed.rect.origin, size: { width: fit.width, height: ed.rect.size.height } };
-        const ok = await editText.applyTextEdit(engine, doc, page, ed.rect, ed.newText, fit.fontSize, ed.pdfFont, overlayRect);
-        if (!ok) console.warn('[pdf-editor] applyTextEdit failed for edit on page', ed.pageIndex);
-      }
-      // The redact+flatten mutated the PDFium doc via direct engine calls, which
-      // EmbedPDF's render layer doesn't observe — without this the page canvas
-      // keeps showing the OLD text ("the removed part comes back"). Dispatch the
-      // core REFRESH_PAGES action so the edited pages re-render.
-      try {
-        const store = (registry as any).getStore?.();
-        const editedPages = Array.from(new Set(edits.map((e) => e.pageIndex)));
-        if (store && doc.id) store.dispatch(refreshPages(doc.id, editedPages));
-      } catch (e) { console.warn('[pdf-editor] refreshPages failed', e); }
-      pendingRef.current = [];
-      setPendingEdits([]);
-      setScanVersion((v) => v + 1); // doc changed → refresh outlines to the new text
-      return true;
-    };
-    // On unmount, null the hook AND resolve any in-flight confirm as cancelled so
-    // an awaiting saveViaRegistry doesn't hang forever.
-    return () => {
-      _applyPendingEdits = null;
-      confirmResolver.current?.(false);
-      confirmResolver.current = null;
-    };
-    // Register ONCE. The hook reads pendingRef.current (live) + stable setters, so
-    // it must NOT re-register on pendingEdits changes — re-running mid-save would
-    // fire this cleanup and resolve the open confirm as cancelled (proceed=false).
-  }, []);
+  }, [editPdfOn, editTextOn, linesByPage]);
 
   return (
     <>
       <Chrome documentId={documentId} save={save} onClose={onClose}
+        editPdfOn={editPdfOn} setEditPdfOn={setEditPdfOn}
         editTextOn={editTextOn} setEditTextOn={setEditTextOn} />
       <div class={`${CX}-body`} data-testid="pdf-body">
         <LeftRailAndPanel
@@ -1474,8 +1296,7 @@ function EditorBody({
                           width: `${s.width / ptW * 100}%`, height: `${s.height / ptH * 100}%`, zIndex: 10 }}
                         onClick={(e) => {
                           e.stopPropagation();
-                          annotationApi?.setActiveTool(null);   // select mode → handles + drag-to-move
-                          convertLineToFreeText(pageIndex, ln);
+                          convertLineToFreeText(pageIndex, ln); // redacts + creates FreeText + selects (select mode)
                         }}
                       />
                     );
@@ -1486,46 +1307,6 @@ function EditorBody({
           />
         </Viewport>
       </div>
-      {/* PDF-EMBEDPDF PoC A4 — confirm modal: shown when a save with staged edits is triggered. */}
-      {confirmCount > 0 ? (
-        <div
-          data-testid="pdf-edit-confirm-modal"
-          style={{
-            position: 'fixed', inset: 0, zIndex: 50,
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            background: 'rgba(0,0,0,0.35)',
-          }}
-        >
-          <div style={{
-            background: 'var(--oo-ribbon-bg,#fff)', color: 'var(--oo-tab-active-text,#111)',
-            padding: '18px 20px', borderRadius: 6, minWidth: 320, maxWidth: 420,
-            boxShadow: '0 8px 30px rgba(0,0,0,0.35)',
-          }}>
-            <div style={{ fontWeight: 600, marginBottom: 8 }}>Replace text?</div>
-            <div style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>
-              Permanently replace {confirmCount} text region{confirmCount === 1 ? '' : 's'}? The original text will be removed.
-            </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-              <button
-                type="button"
-                data-testid="pdf-edit-confirm-no"
-                onClick={() => resolveConfirm(false)}
-                style={{ padding: '5px 12px' }}
-              >Cancel</button>
-              <button
-                type="button"
-                data-testid="pdf-edit-confirm-yes"
-                onClick={() => resolveConfirm(true)}
-                style={{
-                  padding: '5px 12px',
-                  background: 'var(--oo-accent,#204295)', color: '#fff',
-                  border: 'none', borderRadius: 4,
-                }}
-              >Replace</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </>
   );
 }
@@ -1623,16 +1404,9 @@ function PdfEditorApp({
 // Save helper: pull live doc from registry + saveAsCopy.
 // ---------------------------------------------------------------------------
 
-// PDF-EMBEDPDF PoC A4 — EditorBody registers an apply-pending-edits hook here so
-// the module-level save path (saveViaRegistry) can flush staged text edits into
-// the live PDFium doc BEFORE saveAsCopy. Returns false if the user cancels the
-// confirm (abort the save). No autosave exists in this bundle, so there is no
-// autosave path to suppress.
-let _applyPendingEdits: ((registry: PluginRegistry) => Promise<boolean>) | null = null;
-// PDF-EMBEDPDF PoC — apply-on-commit: edits are applied to the live doc the moment
-// the box is committed (click-out / Enter / switch / save-blur), so the page shows
-// them immediately instead of reverting until save. Each apply chains here so the
-// save path can await any in-flight commit-apply before saveAsCopy.
+// Edit PDF mode — line→FreeText conversions chain here (serialized) so the save
+// path can await any in-flight conversion (redact + createAnnotation) before
+// saveAsCopy serializes the document.
 let _editApplyChain: Promise<void> = Promise.resolve();
 
 async function saveViaRegistry(
@@ -1644,14 +1418,8 @@ async function saveViaRegistry(
   const doc = docManager?.getActiveDocument?.();
   if (!engine || !doc) throw new Error('No active document to save.');
 
-  // Commit any OPEN edit box first (blur fires onCommit, which applies the edit to
-  // the live doc), then wait for ALL in-flight commit-applies to finish so the
-  // serialized doc includes them. Apply-on-commit means there are no "staged"
-  // edits to flush here — they're already in the doc.
-  if (typeof document !== 'undefined') {
-    const ta = document.querySelector('[data-testid="pdf-textedit"]') as HTMLElement | null;
-    if (ta) ta.blur();
-  }
+  // Wait for any in-flight line→FreeText conversion to finish so the serialized
+  // doc includes it.
   await _editApplyChain;
 
   // CRITICAL: flush the annotation plugin's pending changes into the in-memory

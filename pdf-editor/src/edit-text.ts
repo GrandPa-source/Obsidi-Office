@@ -121,7 +121,7 @@ export function partitionLines(runs: TextRunLike[]): Line[] {
     let curKey: string | null = null;
     for (const run of group) {
       const ws = /^\s*$/.test(run.text);
-      const key = ws ? curKey : styleKeyOf(run);
+      const key: string | null = ws ? curKey : styleKeyOf(run);
       if (cur.length && curKey !== null && key !== null && key !== curKey) {
         segments.push(cur);
         cur = [];
