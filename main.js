@@ -3467,12 +3467,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // Inject a minimal "Edit PDF" button into Obsidian's NATIVE PDF viewer toolbar
     // (top-right) that opens the file in our EmbedPDF editor. The native viewer
     // stays the default; this is just a one-click hand-off into edit mode.
-    const openInEmbedEditor = async (file) => {
+    const openInEmbedEditor = async (file, leaf) => {
       if (!file || file.extension !== "pdf") return;
       this._lastEmbedPdf = file.path;
-      const newLeaf = this.app.workspace.getLeaf("tab");
-      await newLeaf.setViewState({ type: VIEW_TYPE_PDF_EMBED, active: true, state: { file: file.path } });
-      this.app.workspace.revealLeaf(newLeaf);
+      // Reuse the PDF's existing tab (the leaf the button lives in) so editing
+      // replaces the native view in place rather than spawning a new tab.
+      const target = leaf || this.app.workspace.getLeaf("tab");
+      await target.setViewState({ type: VIEW_TYPE_PDF_EMBED, active: true, state: { file: file.path } });
+      this.app.workspace.revealLeaf(target);
     };
     const injectEditBtn = (leaf) => {
       try {
@@ -3491,7 +3493,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         btn.createSpan({ text: "Edit PDF" });
         btn.addEventListener("mouseenter", () => { btn.style.color = "var(--text-normal)"; });
         btn.addEventListener("mouseleave", () => { btn.style.color = "var(--text-muted)"; });
-        btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openInEmbedEditor(view.file); });
+        btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openInEmbedEditor(view.file, leaf); });
         return true;
       } catch (e) { elog("injectEditBtn failed:", (e && e.message) || e); return true; }
     };
