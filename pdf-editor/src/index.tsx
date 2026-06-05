@@ -1372,9 +1372,20 @@ function EditorBody({
       //    edge (or the next segment), shrinking the size only as a last resort.
       const fit = editText.fitBox(line.text, line.cssFont, line.fontSize, line.rect,
         page.size?.width ?? 0, line.text, line.weight, line.maxRight);
+      // The run's rect top is the font's ascent line; the original glyphs sit a
+      // little below it (top leading). EmbedPDF renders a FreeText with its cap at
+      // the rect top, so without compensation the replacement lands ~0.23em too
+      // HIGH and the text visibly "jumps up" on conversion. Nudge the box down by
+      // the top leading so the replacement sits on the original glyphs. (Measured
+      // 0.236em for the demo font → 0px residual; exact leading is font-specific,
+      // so this removes the bulk of the shift across fonts.)
+      const topLead = 0.23 * fit.fontSize;
       const seededLine = {
         ...line,
-        rect: { origin: line.rect.origin, size: { width: fit.width, height: line.rect.size.height } },
+        rect: {
+          origin: { x: line.rect.origin.x, y: line.rect.origin.y + topLead },
+          size: { width: fit.width, height: line.rect.size.height },
+        },
         fontSize: fit.fontSize,
       };
       const annot = editText.buildFreeTextFromLine(seededLine, pageIndex, FREETEXT_SUBTYPE);
