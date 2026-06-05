@@ -1380,6 +1380,10 @@ function EditorBody({
   // Edit PDF master toggle (OnlyOffice-style): gates the content-editing ribbon
   // group. editTextOn is the sub-mode that dashes text lines for click-to-edit.
   const [editPdfOn, setEditPdfOn] = useState(false);
+  // Annotation capability + reactive state, so the dashed "edit box" overlays
+  // (rendered over each FreeText) update as boxes are created/moved/resized/
+  // selected/deleted. (Chrome also calls useAnnotation; multiple subscribers are fine.)
+  const { provides: annoApiBody, state: annoStateBody } = useAnnotation(documentId);
   // Precomputed line rects per page (populated when editTextOn → dashed outlines).
   const [linesByPage, setLinesByPage] = useState<Record<number, { ptW: number; ptH: number; lines: any[] }>>({});
   // Bumped after a line is converted to a FreeText (in convertLineToFreeText) so the
@@ -1504,6 +1508,21 @@ function EditorBody({
     });
   }, [editPdfOn, editTextOn, linesByPage]);
 
+  // Dashed "edit box" overlays: outline every FreeText box EXCEPT the selected one
+  // (which shows EmbedPDF's handles), so a deselected box keeps the same dashed cue
+  // as the surrounding outlined text. Pure UI overlay — never saved. Reactive via
+  // annoStateBody (recomputed each render as boxes change).
+  void annoStateBody;
+  const _ftTracked = (annoApiBody?.getAnnotations?.() as any[]) || [];
+  const _selFtId = (annoApiBody?.getSelectedAnnotation?.() as any)?.object?.id ?? null;
+  const ftBoxesByPage: Record<number, any[]> = {};
+  for (const a of _ftTracked) {
+    const o = (a && (a.object || a)) as any;
+    if (o && o.type === 3 && o.id !== _selFtId && o.rect) {
+      (ftBoxesByPage[o.pageIndex] || (ftBoxesByPage[o.pageIndex] = [])).push(o);
+    }
+  }
+
   return (
     <>
       <Chrome documentId={documentId} save={save} onClose={onClose}
@@ -1567,6 +1586,22 @@ function EditorBody({
                       />
                     );
                   }) : null}
+                  {/* Dashed outline over each DESELECTED FreeText box — same cue as
+                      the page-text lines. pointer-events:none so clicking still
+                      reaches the box to re-select it. */}
+                  {editTextOn && linesByPage[pageIndex] && ftBoxesByPage[pageIndex]
+                    ? ftBoxesByPage[pageIndex].map((o: any) => {
+                        const { ptW, ptH } = linesByPage[pageIndex];
+                        const r = o.rect;
+                        return (
+                          <div key={`ft-${o.id}`} data-testid={`pdf-ftbox-${pageIndex}-${o.id}`}
+                            class={`${CX}-line-outline`}
+                            style={{ position: 'absolute', left: `${r.origin.x / ptW * 100}%`, top: `${r.origin.y / ptH * 100}%`,
+                              width: `${r.size.width / ptW * 100}%`, height: `${r.size.height / ptH * 100}%`,
+                              zIndex: 9, pointerEvents: 'none' }} />
+                        );
+                      })
+                    : null}
                 </PagePointerProvider>
               );
             }}
