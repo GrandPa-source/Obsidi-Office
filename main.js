@@ -3464,6 +3464,53 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       },
     });
 
+    // Inject a minimal "Edit PDF" button into Obsidian's NATIVE PDF viewer toolbar
+    // (top-right) that opens the file in our EmbedPDF editor. The native viewer
+    // stays the default; this is just a one-click hand-off into edit mode.
+    const openInEmbedEditor = async (file) => {
+      if (!file || file.extension !== "pdf") return;
+      this._lastEmbedPdf = file.path;
+      const newLeaf = this.app.workspace.getLeaf("tab");
+      await newLeaf.setViewState({ type: VIEW_TYPE_PDF_EMBED, active: true, state: { file: file.path } });
+      this.app.workspace.revealLeaf(newLeaf);
+    };
+    const injectEditBtn = (leaf) => {
+      try {
+        const view = leaf && leaf.view;
+        const root = view && view.containerEl;
+        const toolbar = root && root.querySelector(".pdf-toolbar");
+        if (!toolbar) return false;                                  // toolbar not mounted yet → retry
+        if (toolbar.querySelector(".oo-pdf-editbtn")) return true;   // already injected
+        const btn = toolbar.createEl("button", { cls: "oo-pdf-editbtn", attr: { "aria-label": "Edit PDF" } });
+        btn.style.cssText =
+          "display:inline-flex;align-items:center;gap:5px;margin-left:auto;background:none;border:none;" +
+          "box-shadow:none;color:var(--text-muted);cursor:pointer;font-size:var(--font-ui-small);padding:4px 8px;";
+        const ic = btn.createSpan();
+        ic.style.display = "inline-flex";
+        obsidian.setIcon(ic, "pencil");
+        btn.createSpan({ text: "Edit PDF" });
+        btn.addEventListener("mouseenter", () => { btn.style.color = "var(--text-normal)"; });
+        btn.addEventListener("mouseleave", () => { btn.style.color = "var(--text-muted)"; });
+        btn.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); openInEmbedEditor(view.file); });
+        return true;
+      } catch (e) { elog("injectEditBtn failed:", (e && e.message) || e); return true; }
+    };
+    const scanPdfLeaves = () => {
+      for (const leaf of this.app.workspace.getLeavesOfType("pdf")) {
+        if (injectEditBtn(leaf) === false) {
+          let tries = 0;                                             // toolbar renders async; retry briefly
+          const iv = window.setInterval(() => {
+            tries++;
+            if (injectEditBtn(leaf) !== false || tries > 15) window.clearInterval(iv);
+          }, 200);
+          this.registerInterval(iv);
+        }
+      }
+    };
+    this.registerEvent(this.app.workspace.on("active-leaf-change", scanPdfLeaves));
+    this.registerEvent(this.app.workspace.on("layout-change", scanPdfLeaves));
+    this.app.workspace.onLayoutReady(scanPdfLeaves);
+
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
@@ -3837,6 +3884,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF);  // PDF PoC
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF_EMBED);  // PDF-EMBEDPDF PoC
+    document.querySelectorAll(".oo-pdf-editbtn").forEach((b) => b.remove());  // native PDF-toolbar button
   }
 
   async loadSettings() {
