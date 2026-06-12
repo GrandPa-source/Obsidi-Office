@@ -44,6 +44,8 @@ Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds 
 
 The reference UI (a QMS document-control record) sets the long-term direction: a document-control system with an approval workflow. **Decision: plan toward QMS workflow later.** Phase 1 builds only navigation + metadata, but the metadata schema is designed forward-compatibly so later workflow phases need no data-model rework. The 5-phase roadmap (view → SQLite → audit → conversion → diff) may be extended with workflow phases after Phase 5.
 
+**North star (decided 2026-06-12): Both — Management first, the agent corpus rides on it.** The plugin's guiding purpose is to be the best **human management layer** for the document taxonomy (find / govern / version / organize). The **agent corpus** — a clean, machine-readable knowledge base for LLM retrieval (the handover's *original* primary intent) — is a **layer built on top later**, not a parallel track, and is **not dropped** from the roadmap. Implications for every phase: (1) the Management UI ships first (release ladder v0.1–v0.3); (2) keep the metadata **agent-ready** — structured, consistently named, machine-parseable — so the corpus is cheap to add, not a retrofit (prefer enumerated/structured fields over free text where reasonable; keep the note/definition/stakeholder sub-structures consistent); (3) Phase 4's **normalized-text-per-version** becomes the retrieval substrate that the agent queries against the structured metadata. When a design choice is a toss-up between "nice for humans" and "parseable by an agent," favour the one that serves both.
+
 ## 4. Conceptual model
 
 Four roles, mapped onto real on-disk folders under a single managed root:
