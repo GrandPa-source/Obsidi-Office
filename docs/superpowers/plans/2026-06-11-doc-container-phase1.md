@@ -20,6 +20,34 @@
 
 ---
 
+## Release ladder (MVP-first) — READ BEFORE BUILDING
+
+Build and **ship in increments**, not all at once. Each rung is independently usable, deploys to OB_Testing, and gets exercised on a copy of the real `governance/` folder before the next rung starts.
+
+### v0.1 — the spine: "browse, open, version" (the MVP — ship this first)
+The smallest version that delivers the core job: *find a document in the taxonomy, see its status, open it, cut a new version.* In scope:
+- Settings toggle + managed root + category list; scaffold category folders — **Tasks 5–6**
+- Pure-core helpers under all of it — **Tasks 1–4**, **14** (lifecycle), **15** (rollup), **16** (nextVersionName)
+- Sidebar **Documents tree** + title/tag filter — **Tasks 7, 18**
+- **Collection page**: document table + search + status rollup (incl. overdue) + New Document — **Task 17** (Collection kind; keep Root/Category overviews minimal for now)
+- **Document detail (SINGLE PANE, not tabbed)**: metadata view/edit via sidecar + **Files & Versions** (current pinned + history) + **New version** + Open in editor / system app / reveal — **Tasks 8, 9, 19**
+- Live refresh + styles + desktop/iPad smoke — **Tasks 10–13, 20**
+
+**🚦 Ship gate:** deploy v0.1, drive it on a copy of the real `governance/` taxonomy. Do **not** start v0.2 until v0.1 is genuinely useful. Capture what real use teaches before adding depth.
+
+### v0.2 — document depth (was "Phase 1B")
+Restructure the detail into the tabbed shell and add the tabs — **Tasks 21–29** (Stakeholders, Related Documents, Recent Notes + Search Notes, Log, Definitions).
+
+### v0.3 — containers as types (was "Phase 1C")
+Container-type registry + the Project view — **Tasks 30–36** (project note, progress, Milestones, Team + cross-document stakeholder rollup, Notes/Log).
+
+### v0.4+ — the roadmap (sequenced behind a working tool)
+Category/Root overview polish → Phase 2 SQLite (container metadata + manifest) → Phase 3 audit → Phase 4 conversion / **agent corpus** → Phase 5 diff → approval workflow. (See spec §12/§14 + the "north star" decision.)
+
+> Task numbers below are unchanged; this ladder only defines **what ships when**. Where a later rung restructures an earlier task (e.g. Task 22 re-shells Task 8's detail), that's expected — v0.1 ships the simple form, v0.2 restructures it.
+
+---
+
 ## File Structure
 
 | File | Status | Responsibility |
@@ -1311,7 +1339,7 @@ Run: `node --check main.js` → exit 0. Deploy. Reload. Open a Document, click *
 
 ---
 
-# Phase 1B — evolved detail view (tabs, notes log, definitions, activity log)
+# v0.2 (was Phase 1B) — evolved detail view (tabs, notes log, definitions, activity log)
 
 > Folded in from the visual-companion fine-tuning. **Canonical render reference:** `.superpowers/brainstorm/sustained-1/content/document-detail-v4.html` — port markup/handlers from there; production CSS uses Obsidian tokens (Task 11 style block) and scopes `justify-content:space-between` to chevron/select fields only (the Tags-pill alignment fix). Schema sub-structures: spec §6.3. All new state lives in the **current version's sidecar**.
 
@@ -1438,7 +1466,7 @@ Replace the Task 8 single-pane render with: a `.doc-detail-scroll` body (metadat
 
 ---
 
-# Phase 1C — container types + the Project type
+# v0.3 (was Phase 1C) — container types + the Project type
 
 > **Canonical render reference:** `.superpowers/brainstorm/sustained-1/content/project-page.html`. Schema: spec §6.5. Type model: grouping (default, Collection page) vs project (project note + Project view). Build after the container overviews (Tasks 14–17) exist.
 
