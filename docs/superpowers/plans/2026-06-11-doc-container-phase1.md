@@ -1436,6 +1436,110 @@ Replace the Task 8 single-pane render with: a `.doc-detail-scroll` body (metadat
 
 ---
 
+---
+
+# Phase 1C — container types + the Project type
+
+> **Canonical render reference:** `.superpowers/brainstorm/sustained-1/content/project-page.html`. Schema: spec §6.5. Type model: grouping (default, Collection page) vs project (project note + Project view). Build after the container overviews (Tasks 14–17) exist.
+
+## Task 30: Pure core — aggregate a document field up to a container
+
+**Files:** Modify `lib/doc-container.js`; Test `lib/doc-container.test.js`
+
+- [ ] **Step 1: Failing test**
+
+```js
+test('aggregateStakeholders groups by name+title across docs', () => {
+  const docs = [
+    { title:'HIRA', stakeholders:[{name:'P. Nicholson',title:'Mgr',role:'Originator'},{name:'',title:'COO',role:'Final Approver'}] },
+    { title:'Self-Assessment', stakeholders:[{name:'P. Nicholson',title:'Mgr',role:'Reviewer'}] },
+  ];
+  const agg = dc.aggregateStakeholders(docs);
+  const pn = agg.find(a => a.name === 'P. Nicholson' && a.title === 'Mgr');
+  assert.deepStrictEqual(pn.roles.sort(), ['Originator','Reviewer']);
+  assert.deepStrictEqual(pn.docs.sort(), ['HIRA','Self-Assessment']);
+  assert.ok(agg.find(a => a.title === 'COO' && a.name === ''));   // unfilled groups by title
+});
+```
+
+- [ ] **Step 2: Run → FAIL.**  **Step 3: Implement**
+
+```js
+function aggregateStakeholders(docs) {
+  const map = new Map();
+  for (const d of docs) for (const s of (d.stakeholders || [])) {
+    const key = (s.name || '') + '|' + (s.title || '');
+    if (!map.has(key)) map.set(key, { name: s.name || '', title: s.title || '', roles: new Set(), docs: new Set() });
+    const e = map.get(key); if (s.role) e.roles.add(s.role); e.docs.add(d.title);
+  }
+  return [...map.values()].map(e => ({ name: e.name, title: e.title, roles: [...e.roles], docs: [...e.docs] }))
+    .sort((a, b) => b.docs.length - a.docs.length || (a.title > b.title ? 1 : -1));
+}
+```
+Add to `module.exports`.
+
+- [ ] **Step 4: PASS.**  **Step 5: Commit** — `feat(doc-container): aggregateStakeholders + tests`
+
+---
+
+## Task 31: ContainerTypeRegistry + type determination + ProjectNote adapter
+
+**Files:** Modify `main.js`; settings `categoryTypeMap` (e.g. `{Projects:'project'}`)
+
+- [ ] `resolveContainerType(node)`: read `<folder>/_project.md` frontmatter `type` if present → else `categoryTypeMap[topCategory]` → else `'grouping'`.
+- [ ] `ProjectNote` read/write: `processFrontMatter` on `_project.md` (created on demand when a container is first set to `project` / when the user edits project metadata). Schema = spec §6.5.
+- [ ] `ContainerOverviewView` branches on `resolveContainerType`: `grouping` → existing Collection render (Task 17); `project` → `renderProjectView` (Task 32).
+- [ ] Settings: `categoryTypeMap` editor (Category → type).
+- [ ] `node --check` + smoke (a `Projects/*` folder resolves to project; `Governance/*` to grouping). Commit — `feat(doc-container): container-type registry + project-note adapter`
+
+---
+
+## Task 32: Project view — progress, compact identification, description, tabs
+
+**Files:** Modify `main.js` (`renderProjectView`)
+
+- [ ] **Progress bar at top** (percentComplete + phase + target). **Compact Identification** (dense key:value grid). Status & Timeline grid. **Roomy multi-line Description/Purpose/Scope** (textarea bound to `objective`). Tags.
+- [ ] Tabbed element scaffold (scoped tabs): Documents · Milestones · Team · Notes · right-aligned **Log** (panes filled in Tasks 33–35). Port markup from `project-page.html`.
+- [ ] Smoke; commit — `feat(doc-container): Project view shell (progress/compact-id/description/tabs)`
+
+---
+
+## Task 33: Project tabs — Documents + Milestones
+
+**Files:** Modify `main.js`
+
+- [ ] **Documents** pane: the project's documents table (reuse the Collection table render) + New Document.
+- [ ] **Milestones** pane: table from project-note `milestones[] {name, target, status}` + ＋ Add milestone (writes to `_project.md`).
+- [ ] Smoke; commit — `feat(doc-container): Project Documents + Milestones tabs`
+
+---
+
+## Task 34: Project Team tab — explicit roster + cross-document stakeholder rollup
+
+**Files:** Modify `main.js`
+
+- [ ] **Project team** table from project-note `team[] {name, title, role}` + ＋ Add member.
+- [ ] **Stakeholders across documents** (read-only): scan the project's documents, call `docContainer.aggregateStakeholders(docs)`, render Name · Title · Role(s) · In documents (count + chips). Recomputes on document/metadata change.
+- [ ] Smoke; commit — `feat(doc-container): Project Team + cross-document stakeholder rollup`
+
+---
+
+## Task 35: Project Notes + Log tabs
+
+**Files:** Modify `main.js`
+
+- [ ] **Notes** pane: the same document-style composer as Task 25 (inline `#tag` pills via `extractInlineTags`, gated drag-drop attach, scoped note-tags), bound to the **project note** `noteLog`.
+- [ ] **Log** pane (right-aligned tab): the same read-only activity feed as Task 27, bound to the project note `activityLog`; `logActivity` also fires on project actions (status change, milestone/member/document added, note added).
+- [ ] Smoke; commit — `feat(doc-container): Project Notes + Log tabs`
+
+---
+
+## Task 36: Phase 1C re-smoke
+
+- [ ] Desktop + iPad: a `Projects/*` container opens the Project view (progress, compact id, description, all five tabs); a `Governance/*` container opens the Collection page; project metadata round-trips to `_project.md`; the cross-document stakeholder table reflects the project's documents; `node --test` green incl. `aggregateStakeholders`.
+
+---
+
 ## Self-Review notes (author)
 
 - **Spec coverage:** scaffolding (T6), sidebar leaf + tree (T7), main detail + reused leaf (T8), filename-convention versioning (T1–T3), metadata schema incl. reserved fields (T4, T8), actions (T9), settings (T5), live refresh + onLayoutReady ordering (T10), styles (T11), desktop+iPad smoke (T12–T13). Flexible-depth Document detection = T3. Folder-level metadata deliberately stubbed (Phase 2) per spec §9.
@@ -1444,4 +1548,5 @@ Replace the Task 8 single-pane render with: a `.doc-detail-scroll` body (metadat
 - **UI is the fine-tuning surface:** markup/CSS live in `render()`/`renderNode()`/`renderDetail()` + Task 11; visual changes won't alter the task structure.
 - **Additions coverage (Tasks 14–20):** lifecycle next-review/overdue (T14), status rollup (T15), next-version name (T16) — all unit-tested; ContainerOverviewView by kind + New Category/Collection folder creation + collection search (T17); sidebar tree filter (T18); New version action (T19); re-smoke (T20). Amendments wire lifecycle fields into the schema (T4) + detail (T8), and switch container label-click to open the overview (T7).
 - **Shared main-area leaf:** the container overview and document detail reuse one main-area leaf (re-typed via `setViewState`); openers prefer an existing `VIEW_TYPE_DOC_CONTAINER`/`VIEW_TYPE_DOC_DETAIL` leaf before opening a new tab — avoids tab stacking across drill-down.
+- **Phase 1C (Tasks 30–36):** type-aware containers — `aggregateStakeholders` (unit-tested); container-type registry + determination (project-note `type` → settings map → default grouping) + `_project.md` adapter; Project view (top progress, compact key:value Identification, roomy Description, tabbed Documents/Milestones/Team/Notes/right-Log); Team tab carries the **cross-document stakeholder rollup**. Grouping containers keep the Collection page. Canonical reference = `project-page.html`. Schema §6.5.
 - **Phase 1B (Tasks 21–29):** evolved detail view — extractInlineTags (unit-tested); detail shell (scroll body + sticky footer + two scoped tab columns); Files&Versions + Stakeholders(Title); Related Documents (links + drag-drop refs); Recent Notes (structured `noteLog`, inline-tag composer, gated `_notes/` attach, **note-tags separate from doc `tags`**); Search Notes (text+tag+date-range); Log (`activityLog` + writer, plugin-originated); Definitions (glossary scan + checkbox table, sidecar `definitions`). Canonical render reference = the `document-detail-v4.html` prototype. Deferred: Definitions insert-into-.docx, activity-log external detection (Phase 3). Schema sub-structures: spec §6.3.

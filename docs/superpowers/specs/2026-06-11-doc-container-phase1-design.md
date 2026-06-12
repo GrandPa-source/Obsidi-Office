@@ -38,6 +38,7 @@ Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds 
 - All approval **workflow** (reviewers/approver routing, Pending Review / Pending Approval queues, status-transition enforcement). Workflow *fields* are reserved in the schema but not acted on.
 - **Definitions insert-into-document** — writing the included glossary text into the `.docx` body (an editor content op). Phase 1 records inclusion (the checkbox) only.
 - **Activity-log external-change detection** — Phase 3 audit. Phase 1 logs plugin-originated actions only.
+- **Container types beyond `grouping`** — the `project` type (project note + Project view + Milestones/Team/Notes/Log + cross-document stakeholder rollup) is **plan Phase 1C** (§6.5/§9). Phase 1 ships grouping containers (the Collection page) only.
 
 ## 3. Roadmap context
 
@@ -73,6 +74,8 @@ Four roles, mapped onto real on-disk folders under a single managed root:
 - **`NoteLog` (sidecar adapter)** — reads/writes the structured note log; each note `{date, author, body, noteTags[], attachments[], version?}`. **Note-tags are a separate namespace** from the document's `tags` (not shared with the metadata cache / Obsidi-Office tag fields). The composer parses inline `#tag` tokens out of the note text into pills; the drag-drop attach zone is disabled until note text is entered; attachments (minutes, PDFs) are copied into a per-Document `_notes/` subfolder and referenced.
 - **`ActivityLog` (sidecar adapter)** — appends read-only entries `{datetime, actor, action, type}` for plugin-originated actions (version created, status changed, metadata edited, note added/edited/deleted, reference attached, definition (un)checked, document created). External-change entries arrive via the Phase 3 audit.
 - **`Glossary` + `Definitions` adapters** — `Glossary` scans a curated **vault glossary** folder (toggled on + path-set in settings) holding **Definitions and Acronyms only** (each entry = term + its text + type ∈ {definition, acronym}). `Definitions` stores the document's **included** term ids in the sidecar (checkbox = include/exclude). Inserting the included set into the .docx is a **later** document-level action (see §14); the checkbox alone is the Phase-1 include/traceability record.
+- **`ContainerTypeRegistry` + `ProjectNote` adapter** (Phase 1C) — resolves a container's **type** (project-note `type:` → settings Category→type map → default `grouping`); for `project`, reads/writes the `_project.md` frontmatter (§6.5). `ContainerOverviewView` renders the grouping **Collection page** or the **Project view** by resolved type. The registry is extensible for future types.
+- **`aggregateField` helper** (pure, unit-tested) — rolls a document-level sidecar field up to a container from the live scan; powers both the status counts and the **cross-document stakeholder** table.
 - **`TaxonomyScanner`** — reads `vault.getFiles()` / folder structure filtered to the managed root; builds an in-memory tree of Category/Collection/Document nodes; groups files within a Document into version sets. Pure read; no persistence.
 - **Pure-core helpers (`lib/doc-container.js`, no Obsidian dep, unit-tested):** `parseVersion` / `compareVersions` / `groupDocumentFiles` (versioning); `buildTaxonomy`; `nextVersionName(current, bump)` (compute the next `_Vx.y` filename); `computeNextReview(effectiveDate, freqDays)` + `isOverdue(nextReview, today)` (lifecycle); `rollupByStatus(documents)` + `countOverdue(documents, today)` (overview rollups); `DOC_FIELDS`/`STATUS_VALUES`/`DOC_CLASSES` constants.
 - **`DocumentMetadata` (sidecar adapter)** — reads/writes document-level frontmatter on the current version's `.md` sidecar, reusing the existing P21 sidecar mechanism (`processFrontMatter`, the MetadataModal, rename/delete watchers). Extends the existing schema; does not create a parallel system.
@@ -150,6 +153,36 @@ All live in the **current version's sidecar** frontmatter (the note log may also
 
 A **curated glossary in the vault** (decision): a folder the user maintains holding **Definitions and Acronyms only** (each entry = term + its text + type ∈ {definition, acronym}; no criteria). **Toggled on + path-set in settings** (default `Definitions/`). The Definitions tab filters it (term + text, comma-AND). Not plugin-managed; version-controlled with the vault.
 
+### 6.5 Container types & the Project type (plan Phase 1C)
+
+**Decision: containers are type-aware.** A container's behaviour + metadata are driven by its **type**. Built-in types:
+- **`grouping`** (default; Governance-style) — just organizes documents. Metadata-light (name/description/owner, Phase 2 SQLite). Overview = the **Collection page** (documents table + search + status-chip filters + rollups).
+- **`project`** (Projects-style) — a managed project. Metadata lives in an **intentional project note** (`_project.md`) in the container folder — **not** SQLite (the user maintains it; richer + Dataview-queryable; the "tidied-up" risk is acceptable because it's deliberate). Overview = the **Project view** (below).
+
+**Type determination (resolution order):** (1) explicit `type:` in the container's project note → else (2) a settings **Category→type** mapping (e.g. `Projects/` → `project`, `Governance/` → `grouping`) → else (3) default `grouping`. The type system is a **registry** so further types (`committee`, `case`, …) can be added without reworking the overview.
+
+**Project note schema (`_project.md` frontmatter):**
+
+| Field | Type | Notes |
+|---|---|---|
+| `type` | `'project'` | marks the container type |
+| `projectName` / `projectCode` | string | |
+| `department` | string | |
+| `lead` / `leadTitle` | string | lead + role-based **title** |
+| `sponsor` | string | executive sponsor (title) |
+| `priority` | enum | High / Medium / Low |
+| `status` | enum | Planning / Active / On Hold / Complete / Cancelled |
+| `startDate` / `targetCompletion` | date | |
+| `phase` | string | e.g. "Phase 3 of 5" |
+| `percentComplete` | number | drives the progress bar |
+| `objective` | string (multi-line) | Description / Purpose / Scope |
+| `tags` | string[] | |
+| `milestones` | `[{name, target, status}]` | Milestones tab |
+| `team` | `[{name, title, role}]` | explicit Project-team roster |
+| `noteLog` / `activityLog` | (as §6.3) | project-scoped Notes + Log |
+
+**Cross-document stakeholder rollup (derived, not stored):** the Team tab also shows a **content-aware** table aggregating `stakeholders[]` across **all documents in the project** — grouped by (name + title), listing each person's role(s) and the documents they appear in (with a count). Recomputed from the live scan; the same rollup pattern as the status counts — a reusable **aggregate-any-document-field-up-to-the-container** capability.
+
 ## 7. Version convention
 
 - **Current/version pattern:** `<base>_V<major>.<minor>.<ext>` is a version of `<base>.<ext>`.
@@ -170,6 +203,7 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
   - **Category:** Collections grid (cards: name, doc count, status mini-rollup, overdue flag) + **＋ New Collection** (modal → name → live path preview → create folder). Card click drills into the Collection.
   - **Collection:** Documents table (Title · Doc # · Class · Status · Next review/overdue · Modified · Tags) + **＋ New Document**; the search box filters by title + tags. Row click opens the Document detail.
   - Every level shows an aggregate **status rollup** (counts by status + overdue), derived from the live scan + sidecars.
+- **Project container view** (type = `project`, Phase 1C): a **progress bar at the top** (percentComplete + phase + target); a **compact** metadata block (Identification as a dense key:value grid; Status & Timeline; a **roomy multi-line** Description/Purpose/Scope); then a **tabbed element** — *Documents* (table + New Document) · *Milestones* · *Team* (explicit roster **+ the derived cross-document stakeholder rollup**) · *Notes* (document-style composer: inline `#tag` pills, gated drag-drop attach, scoped note-tags) · right-aligned *Log* (project activity feed). Grouping-type containers keep the simpler Collection page.
 - **Document detail (main area, "Document Status"):** a scrollable body + a **sticky floating footer**.
   - **Metadata top** in grouped sections: *Identification* (Title, Doc Number, Document Class) · *Classification & Status* (Revision, Status, Department, Originator) · *Lifecycle* (Origination, Effective, Review Frequency, Next Review + overdue) · *Description* (Summary, Tags — Tags left-aligned/wrapping; only chevron/select fields use right-justified content).
   - **Left tabbed column** — *Files & Versions* (working version set only: current pinned + history; **⎘ New version** in the tab header) · *Stakeholders* (table: Name · **Title** · Role · Dept; Title role-based) · *Related Documents* (drag-drop zone + ＋ Add link at top, then list of 🔗 links / 📎 reference material with remove) · *Definitions* (filter box + read-only table of glossary terms/criteria, each row a **checkbox** to include in this document — term/criterion colour-tagged; no add/delete).
