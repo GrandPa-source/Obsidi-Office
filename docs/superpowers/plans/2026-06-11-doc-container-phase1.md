@@ -939,9 +939,381 @@ git commit -m "docs(doc-container): Phase 1 iPad smoke results"
 
 ---
 
+---
+
+# Phase 1 additions — container overviews, lifecycle, new-version, filter
+
+> These extend the core plan above (decided during UI fine-tuning). Do the pure-core additions (Tasks 14–16) right after Task 4; do the view additions (17–19) after Task 8. Amendments to earlier tasks are listed first.
+
+## Amendments to earlier tasks
+
+- **Task 4 schema** — add three lifecycle fields to `DOC_FIELDS.phase1` (after `originationDate`), and remove `reviewFrequencyDays`/`nextReviewDate` from `reserved`:
+
+```js
+    { key:'effectiveDate',       label:'Effective Date',         type:'date' },
+    { key:'reviewFrequencyDays', label:'Review Frequency (days)',type:'number' },
+    { key:'nextReviewDate',      label:'Next Review',            type:'date' },
+```
+```js
+  reserved: ['reviewers','finalApprover','statusHistory','relatedDocuments'],
+```
+
+- **Task 7 tree click** — clicking a container node's **label** now opens its overview (not just expand). Keep the twistie for expand/collapse. In `renderNode`, for non-document nodes split the row: a `tw` twistie span toggles `this.collapsed`; the label span calls `this.plugin.openContainerOverview(node)`. Document rows still call `openDocDetail`.
+
+- **Task 8 detail** — add a **Lifecycle** field group (Origination, Effective, Review Frequency, Next Review) and a tabbed **Related Stakeholders / Related Documents** right column (reserved fields, mostly `—`). Compute the Next Review display when `nextReviewDate` is empty via `docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays)`, and show an `overdue` pill when `docContainer.isOverdue(nextReview, todayISO())`.
+
+- **Task 11 styles** — add `.doc-container-filter`, `.doc-ov-*` (overview rollup/cards/table), `.doc-ov-modal` (New X modal) classes alongside the tree/detail styles.
+
+---
+
+## Task 14: Pure core — lifecycle (next review + overdue)
+
+**Files:** Modify `lib/doc-container.js`; Test `lib/doc-container.test.js`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+test('computeNextReview adds freq days to effective date', () => {
+  assert.strictEqual(dc.computeNextReview('2026-04-20', 180), '2026-10-17');
+  assert.strictEqual(dc.computeNextReview('2026-04-20', 0), null);   // no cadence
+  assert.strictEqual(dc.computeNextReview('', 180), null);           // no effective date
+});
+test('isOverdue compares against today', () => {
+  assert.strictEqual(dc.isOverdue('2026-01-01', '2026-06-11'), true);
+  assert.strictEqual(dc.isOverdue('2026-12-01', '2026-06-11'), false);
+  assert.strictEqual(dc.isOverdue(null, '2026-06-11'), false);
+});
+```
+
+- [ ] **Step 2: Run → FAIL** (`dc.computeNextReview is not a function`).
+
+Run: `node --test lib/doc-container.test.js`
+
+- [ ] **Step 3: Implement**
+
+```js
+function computeNextReview(effectiveDate, freqDays) {
+  const f = Number(freqDays);
+  if (!effectiveDate || !f) return null;
+  const d = new Date(effectiveDate + 'T00:00:00Z');
+  if (isNaN(d)) return null;
+  d.setUTCDate(d.getUTCDate() + f);
+  return d.toISOString().slice(0, 10);
+}
+function isOverdue(nextReviewISO, todayISO) {
+  if (!nextReviewISO) return false;
+  return nextReviewISO < todayISO;   // ISO date strings compare lexicographically
+}
+```
+Add both to `module.exports`.
+
+- [ ] **Step 4: Run → PASS.** `node --test lib/doc-container.test.js`
+- [ ] **Step 5: Commit** — `git commit -am "feat(doc-container): lifecycle next-review + overdue + tests"`
+
+---
+
+## Task 15: Pure core — status rollup + overdue count
+
+**Files:** Modify `lib/doc-container.js`; Test `lib/doc-container.test.js`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+test('rollupByStatus counts documents per status', () => {
+  const docs = [{status:'Draft'},{status:'Draft'},{status:'Active'},{status:null}];
+  assert.deepStrictEqual(dc.rollupByStatus(docs), { Draft:2, Active:1, Unset:1 });
+});
+test('countOverdue counts docs whose nextReview is past', () => {
+  const docs = [{nextReviewDate:'2026-01-01'},{nextReviewDate:'2027-01-01'},{nextReviewDate:null}];
+  assert.strictEqual(dc.countOverdue(docs, '2026-06-11'), 1);
+});
+```
+
+- [ ] **Step 2: Run → FAIL.** `node --test lib/doc-container.test.js`
+
+- [ ] **Step 3: Implement**
+
+```js
+function rollupByStatus(docs) {
+  const out = {};
+  for (const d of docs) { const k = d.status || 'Unset'; out[k] = (out[k]||0)+1; }
+  return out;
+}
+function countOverdue(docs, todayISO) {
+  return docs.filter(d => isOverdue(d.nextReviewDate, todayISO)).length;
+}
+```
+Add to `module.exports`.
+
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Commit** — `git commit -am "feat(doc-container): status rollup + overdue count + tests"`
+
+---
+
+## Task 16: Pure core — next version filename
+
+**Files:** Modify `lib/doc-container.js`; Test `lib/doc-container.test.js`
+
+- [ ] **Step 1: Write the failing test**
+
+```js
+test('nextVersionName bumps minor by default, major on request', () => {
+  assert.strictEqual(dc.nextVersionName('FanOutPolicy_V2.0.docx', 'minor'), 'FanOutPolicy_V2.1.docx');
+  assert.strictEqual(dc.nextVersionName('FanOutPolicy_V2.0.docx', 'major'), 'FanOutPolicy_V3.0.docx');
+  assert.strictEqual(dc.nextVersionName('FanOutPolicy.docx', 'minor'), 'FanOutPolicy_V1.1.docx'); // bare = rev 1.0
+});
+```
+
+- [ ] **Step 2: Run → FAIL.** `node --test lib/doc-container.test.js`
+
+- [ ] **Step 3: Implement**
+
+```js
+function nextVersionName(current, bump) {
+  const v = parseVersion(current);
+  const major = bump === 'major' ? v.major + 1 : v.major;
+  const minor = bump === 'major' ? 0 : v.minor + 1;
+  return `${v.base}_V${major}.${minor}.${v.ext}`;
+}
+```
+Add to `module.exports`.
+
+- [ ] **Step 4: Run → PASS.**
+- [ ] **Step 5: Commit** — `git commit -am "feat(doc-container): nextVersionName + tests"`
+
+---
+
+## Task 17: ContainerOverviewView (render by node kind)
+
+**Files:** Modify `main.js` (add `VIEW_TYPE_DOC_CONTAINER` const; `ContainerOverviewView` class; `registerView`; `openContainerOverview` opener; `createTaxonomyFolder` helper)
+
+- [ ] **Step 1: Add the view-type const + the opener + folder helper**
+
+```js
+const VIEW_TYPE_DOC_CONTAINER = 'obsidi-office-doc-container';
+
+// plugin methods:
+async openContainerOverview(node) {
+  let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER)[0]
+          || this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0]
+          || this.app.workspace.getLeaf('tab');
+  await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path: node ? node.path : this.settings.docRoot } });
+  this.app.workspace.revealLeaf(leaf);
+}
+async createTaxonomyFolder(parentPath, name) {
+  const clean = (name||'').trim(); if (!clean) return;
+  const path = `${parentPath}/${clean}`;
+  if (!this.app.vault.getAbstractFileByPath(path)) await this.app.vault.createFolder(path);
+  this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+  return path;
+}
+```
+
+- [ ] **Step 2: Add the ContainerOverviewView class**
+
+```js
+class ContainerOverviewView extends obsidian.ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.path = null; }
+  getViewType() { return VIEW_TYPE_DOC_CONTAINER; }
+  getDisplayText() { return this.path ? this.path.split('/').pop() : 'Documents'; }
+  getIcon() { return 'folder-open'; }
+  async setState(s, r) { if (s && s.path) { this.path = s.path; this.render(); } return super.setState(s, r); }
+  getState() { return { path: this.path }; }
+
+  node() {
+    const root = this.plugin.settings.docRoot;
+    const tree = docContainer.buildTaxonomy(this.app.vault.getFiles().map(f => f.path), root);
+    if (this.path === root) return { kind: 'root', path: root, name: root, children: tree };
+    const find = (nodes) => { for (const n of nodes) { if (n.path === this.path) return n; if (n.children) { const f = find(n.children); if (f) return f; } } return null; };
+    return find(tree);
+  }
+  // flatten all descendant document nodes (for rollups)
+  docsUnder(node) {
+    const out = [];
+    const walk = (n) => { if (n.kind === 'document') out.push(this.docMeta(n)); (n.children||[]).forEach(walk); };
+    (node.children||[]).forEach(walk);
+    if (node.kind === 'document') out.push(this.docMeta(node));
+    return out;
+  }
+  docMeta(n) {
+    const sc = n.current && this.app.vault.getAbstractFileByPath(n.path + '/' + n.current + '.md');
+    const fm = (sc && this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+    const nextReview = fm.nextReviewDate || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
+    return { node: n, title: fm.title || n.name, docNumber: fm.docNumber || '', docClass: fm.docClass || '',
+             status: fm.status || null, nextReviewDate: nextReview, tags: fm.tags || [],
+             modified: fm.modified || '' };
+  }
+
+  render() {
+    const c = this.containerEl.children[1]; c.empty(); c.addClass('doc-ov');
+    const node = this.node();
+    if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
+    const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
+    const docs = this.docsUnder(node);
+
+    // header + rollup
+    c.createDiv({ text: node.path.split('/').slice(0,-1).join(' › ') || '', cls: 'doc-ov-crumb' });
+    const head = c.createDiv('doc-ov-head');
+    head.createSpan({ text: node.name, cls: 'doc-ov-title' });
+    const roll = c.createDiv('doc-ov-rollup');
+    roll.createSpan({ text: `${docs.length} documents`, cls: 'doc-ov-pill' });
+    const by = docContainer.rollupByStatus(docs);
+    Object.keys(by).forEach(k => roll.createSpan({ text: `${by[k]} ${k}`, cls: 'doc-ov-pill st-' + k.toLowerCase().replace(/\s+/g,'-') }));
+    const over = docContainer.countOverdue(docs, today);
+    if (over) roll.createSpan({ text: `${over} review overdue`, cls: 'doc-ov-pill over' });
+
+    if (node.kind === 'collection' || node.kind === 'document') return this.renderDocs(c, node, docs, today);
+    return this.renderContainers(c, node);   // root or category
+  }
+
+  renderContainers(c, node) {
+    const kindLabel = node.kind === 'root' ? 'Category' : 'Collection';
+    const btn = c.createEl('button', { text: `＋ New ${kindLabel}`, cls: 'doc-ov-primary' });
+    btn.onclick = () => this.promptNew(node.path, kindLabel);
+    const grid = c.createDiv('doc-ov-cards');
+    for (const child of (node.children||[])) {
+      if (child.kind === 'document') continue;     // documents handled at collection level
+      const card = grid.createDiv('doc-ov-card');
+      card.createDiv({ text: '📂 ' + child.name, cls: 'doc-ov-cardname' });
+      const sub = this.docsUnder(child);
+      card.createDiv({ text: `${sub.length} docs`, cls: 'doc-ov-cardnum' });
+      card.onclick = () => this.plugin.openContainerOverview(child);
+    }
+  }
+
+  renderDocs(c, node, docs, today) {
+    const btn = c.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' });
+    btn.onclick = () => new obsidian.Notice('New Document flow — see Task 19 follow-up'); // wired with create-doc modal
+    const filter = c.createEl('input', { cls: 'doc-ov-filter', attr: { placeholder: 'Search by title or #tag…' } });
+    const table = c.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr');
+    ['Title','Doc #','Class','Status','Next review','Modified','Tags'].forEach(h => head.createEl('th', { text: h }));
+    const draw = (term) => {
+      table.querySelectorAll('tr.row').forEach(r => r.remove());
+      const terms = (term||'').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
+      docs.filter(d => { const hay = (d.title + ' ' + (d.tags||[]).map(t=>'#'+t).join(' ')).toLowerCase(); return terms.every(t => hay.includes(t)); })
+        .forEach(d => {
+          const tr = table.createEl('tr', { cls: 'row' });
+          tr.createEl('td', { text: d.title });
+          tr.createEl('td', { text: d.docNumber });
+          tr.createEl('td', { text: d.docClass });
+          tr.createEl('td').createSpan({ text: d.status || '—', cls: d.status ? 'doc-ov-sb st-'+d.status.toLowerCase().replace(/\s+/g,'-') : '' });
+          const nr = tr.createEl('td');
+          if (docContainer.isOverdue(d.nextReviewDate, today)) nr.createSpan({ text: 'overdue', cls: 'doc-ov-overtxt' });
+          else nr.setText(d.nextReviewDate || '—');
+          tr.createEl('td', { text: d.modified || '—' });
+          tr.createEl('td', { text: (d.tags||[]).map(t=>'#'+t).join(' ') });
+          tr.onclick = () => this.plugin.openDocDetail(d.node);
+        });
+    };
+    filter.oninput = () => draw(filter.value);
+    draw('');
+  }
+
+  promptNew(parentPath, kindLabel) {
+    const modal = new obsidian.Modal(this.app);
+    modal.titleEl.setText('New ' + kindLabel);
+    const input = modal.contentEl.createEl('input', { attr: { placeholder: kindLabel + ' name' }, cls: 'doc-ov-newinput' });
+    const path = modal.contentEl.createDiv({ cls: 'doc-ov-newpath', text: parentPath + '/…' });
+    input.oninput = () => path.setText(parentPath + '/' + (input.value || '…'));
+    const create = modal.contentEl.createEl('button', { text: 'Create folder', cls: 'mod-cta' });
+    create.onclick = async () => { await this.plugin.createTaxonomyFolder(parentPath, input.value); modal.close(); this.render(); };
+    modal.open(); input.focus();
+  }
+}
+```
+
+- [ ] **Step 3: Register + wire**
+
+In `onload()`:
+```js
+this.registerView(VIEW_TYPE_DOC_CONTAINER, (leaf) => new ContainerOverviewView(leaf, this));
+```
+
+- [ ] **Step 4: Verify + deploy + smoke**
+
+Run: `node --check main.js` → exit 0. Deploy. Reload. Click a Category label → Collections grid + rollup + New Collection (modal creates a folder, live path preview). Click a Collection label → Documents table + working search filter + rollup + overdue flag. Click a document row → detail opens.
+
+- [ ] **Step 5: Commit** — `git commit -am "feat(doc-container): ContainerOverviewView (root/category/collection) + New folder"`
+
+---
+
+## Task 18: Sidebar tree filter box
+
+**Files:** Modify `main.js` (`DocumentBrowserView.render` — add a filter input; filter Documents by title + tags)
+
+- [ ] **Step 1: Add a filter input above the tree and store the query**
+
+In `DocumentBrowserView.render()`, after the toolbar:
+
+```js
+const filter = c.createEl('input', { cls: 'doc-container-filter', attr: { placeholder: 'Filter title or #tag…' } });
+filter.value = this._q || '';
+filter.oninput = () => { this._q = filter.value; this.renderTreeBody(tree); };
+```
+
+Refactor the node-drawing into `renderTreeBody(treeEl)`; when `this._q` is set, only show Documents whose `title + #tags` match all comma-split terms, and the containers on their path. (Compute matches from `this.docMetaFor(node)` mirroring the overview's `docMeta`.)
+
+- [ ] **Step 2: Verify + deploy + smoke**
+
+Run: `node --check main.js` → exit 0. Deploy. Reload. Type in the sidebar filter → tree narrows to matching Documents and their parent containers; clearing restores the full tree.
+
+- [ ] **Step 3: Commit** — `git commit -am "feat(doc-container): sidebar tree filter (title+tag)"`
+
+---
+
+## Task 19: New version action
+
+**Files:** Modify `main.js` (add `newDocumentVersion(node)` plugin method; wire the detail's New-version button + Files header button)
+
+- [ ] **Step 1: Implement the action**
+
+```js
+async newDocumentVersion(node) {
+  if (!node || !node.current) { new obsidian.Notice('No current file to version'); return; }
+  const bump = await new Promise(res => {
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('New version');
+    m.contentEl.createEl('p', { text: 'Bump which part of the revision?' });
+    const mk = (label, val) => { const b = m.contentEl.createEl('button', { text: label, cls: 'mod-cta' }); b.style.marginRight = '8px'; b.onclick = () => { res(val); m.close(); }; };
+    mk('Minor (x.Y)', 'minor'); mk('Major (X.0)', 'major');
+    m.onClose = () => res(null); m.open();
+  });
+  if (!bump) return;
+  const nextName = docContainer.nextVersionName(node.current, bump);
+  const srcPath = node.path + '/' + node.current;
+  const src = this.app.vault.getAbstractFileByPath(srcPath);
+  const data = await this.app.vault.readBinary(src);
+  await this.app.vault.createBinary(node.path + '/' + nextName, data);
+  // carry metadata forward: copy the sidecar (the existing sidecar auto-create + MetadataModal own the schema)
+  const sc = this.app.vault.getAbstractFileByPath(srcPath + '.md');
+  if (sc) { const fm = await this.app.vault.read(sc); await this.app.vault.create(node.path + '/' + nextName + '.md', fm); }
+  new obsidian.Notice('Created ' + nextName);
+  this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+  this.openDocDetail(node);   // refresh detail (re-scan picks the new current)
+}
+```
+
+- [ ] **Step 2: Wire the button(s)** — in `DocumentDetailView.render`, the `⎘ New version` header button and the Actions-row button call `this.plugin.newDocumentVersion(this.node)`.
+
+- [ ] **Step 3: Verify + deploy + smoke**
+
+Run: `node --check main.js` → exit 0. Deploy. Reload. Open a Document, click **New version** → choose Minor → a `_Vx.(y+1)` file + sidecar appear; the detail re-renders with the new file pinned as current; the old one drops to history.
+
+- [ ] **Step 4: Commit** — `git commit -am "feat(doc-container): New version action (copy + increment + carry metadata)"`
+
+---
+
+## Task 20: Re-run smoke gates (fold into Tasks 12–13)
+
+- [ ] Re-run the desktop checklist including: filter box, container overviews (all three kinds), New Collection/Category folder creation, lifecycle next-review + overdue, New version. Re-run `node --test lib/doc-container.test.js` (all pure-core incl. lifecycle/rollup/version-name green). Then repeat the iPad gate.
+
+---
+
 ## Self-Review notes (author)
 
 - **Spec coverage:** scaffolding (T6), sidebar leaf + tree (T7), main detail + reused leaf (T8), filename-convention versioning (T1–T3), metadata schema incl. reserved fields (T4, T8), actions (T9), settings (T5), live refresh + onLayoutReady ordering (T10), styles (T11), desktop+iPad smoke (T12–T13). Flexible-depth Document detection = T3. Folder-level metadata deliberately stubbed (Phase 2) per spec §9.
 - **Deploy reminder:** every view-task smoke step must copy `lib/doc-container.js` alongside `main.js` (first time the plugin ships a local `require`). Confirm `lib/` is included by the deploy copy.
 - **Method-name reconciliation (T9):** `_openInView` / `openSidecarMetadata` are placeholders for the actual existing P21 method names — the executor must grep and match, with a direct-routing fallback provided.
 - **UI is the fine-tuning surface:** markup/CSS live in `render()`/`renderNode()`/`renderDetail()` + Task 11; visual changes won't alter the task structure.
+- **Additions coverage (Tasks 14–20):** lifecycle next-review/overdue (T14), status rollup (T15), next-version name (T16) — all unit-tested; ContainerOverviewView by kind + New Category/Collection folder creation + collection search (T17); sidebar tree filter (T18); New version action (T19); re-smoke (T20). Amendments wire lifecycle fields into the schema (T4) + detail (T8), and switch container label-click to open the overview (T7).
+- **Shared main-area leaf:** the container overview and document detail reuse one main-area leaf (re-typed via `setViewState`); openers prefer an existing `VIEW_TYPE_DOC_CONTAINER`/`VIEW_TYPE_DOC_DETAIL` leaf before opening a new tab — avoids tab stacking across drill-down.
