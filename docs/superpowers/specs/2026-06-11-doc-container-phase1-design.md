@@ -12,14 +12,15 @@
 
 Add a presentation-and-management layer over the Office documents that already live as real files in the vault. The native Obsidian file explorer is weak for a structured document taxonomy: clicking a folder only expands it (no contextual view), document versions sit as equal siblings with nothing marking which is current, `.docx`/`.xlsx` entries are inert, and reaching one file takes four levels of expand/collapse.
 
-Phase 1 delivers a custom main-area view that owns navigation end-to-end and renders a document-status detail panel. **No database, audit, conversion, or diff** — those are Phases 2–5. A second, explicit Phase 1 goal is to **define the metadata schema** so Phase 2 (SQLite) has a fixed target.
+Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds into Obsidian's navigation alongside Files/Search) plus a **main-area document-status detail view** opened when a Document is selected. **No database, audit, conversion, or diff** — those are Phases 2–5. A second, explicit Phase 1 goal is to **define the metadata schema** so Phase 2 (SQLite) has a fixed target.
 
 ## 2. Scope
 
 **In scope (Phase 1):**
-- A `ItemView` "Document Browser" in the main workspace area, inside the existing `obsidi-office` plugin, behind a settings toggle, lazy-loaded.
+- A **left-sidebar leaf** "Document Browser" (own ribbon icon, peer to Files/Search), inside the existing `obsidi-office` plugin, behind a settings toggle, lazy-loaded — renders the taxonomy tree.
+- A **main-area leaf** "Document Status" that renders + edits a document's metadata when a Document is opened from the sidebar tree.
 - Managed-root + Category folder scaffolding (ensure-exists, idempotent).
-- A smart tree (Category → Collection → Document; no version nodes) with single-click → detail.
+- Smart tree (Category → Collection → Document; no version nodes): clicking a **Document** opens its status in the main area; clicking a **Category/Collection** expands/collapses it.
 - A document-status detail form rendering + editing document-level metadata from the current version's sidecar.
 - Filename-convention version parsing; current version pinned, history shown in the detail panel.
 - Detail actions: Open in editor, Open in system app, Edit metadata, Reveal in file explorer.
@@ -51,7 +52,10 @@ Four roles, mapped onto real on-disk folders under a single managed root:
 
 ### 5.1 Components
 
-- **`DocumentBrowserView` (`ItemView`)** — registered via `registerView` under a new view type (e.g. `obsidi-office-doc-browser`). Main-area leaf. Owns the tree + detail render and all click behaviour. Lazy-loaded: code path only runs when the feature toggle is on.
+**Architecture decision (UI placement):** the tree lives in the **left sidebar** as its own curated pane (peer to Files/Search), not as a main-area split and not by augmenting Obsidian's native Files explorer (augmenting was rejected as brittle — it hooks explorer internals and mixes the taxonomy with all other vault files). Selecting a Document opens its status detail in the **main area**. Two `ItemView`s collaborate:
+
+- **`DocumentBrowserView` (`ItemView`, left sidebar)** — registered via `registerView` under view type `obsidi-office-doc-browser`; mounted in the **left sidebar** (`workspace.getLeftLeaf`), revealed by a ribbon icon + command. Renders the taxonomy tree and owns tree click behaviour. Lazy-loaded: code path only runs when the feature toggle is on. Category/Collection nodes expand/collapse; a Document node opens/updates the detail view.
+- **`DocumentDetailView` (`ItemView`, main area)** — view type `obsidi-office-doc-detail`; a **main-area leaf** opened or re-targeted when a Document is selected in the sidebar tree. Renders the document-status form and metadata editing. **Reuses a single detail leaf** (re-targets it on each selection rather than stacking a tab per document); takes the document's folder path as view state.
 - **`TaxonomyScanner`** — reads `vault.getFiles()` / folder structure filtered to the managed root; builds an in-memory tree of Category/Collection/Document nodes; groups files within a Document into version sets via the version parser. Pure read; no persistence.
 - **`VersionParser`** — parses `<base>_V<major>.<minor>.<ext>` and bare `<base>.<ext>`; returns the version set for a Document and identifies the current (highest) version. Unparseable names → ordered by mtime, no current flag.
 - **`DocumentMetadata` (sidecar adapter)** — reads/writes document-level frontmatter on the current version's `.md` sidecar, reusing the existing P21 sidecar mechanism (`processFrontMatter`, the MetadataModal, rename/delete watchers). Extends the existing schema; does not create a parallel system.
@@ -61,11 +65,11 @@ Four roles, mapped onto real on-disk folders under a single managed root:
 ### 5.2 Data flow
 
 1. Plugin load → if feature toggle on, `RootScaffolder` ensures folders (inside `onLayoutReady`).
-2. User opens Document Browser (ribbon/command) → `DocumentBrowserView` mounts.
+2. User reveals Document Browser (ribbon/command) → `DocumentBrowserView` mounts in the left sidebar.
 3. `TaxonomyScanner` builds the tree from disk; `VersionParser` resolves versions per Document.
-4. Render tree (down to Document level). User single-clicks a node.
-5. Node selected → detail panel renders. For a Document: `DocumentMetadata` reads the current version's sidecar frontmatter; the file/version list and attachments render from the scanned version set.
-6. User edits metadata → written back to the current version's sidecar. User clicks Open in editor → hands the file to the existing Obsidi-Office editor leaf.
+4. Render tree down to Document level. Clicking a Category/Collection expands/collapses it.
+5. Clicking a **Document** → open or re-target the single `DocumentDetailView` in the main area with the document's folder path as state. The detail view: `DocumentMetadata` reads the current version's sidecar frontmatter; the file/version list and attachments render from the scanned version set.
+6. User edits metadata → written back to the current version's sidecar (the sidebar tree refreshes the affected node's badge). User clicks Open in editor → hands the file to the existing Obsidi-Office editor leaf.
 
 ### 5.3 Reuse (do not rebuild)
 
@@ -132,9 +136,9 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 
 ## 9. UI surface
 
-- **Tree (left):** Category (folder icon) → Collection → Document (doc icon, status badge). No version nodes. Single-click selects; selection drives the detail panel. Greyed "unmanaged" items not shown as Documents.
-- **Detail (right):** document-status form — Title, Doc Number, Class, Revision, Status, Department, Originator, Origination Date, Summary, Tags; Files & Versions list (current pinned + history + attachments); Related Documents (stub table in Phase 1); actions row (Open in editor / System app / Edit metadata / Reveal).
-- **Selecting a Category/Collection node:** detail shows folder-level fields (stub in Phase 1) + child count.
+- **Sidebar tree (left pane, own "Documents" leaf):** Category (folder icon) → Collection → Document (doc icon, status badge). No version nodes. Toolbar: New Document, Refresh, Collapse-all. Category/Collection nodes have twisties (expand/collapse); a Document node opens its detail in the main area and shows a selected state. Greyed "unmanaged" items are not shown as Documents.
+- **Main-area detail leaf ("Document Status"):** document-status form — Title, Doc Number, Class, Revision, Status, Department, Originator, Origination Date, Summary, Tags; Files & Versions list (current pinned + history + attachments); Related Documents (stub table in Phase 1); actions row (Open in editor / System app / Edit metadata / Reveal). A single detail leaf is reused across selections.
+- **Category/Collection selection (Phase 1):** expands/collapses in the tree. Folder-level detail (description, owner) is deferred to Phase 2 (SQLite); no main-area folder view in Phase 1.
 
 ## 10. Settings
 
@@ -144,8 +148,8 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 
 ## 11. Testing / verification
 
-- Desktop smoke: scaffold creates missing Category folders; tree renders a sample taxonomy; single-click shows detail; current-version pin correct across convention/edge cases; metadata edit round-trips to sidecar; Open-in-editor hands off correctly.
-- iPad smoke (after desktop): view mounts, tree renders, detail renders, open-in-editor works (no DB/native deps in Phase 1, so mobile parity expected).
+- Desktop smoke: scaffold creates missing Category folders; sidebar leaf mounts + ribbon/command reveals it; tree renders a sample taxonomy; Category/Collection expand-collapse works; clicking a Document opens the detail in the main area and re-targets the single detail leaf (no tab stacking); current-version pin correct across convention/edge cases; metadata edit round-trips to sidecar and refreshes the tree badge; Open-in-editor hands off correctly.
+- iPad smoke (after desktop): sidebar leaf mounts, tree renders, detail opens in main area, open-in-editor works (no DB/native deps in Phase 1, so mobile parity expected).
 - Edge cases: empty managed root, Document with one file, unparseable filenames, deep Collection nesting, stray non-office files.
 
 ## 12. Open decisions deferred (not Phase 1)
