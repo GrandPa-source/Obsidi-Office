@@ -1309,6 +1309,133 @@ Run: `node --check main.js` → exit 0. Deploy. Reload. Open a Document, click *
 
 ---
 
+---
+
+# Phase 1B — evolved detail view (tabs, notes log, definitions, activity log)
+
+> Folded in from the visual-companion fine-tuning. **Canonical render reference:** `.superpowers/brainstorm/sustained-1/content/document-detail-v4.html` — port markup/handlers from there; production CSS uses Obsidian tokens (Task 11 style block) and scopes `justify-content:space-between` to chevron/select fields only (the Tags-pill alignment fix). Schema sub-structures: spec §6.3. All new state lives in the **current version's sidecar**.
+
+## Task 21: Pure core — inline note-tag extraction
+
+**Files:** Modify `lib/doc-container.js`; Test `lib/doc-container.test.js`
+
+- [ ] **Step 1: Failing test**
+
+```js
+test('extractInlineTags pulls completed #tags, leaves trailing partial', () => {
+  assert.deepStrictEqual(dc.extractInlineTags('Looks good #review next #urgent '),
+    { body: 'Looks good next', tags: ['review','urgent'] });
+  assert.deepStrictEqual(dc.extractInlineTags('no tags here'),
+    { body: 'no tags here', tags: [] });
+  // trailing partial (no space) is captured on flush=true
+  assert.deepStrictEqual(dc.extractInlineTags('done #final', true),
+    { body: 'done', tags: ['final'] });
+});
+```
+
+- [ ] **Step 2: Run → FAIL.** `node --test lib/doc-container.test.js`
+
+- [ ] **Step 3: Implement**
+
+```js
+function extractInlineTags(text, flush) {
+  const tags = []; let body = text;
+  const re = /(^|\s)#([\w-]+)\s/;            // a completed "#tag " token
+  let m; while ((m = body.match(re))) { tags.push(m[2]); body = body.replace(re, '$1'); }
+  if (flush) {                                // on Add: also take a trailing "#tag" with no space
+    const t = body.match(/(^|\s)#([\w-]+)\s*$/);
+    if (t) { tags.push(t[2]); body = body.replace(/(^|\s)#([\w-]+)\s*$/, '$1'); }
+  }
+  return { body: body.trim().replace(/\s+/g, ' '), tags };
+}
+```
+Add to `module.exports`.
+
+- [ ] **Step 4: Run → PASS.**  **Step 5: Commit** — `git commit -am "feat(doc-container): inline note-tag extraction + tests"`
+
+---
+
+## Task 22: DocumentDetailView restructure — scroll body + sticky footer + two tab columns
+
+**Files:** Modify `main.js` (`DocumentDetailView.render`)
+
+Replace the Task 8 single-pane render with: a `.doc-detail-scroll` body (metadata groups + a `.doc-detail-cols` grid of two `.doc-detail-col`s) and a `.doc-detail-footer` (sticky, the action buttons). Each column hosts a scoped tab group (`showTab` scopes to `closest('.doc-detail-col')` — port from the prototype). Metadata renders in the four groups (Identification / Classification & Status / Lifecycle / Description); Tags box uses the left-align modifier.
+
+- [ ] Implement render skeleton with empty tab panes (filled by Tasks 23–29); footer with the 5 actions wired to Task 9 handlers.
+- [ ] `node --check main.js` → exit 0. Deploy + smoke: detail opens, footer pinned, tabs switch independently per column.
+- [ ] Commit — `feat(doc-container): detail view shell (scroll body + sticky footer + two tab columns)`
+
+---
+
+## Task 23: Left tab — Files & Versions + Stakeholders
+
+**Files:** Modify `main.js`
+
+- [ ] **Files & Versions** pane: working version set only (current pinned + history; no attachments here). `⎘ New version` button → Task 19 `newDocumentVersion`.
+- [ ] **Stakeholders** pane: table Name · **Title** · Role · Dept from sidecar `stakeholders[] {name,title,role,dept}`. Originator row editable in Phase 1; Reviewer/Final Approver rows shown but workflow-reserved. Title is the load-bearing field (role-based).
+- [ ] Deploy + smoke; commit — `feat(doc-container): Files&Versions + Stakeholders (Title) tabs`
+
+---
+
+## Task 24: Left tab — Related Documents (links + drag-drop references)
+
+**Files:** Modify `main.js`
+
+- [ ] Pane: a drag-drop zone + **＋ Add link** at the **top**, then the list of entries from sidecar `relatedDocuments[] {kind:'link'|'ref', target, label}` (🔗 link / 📎 ref) with remove.
+- [ ] **Add link** → vault file suggester (reuse Obsidi-Office's existing link-suggest); store `{kind:'link', target:path, label}`.
+- [ ] **Drop** files → copy into the Document folder (or store a path link — default: link if the file is already in the vault, else copy in); store `{kind:'ref', ...}`.
+- [ ] Deploy + smoke; commit — `feat(doc-container): Related Documents (vault links + drag-drop refs)`
+
+---
+
+## Task 25: Right tab — Recent Notes (structured log + composer)
+
+**Files:** Modify `main.js`; sidecar `noteLog[]`
+
+- [ ] Composer: note input with **inline `#tag`→pill** (use `docContainer.extractInlineTags` on input + on Add); **Add note** button to the right of the input; a **drag-drop attach** zone **disabled until note text present** (port `updateDropState`); dropped files copy into `<Document>/_notes/` and stage as 📎 pills.
+- [ ] On Add: append `{date, author, body, noteTags[], attachments[], version: <current>}` to sidecar `noteLog`; **note-tags are written to `noteLog`, NOT to the document `tags`** (separate namespace).
+- [ ] Render list newest-first with green note-tags + 📎 attachments. Author = system username (existing helper).
+- [ ] Deploy + smoke; commit — `feat(doc-container): Recent Notes structured log + inline-tag composer + gated attach`
+
+---
+
+## Task 26: Right tab — Search Notes (text + tag + date range)
+
+**Files:** Modify `main.js`
+
+- [ ] Search box + funnel **icon** button toggling a From/To date row (port `toggleDateFilter`/`searchNotes`). Filter `noteLog` by text + note-tags + `[from,to]` (ISO string compare), newest-first.
+- [ ] Deploy + smoke; commit — `feat(doc-container): Search Notes (text + note-tag + date-range)`
+
+---
+
+## Task 27: Right tab — Log (activity feed) + ActivityLog writer
+
+**Files:** Modify `main.js`; sidecar `activityLog[]`
+
+- [ ] Read-only render: icon · action · actor · timestamp, newest-first (port `logHtml` + `LOG_ICON`).
+- [ ] **ActivityLog writer**: a `logActivity(docPath, action, type)` helper that appends `{datetime, actor, action, type}` to the sidecar. Call it from: New version, status change (on metadata save), metadata edit, note add/edit/delete, definition (un)check, document create. **Phase 1 = plugin-originated only**; external-change entries are Phase 3 (audit).
+- [ ] Deploy + smoke; commit — `feat(doc-container): activity Log tab + writer (plugin-originated)`
+
+---
+
+## Task 28: Left tab — Definitions (glossary checkbox table)
+
+**Files:** Modify `main.js`; new settings `glossaryRoot` (default `Definitions/`); sidecar `definitions[]` (included term ids)
+
+- [ ] **Glossary scan**: read entries from the `glossaryRoot` folder (each note/entry = term/criterion + text + type). Build `{id, term, type, text}` list.
+- [ ] **Definitions pane**: a filter box + a **read-only table** (Incl. checkbox · Term/Criterion + type pill · Definition). Checkbox reflects membership in sidecar `definitions`; `toggleDef` adds/removes the term id. **No add/delete rows.** Filter matches term + text + type (comma-AND).
+- [ ] Settings: add `glossaryRoot` path field.
+- [ ] (Deferred / parking lot) document-level "Insert/refresh Definitions section into the .docx" — NOT in this task.
+- [ ] Deploy + smoke; commit — `feat(doc-container): Definitions checkbox table over vault glossary`
+
+---
+
+## Task 29: Re-smoke (fold into Tasks 12–13)
+
+- [ ] Desktop + iPad: all left tabs (Files&Versions / Stakeholders+Title / Related Documents links+refs / Definitions checkbox-table) and right tabs (Recent Notes composer + gated attach / Search Notes filters / Log feed) render and operate; footer stays pinned; note-tags stay out of the document `tags`; `node --test` green incl. `extractInlineTags`.
+
+---
+
 ## Self-Review notes (author)
 
 - **Spec coverage:** scaffolding (T6), sidebar leaf + tree (T7), main detail + reused leaf (T8), filename-convention versioning (T1–T3), metadata schema incl. reserved fields (T4, T8), actions (T9), settings (T5), live refresh + onLayoutReady ordering (T10), styles (T11), desktop+iPad smoke (T12–T13). Flexible-depth Document detection = T3. Folder-level metadata deliberately stubbed (Phase 2) per spec §9.
@@ -1317,3 +1444,4 @@ Run: `node --check main.js` → exit 0. Deploy. Reload. Open a Document, click *
 - **UI is the fine-tuning surface:** markup/CSS live in `render()`/`renderNode()`/`renderDetail()` + Task 11; visual changes won't alter the task structure.
 - **Additions coverage (Tasks 14–20):** lifecycle next-review/overdue (T14), status rollup (T15), next-version name (T16) — all unit-tested; ContainerOverviewView by kind + New Category/Collection folder creation + collection search (T17); sidebar tree filter (T18); New version action (T19); re-smoke (T20). Amendments wire lifecycle fields into the schema (T4) + detail (T8), and switch container label-click to open the overview (T7).
 - **Shared main-area leaf:** the container overview and document detail reuse one main-area leaf (re-typed via `setViewState`); openers prefer an existing `VIEW_TYPE_DOC_CONTAINER`/`VIEW_TYPE_DOC_DETAIL` leaf before opening a new tab — avoids tab stacking across drill-down.
+- **Phase 1B (Tasks 21–29):** evolved detail view — extractInlineTags (unit-tested); detail shell (scroll body + sticky footer + two scoped tab columns); Files&Versions + Stakeholders(Title); Related Documents (links + drag-drop refs); Recent Notes (structured `noteLog`, inline-tag composer, gated `_notes/` attach, **note-tags separate from doc `tags`**); Search Notes (text+tag+date-range); Log (`activityLog` + writer, plugin-originated); Definitions (glossary scan + checkbox table, sidecar `definitions`). Canonical render reference = the `document-detail-v4.html` prototype. Deferred: Definitions insert-into-.docx, activity-log external detection (Phase 3). Schema sub-structures: spec §6.3.

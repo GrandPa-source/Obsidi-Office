@@ -2,7 +2,7 @@
 
 **Date:** 2026-06-11
 **Project:** Obsidi-Office (P21) · `obsidi-office` plugin
-**Branch:** `doc-container` (off `main`) — not yet created
+**Branch:** `doc-container` (off `main`) — created; spec + plan committed
 **Phase:** 1 of a 5-phase roadmap (this spec covers Phase 1 only)
 **Status:** Approved design — pending spec review
 
@@ -24,7 +24,9 @@ Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds 
 - Smart tree (Root → Category → Collection → Document; no version nodes): twistie expands/collapses; clicking a node **label** opens its overview (containers) or detail (Documents).
 - Filename-convention version parsing; current version pinned, history in the detail.
 - **Lifecycle:** effective date, review frequency, computed next-review with an **overdue** flag surfaced in tree/overviews/detail.
-- Detail actions: Open in editor, New version, Open in system app, Edit metadata, Reveal in file explorer.
+- Detail actions (floating footer): Open in editor, New version, Open in system app, Edit metadata, Reveal in file explorer.
+- **Detail left tabs:** Files & Versions, Stakeholders (Name·Title·Role·Dept), Related Documents (vault links + drag-drop reference material), Definitions (checkbox table over the vault glossary — include/exclude, no add/delete).
+- **Detail right tabs:** Recent Notes (structured note log; inline-`#tag` composer + note-text-gated drag-drop attachments; note-tags a separate namespace), Search Notes (text + note-tag + icon date-range filter), Log (read-only activity feed of plugin-originated actions).
 - Responsive single-column collapse, empty states, file-type icons.
 - Settings: enable toggle, managed-root path, editable Category list.
 
@@ -34,6 +36,8 @@ Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds 
 - Content-conversion pipeline (mammoth/turndown/SheetJS) and the LLM corpus.
 - Version diff rendering.
 - All approval **workflow** (reviewers/approver routing, Pending Review / Pending Approval queues, status-transition enforcement). Workflow *fields* are reserved in the schema but not acted on.
+- **Definitions insert-into-document** — writing the included glossary text into the `.docx` body (an editor content op). Phase 1 records inclusion (the checkbox) only.
+- **Activity-log external-change detection** — Phase 3 audit. Phase 1 logs plugin-originated actions only.
 
 ## 3. Roadmap context
 
@@ -62,7 +66,13 @@ Four roles, mapped onto real on-disk folders under a single managed root:
   - **Category** → a Collections grid (cards with doc count + status mini-rollup + overdue flag) + **＋ New Collection** (creates `<category>/<name>` folder).
   - **Collection** → a Documents table (Title · Doc # · Class · Status · Next review/overdue · Modified · Tags), filtered by the same title+tag search, + **＋ New Document**.
   - All levels show an aggregate **status rollup** (counts by status + overdue) computed from the live scan + sidecars. Clicking a card/row drills down (re-targets this same overview leaf, or opens the detail leaf for a Document).
-- **`DocumentDetailView` (`ItemView`, main area)** — view type `obsidi-office-doc-detail`; a **reused main-area leaf** opened when a Document is selected. Renders the document-status form (metadata top, then two columns: Files & Versions left, a tabbed **Related Stakeholders / Related Documents** panel right) and metadata editing. Takes the document's folder path as view state. (The overview and detail may share one main-area leaf, re-typed on navigation.)
+- **`DocumentDetailView` (`ItemView`, main area)** — view type `obsidi-office-doc-detail`; a **reused main-area leaf** opened when a Document is selected (may share one main-area leaf with the overview, re-typed on navigation). Layout = a **scrollable body** + a **sticky floating footer** (action bar pinned to the bottom of the view, so the tab panels can grow/shrink without moving it). Body = the **metadata form** (grouped: Identification / Classification & Status / Lifecycle / Description) over **two independently-scoped tabbed columns**:
+  - **Left tabs** — *Files & Versions* (working version set only: current pinned + history; **⎘ New version**), *Stakeholders* (Name · **Title** · Role · Dept), *Related Documents* (vault links + drag-drop reference material), *Definitions* (a filterable, read-only **table of the vault glossary** with a per-row **checkbox** to include a term/criterion in this document — no add/delete).
+  - **Right tabs** — *Recent Notes* (structured note log + composer), *Search Notes* (text + note-tag + icon date-range filter), *Log* (read-only activity feed).
+  - Switching a tab in one column does not affect the other. Takes the document's folder path as view state.
+- **`NoteLog` (sidecar adapter)** — reads/writes the structured note log; each note `{date, author, body, noteTags[], attachments[], version?}`. **Note-tags are a separate namespace** from the document's `tags` (not shared with the metadata cache / Obsidi-Office tag fields). The composer parses inline `#tag` tokens out of the note text into pills; the drag-drop attach zone is disabled until note text is entered; attachments (minutes, PDFs) are copied into a per-Document `_notes/` subfolder and referenced.
+- **`ActivityLog` (sidecar adapter)** — appends read-only entries `{datetime, actor, action, type}` for plugin-originated actions (version created, status changed, metadata edited, note added/edited/deleted, reference attached, definition (un)checked, document created). External-change entries arrive via the Phase 3 audit.
+- **`Glossary` + `Definitions` adapters** — `Glossary` scans a curated **vault glossary** folder (each entry = term/criterion + text + type). `Definitions` stores the document's **included** term ids in the sidecar (checkbox = include/exclude). A document-level **"Insert/refresh Definitions section"** action (optional, later phase) writes the included set into the .docx body; the checkbox alone is the Phase-1 attach/traceability record.
 - **`TaxonomyScanner`** — reads `vault.getFiles()` / folder structure filtered to the managed root; builds an in-memory tree of Category/Collection/Document nodes; groups files within a Document into version sets. Pure read; no persistence.
 - **Pure-core helpers (`lib/doc-container.js`, no Obsidian dep, unit-tested):** `parseVersion` / `compareVersions` / `groupDocumentFiles` (versioning); `buildTaxonomy`; `nextVersionName(current, bump)` (compute the next `_Vx.y` filename); `computeNextReview(effectiveDate, freqDays)` + `isOverdue(nextReview, today)` (lifecycle); `rollupByStatus(documents)` + `countOverdue(documents, today)` (overview rollups); `DOC_FIELDS`/`STATUS_VALUES`/`DOC_CLASSES` constants.
 - **`DocumentMetadata` (sidecar adapter)** — reads/writes document-level frontmatter on the current version's `.md` sidecar, reusing the existing P21 sidecar mechanism (`processFrontMatter`, the MetadataModal, rename/delete watchers). Extends the existing schema; does not create a parallel system.
@@ -110,14 +120,7 @@ One schema, defined now. Phase 1 implements the descriptive subset; workflow fie
 | `tags` | string[] | Existing sidecar field |
 | `created` / `modified` | date | Existing sidecar fields |
 
-**Reserved — defined, not acted on in Phase 1** (surfaced read-only in the detail's Related tabs where relevant):
-
-| Field | Type | Activated in |
-|---|---|---|
-| `reviewers` | string[] | Workflow phase (shown in Related Stakeholders) |
-| `finalApprover` | string | Workflow phase (shown in Related Stakeholders) |
-| `statusHistory` | array of {status, by, date} | Workflow phase |
-| `relatedDocuments` | string[] (doc refs) | Phase 5 / workflow (shown in Related Documents) |
+**Structured sub-objects** (in the sidecar; full shapes in §6.3): `noteLog[]`, `stakeholders[]`, `relatedDocuments[]`, `definitions[]`, `activityLog[]`. **Reserved scalars** still deferred: `statusHistory[]` (workflow phase) — the per-status-change audit, distinct from the general `activityLog`.
 
 ### 6.2 Folder-level (Category / Collection)
 
@@ -130,6 +133,22 @@ Schema defined now, **persisted in Phase 2 SQLite** (folders have no safe frontm
 | `owner` | string | Category, Collection |
 | `parent` | ref | Collection → Category |
 | `expectedFiles` (manifest) | per Document | Phase 2/3 audit |
+
+### 6.3 Document sidecar sub-structures (the evolved detail view)
+
+All live in the **current version's sidecar** frontmatter (the note log may also mirror to the sidecar body for readability — decide at build). Note-tags, the activity log, and definitions are **document-scoped** and distinct from the document's `tags`.
+
+| Field | Shape | Phase | Notes |
+|---|---|---|---|
+| `noteLog` | `[{date, author, body, noteTags[], attachments[], version?}]` | 1 | Development/status log shown in *Recent Notes*. Inline `#tag` → note-tag pill; **note-tags are a separate namespace** from `tags`. Attachments copied into `_notes/` and referenced. `version` parks to the current version (see §14). |
+| `stakeholders` | `[{name, title, role, dept}]` | 1 (Title + Originator) · workflow (Reviewer / Approver rows) | **Title is role-based** so the record isn't person-centred over time. Replaces the old scalar `reviewers`/`finalApprover`. |
+| `relatedDocuments` | `[{kind:'link'\|'ref', target, label}]` | 1 | `link` = a vault-file link; `ref` = reference material (dropped file copied into the Document folder, or a path link). Shown in *Related Documents*. |
+| `definitions` | `[termId]` (ids of included glossary entries) | 1 (include/attach) · later (insert section into .docx) | *Definitions* tab = filterable read-only table of the glossary with a **checkbox** per entry; checking includes it (no add/delete). Optional document-level action inserts the included set into the doc body. |
+| `activityLog` | `[{datetime, actor, action, type}]` | 1 (plugin-originated) · 3 (external) | Read-only feed in the *Log* tab. Plugin records its own actions now; external add/delete/edit arrive with the Phase 3 audit. |
+
+### 6.4 Glossary source
+
+A **curated glossary in the vault** (decision): a folder/note set the user maintains, each entry = term or criterion + definition text + type. The Definitions tab searches/filters it (title + text + type, comma-AND). Not plugin-managed; version-controlled with the vault. Location is a settings path (default e.g. `Definitions/`).
 
 ## 7. Version convention
 
@@ -151,8 +170,12 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
   - **Category:** Collections grid (cards: name, doc count, status mini-rollup, overdue flag) + **＋ New Collection** (modal → name → live path preview → create folder). Card click drills into the Collection.
   - **Collection:** Documents table (Title · Doc # · Class · Status · Next review/overdue · Modified · Tags) + **＋ New Document**; the search box filters by title + tags. Row click opens the Document detail.
   - Every level shows an aggregate **status rollup** (counts by status + overdue), derived from the live scan + sidecars.
-- **Document detail (main area, "Document Status"):** metadata top in grouped sections (Identification / Classification & Status / **Lifecycle** [Origination, Effective, Review Frequency, Next Review + overdue] / Description); then two columns — **left** Files & Versions (current pinned + history + attachments, with **⎘ New version** + **＋ Add file**), **right** a tabbed **Related Stakeholders / Related Documents** panel (reserved fields, mostly stub in Phase 1); actions row (Open in editor / New version / System app / Edit metadata / Reveal).
-- **Responsiveness / states:** the two detail columns collapse to one on narrow/iPad panes; explicit empty states (no node selected, Document with one file, empty Category/Collection); file-type icons differ by extension (docx/pptx/xlsx/pdf).
+- **Document detail (main area, "Document Status"):** a scrollable body + a **sticky floating footer**.
+  - **Metadata top** in grouped sections: *Identification* (Title, Doc Number, Document Class) · *Classification & Status* (Revision, Status, Department, Originator) · *Lifecycle* (Origination, Effective, Review Frequency, Next Review + overdue) · *Description* (Summary, Tags — Tags left-aligned/wrapping; only chevron/select fields use right-justified content).
+  - **Left tabbed column** — *Files & Versions* (working version set only: current pinned + history; **⎘ New version** in the tab header) · *Stakeholders* (table: Name · **Title** · Role · Dept; Title role-based) · *Related Documents* (drag-drop zone + ＋ Add link at top, then list of 🔗 links / 📎 reference material with remove) · *Definitions* (filter box + read-only table of glossary terms/criteria, each row a **checkbox** to include in this document — term/criterion colour-tagged; no add/delete).
+  - **Right tabbed column** — *Recent Notes* (composer: note input with inline `#tag`→pill, **Add note** button to its right, a **drag-drop attach** zone disabled until note text is entered; below, the note log newest-first with green note-tags + 📎 attachments) · *Search Notes* (search box + funnel **icon** toggling a From/To date range; filters by text + note-tag + range) · *Log* (read-only activity feed: icon · action · actor · timestamp, newest-first).
+  - **Floating footer** (pinned): Open in editor · New version · Open in system app · Edit metadata · Reveal in file explorer.
+- **Responsiveness / states:** the two columns collapse to one on narrow/iPad panes; explicit empty states (no node selected, Document with one file, empty Category/Collection, empty notes/log/definitions); file-type icons differ by extension (docx/pptx/xlsx/pdf).
 - **Reuse:** the overview leaf and detail leaf may be the same reused main-area leaf, re-typed on navigation (no tab stacking).
 
 ## 10. Settings
@@ -164,7 +187,7 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 ## 11. Testing / verification
 
 - Unit (node --test, pure core): version parse/compare/group, taxonomy build, `nextVersionName`, `computeNextReview`/`isOverdue`, `rollupByStatus`/`countOverdue`, schema constants.
-- Desktop smoke: scaffold creates missing Category folders; sidebar leaf mounts + ribbon/command reveals it; tree renders + the filter box matches title+tags (comma=AND); twistie expands, label-click opens overview/detail. Container overview by kind: Root→Categories+New Category, Category→Collections cards+rollup+New Collection (modal creates folder w/ live path), Collection→Documents table+search+New Document. Document detail: metadata groups incl. Lifecycle; next-review computes + overdue flag shows; Files & Versions with current pinned; **New version** creates the next `_Vx.y` and carries metadata; Related tabs render (reserved fields mostly `—`); all actions work; edits round-trip and refresh tree/overview.
+- Desktop smoke: scaffold creates missing Category folders; sidebar leaf mounts + ribbon/command reveals it; tree renders + the filter box matches title+tags (comma=AND); twistie expands, label-click opens overview/detail. Container overview by kind: Root→Categories+New Category, Category→Collections cards+rollup+New Collection (modal creates folder w/ live path), Collection→Documents table+search+New Document. Document detail: metadata groups incl. Lifecycle; next-review computes + overdue flag shows; Files & Versions with current pinned; **New version** creates the next `_Vx.y` and carries metadata. Left tabs (Files & Versions / Stakeholders w/ Title / Related Documents links + drag-drop refs / Definitions checkbox-table over the glossary) and right tabs (Recent Notes composer w/ inline-`#tag` pills + note-text-gated drag-drop attach / Search Notes text+note-tag+date-range / Log feed) all render and operate; the floating footer stays pinned while a tab's content grows; all footer actions work; edits round-trip and refresh tree/overview.
 - iPad smoke (after desktop): sidebar leaf, filter, overview, detail all mount; two columns collapse to one; open-in-editor works; New version works; "Open in system app" degrades gracefully (Electron `shell` absent). No DB/native deps, so parity expected.
 - Edge cases: empty managed root, empty Category/Collection, Document with one file, unparseable filenames, deep Collection nesting, stray non-office files, missing/empty lifecycle dates (no overdue when no next-review).
 
@@ -176,12 +199,14 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 4. xlsx diff representation (structural) — Phase 5.
 5. Workflow data model details — post-Phase 5 workflow phases (schema reserved here).
 
-## 13. Parking lot — future enhancements (captured during UI fine-tuning)
+## 14. Parking lot — future enhancements
 
-- **New note auto-associates with the current/most-active version.** When a note is added, default its association to the Document's current version (the pinned `_Vx.y`), so the development log ties to the revision it was written against. User-overridable later; useful once the Notes log is structured (`{date, author, body, tags[], files[], version?}`).
-- **(Tracking) Detail-view UI evolution awaiting fold-in to this spec:** twin tabbed columns (Files & Versions / Stakeholders / Related Documents — and Recent Notes / Search Notes); Notes log with inline `#tag`→pill composer + note-text-gated drag-drop attachments + note-scoped tags (separate namespace from document tags); Stakeholders **Title** column (role-based, not person-centered); Related Documents = vault links + drag-drop reference material; floating (sticky-bottom) action footer; icon-only date-range filter on Search Notes. These were prototyped in the visual companion (`.superpowers/brainstorm/sustained-1/content/document-detail-v4.html`) and are not yet reflected in §5/§6/§9.
+- **New note auto-associates with the current/most-active version.** When a note is added, default its `version` to the Document's current pinned `_Vx.y`, so the development log ties to the revision it was written against. User-overridable.
+- **Definitions → insert/refresh section in the .docx.** A document-level action that writes the included glossary entries into a Definitions section in the document body (the "optional insert" half; the checkbox-include half ships in Phase 1).
 
-## 13. Out-of-scope risks to watch
+> The detail-view UI evolution (twin tabbed columns, structured note log + composer, note-scoped tags, Stakeholders Title, Related Documents links/refs, floating footer, Log, Definitions checkbox table) is now folded into §2/§5/§6/§9. Prototype: `.superpowers/brainstorm/sustained-1/content/document-detail-v4.html`.
+
+## 15. Out-of-scope risks to watch
 
 - **Scope creep toward QMS workflow** — keep Phase 1 to navigation + metadata; resist building queues/routing.
 - **Sidecar schema drift** — extend the existing schema additively; don't fork the sidecar format.
