@@ -176,6 +176,11 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 4. xlsx diff representation (structural) — Phase 5.
 5. Workflow data model details — post-Phase 5 workflow phases (schema reserved here).
 
+## 13. Parking lot — future enhancements (captured during UI fine-tuning)
+
+- **New note auto-associates with the current/most-active version.** When a note is added, default its association to the Document's current version (the pinned `_Vx.y`), so the development log ties to the revision it was written against. User-overridable later; useful once the Notes log is structured (`{date, author, body, tags[], files[], version?}`).
+- **(Tracking) Detail-view UI evolution awaiting fold-in to this spec:** twin tabbed columns (Files & Versions / Stakeholders / Related Documents — and Recent Notes / Search Notes); Notes log with inline `#tag`→pill composer + note-text-gated drag-drop attachments + note-scoped tags (separate namespace from document tags); Stakeholders **Title** column (role-based, not person-centered); Related Documents = vault links + drag-drop reference material; floating (sticky-bottom) action footer; icon-only date-range filter on Search Notes. These were prototyped in the visual companion (`.superpowers/brainstorm/sustained-1/content/document-detail-v4.html`) and are not yet reflected in §5/§6/§9.
+
 ## 13. Out-of-scope risks to watch
 
 - **Scope creep toward QMS workflow** — keep Phase 1 to navigation + metadata; resist building queues/routing.
