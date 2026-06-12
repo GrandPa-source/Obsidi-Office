@@ -1422,10 +1422,10 @@ Replace the Task 8 single-pane render with: a `.doc-detail-scroll` body (metadat
 
 **Files:** Modify `main.js`; new settings `glossaryRoot` (default `Definitions/`); sidecar `definitions[]` (included term ids)
 
-- [ ] **Glossary scan**: read entries from the `glossaryRoot` folder (each note/entry = term/criterion + text + type). Build `{id, term, type, text}` list.
-- [ ] **Definitions pane**: a filter box + a **read-only table** (Incl. checkbox · Term/Criterion + type pill · Definition). Checkbox reflects membership in sidecar `definitions`; `toggleDef` adds/removes the term id. **No add/delete rows.** Filter matches term + text + type (comma-AND).
-- [ ] Settings: add `glossaryRoot` path field.
-- [ ] (Deferred / parking lot) document-level "Insert/refresh Definitions section into the .docx" — NOT in this task.
+- [ ] **Glossary scan**: read entries from the settings-toggled `glossaryRoot` folder (**Definitions + Acronyms only**); each entry = term + text + type ∈ {definition, acronym}. Build `{id, term, type, text}`.
+- [ ] **Definitions pane**: filter box + **read-only table**, columns: Term (+ muted type text, **no pill**) · Definition (overflow-clamped + **"more"** expander) · a small **right-aligned include checkbox** (last column). Checkbox reflects membership in sidecar `definitions`; `toggleDef` adds/removes the term id. **No add/delete.** Filter matches term + text (comma-AND).
+- [ ] Settings: add Definitions-glossary **toggle** + `glossaryRoot` path.
+- [ ] (Deferred / §14) insert into the .docx — manual "Insert/refresh Definitions & Acronyms section" recommended; live auto-insert-on-check is the heavier future option. NOT in this task.
 - [ ] Deploy + smoke; commit — `feat(doc-container): Definitions checkbox table over vault glossary`
 
 ---

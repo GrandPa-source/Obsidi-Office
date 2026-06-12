@@ -25,7 +25,7 @@ Phase 1 delivers a curated **left-sidebar tree** (a "Documents" pane that folds 
 - Filename-convention version parsing; current version pinned, history in the detail.
 - **Lifecycle:** effective date, review frequency, computed next-review with an **overdue** flag surfaced in tree/overviews/detail.
 - Detail actions (floating footer): Open in editor, New version, Open in system app, Edit metadata, Reveal in file explorer.
-- **Detail left tabs:** Files & Versions, Stakeholders (Name·Title·Role·Dept), Related Documents (vault links + drag-drop reference material), Definitions (checkbox table over the vault glossary — include/exclude, no add/delete).
+- **Detail left tabs:** Files & Versions, Stakeholders (Name·Title·Role·Dept), Related Documents (vault links + drag-drop reference material), Definitions (read-only checkbox table over the vault glossary of **Definitions & Acronyms** — right-aligned include checkbox, overflow + "more", no type pills, no add/delete).
 - **Detail right tabs:** Recent Notes (structured note log; inline-`#tag` composer + note-text-gated drag-drop attachments; note-tags a separate namespace), Search Notes (text + note-tag + icon date-range filter), Log (read-only activity feed of plugin-originated actions).
 - Responsive single-column collapse, empty states, file-type icons.
 - Settings: enable toggle, managed-root path, editable Category list.
@@ -67,12 +67,12 @@ Four roles, mapped onto real on-disk folders under a single managed root:
   - **Collection** → a Documents table (Title · Doc # · Class · Status · Next review/overdue · Modified · Tags), filtered by the same title+tag search, + **＋ New Document**.
   - All levels show an aggregate **status rollup** (counts by status + overdue) computed from the live scan + sidecars. Clicking a card/row drills down (re-targets this same overview leaf, or opens the detail leaf for a Document).
 - **`DocumentDetailView` (`ItemView`, main area)** — view type `obsidi-office-doc-detail`; a **reused main-area leaf** opened when a Document is selected (may share one main-area leaf with the overview, re-typed on navigation). Layout = a **scrollable body** + a **sticky floating footer** (action bar pinned to the bottom of the view, so the tab panels can grow/shrink without moving it). Body = the **metadata form** (grouped: Identification / Classification & Status / Lifecycle / Description) over **two independently-scoped tabbed columns**:
-  - **Left tabs** — *Files & Versions* (working version set only: current pinned + history; **⎘ New version**), *Stakeholders* (Name · **Title** · Role · Dept), *Related Documents* (vault links + drag-drop reference material), *Definitions* (a filterable, read-only **table of the vault glossary** with a per-row **checkbox** to include a term/criterion in this document — no add/delete).
+  - **Left tabs** — *Files & Versions* (working version set only: current pinned + history; **⎘ New version**), *Stakeholders* (Name · **Title** · Role · Dept), *Related Documents* (vault links + drag-drop reference material), *Definitions* (a filterable, read-only **table of the vault glossary's Definitions & Acronyms**: Term · Definition [overflow + **"more"**] · small **right-aligned include checkbox**; no type pills, no add/delete).
   - **Right tabs** — *Recent Notes* (structured note log + composer), *Search Notes* (text + note-tag + icon date-range filter), *Log* (read-only activity feed).
   - Switching a tab in one column does not affect the other. Takes the document's folder path as view state.
 - **`NoteLog` (sidecar adapter)** — reads/writes the structured note log; each note `{date, author, body, noteTags[], attachments[], version?}`. **Note-tags are a separate namespace** from the document's `tags` (not shared with the metadata cache / Obsidi-Office tag fields). The composer parses inline `#tag` tokens out of the note text into pills; the drag-drop attach zone is disabled until note text is entered; attachments (minutes, PDFs) are copied into a per-Document `_notes/` subfolder and referenced.
 - **`ActivityLog` (sidecar adapter)** — appends read-only entries `{datetime, actor, action, type}` for plugin-originated actions (version created, status changed, metadata edited, note added/edited/deleted, reference attached, definition (un)checked, document created). External-change entries arrive via the Phase 3 audit.
-- **`Glossary` + `Definitions` adapters** — `Glossary` scans a curated **vault glossary** folder (each entry = term/criterion + text + type). `Definitions` stores the document's **included** term ids in the sidecar (checkbox = include/exclude). A document-level **"Insert/refresh Definitions section"** action (optional, later phase) writes the included set into the .docx body; the checkbox alone is the Phase-1 attach/traceability record.
+- **`Glossary` + `Definitions` adapters** — `Glossary` scans a curated **vault glossary** folder (toggled on + path-set in settings) holding **Definitions and Acronyms only** (each entry = term + its text + type ∈ {definition, acronym}). `Definitions` stores the document's **included** term ids in the sidecar (checkbox = include/exclude). Inserting the included set into the .docx is a **later** document-level action (see §14); the checkbox alone is the Phase-1 include/traceability record.
 - **`TaxonomyScanner`** — reads `vault.getFiles()` / folder structure filtered to the managed root; builds an in-memory tree of Category/Collection/Document nodes; groups files within a Document into version sets. Pure read; no persistence.
 - **Pure-core helpers (`lib/doc-container.js`, no Obsidian dep, unit-tested):** `parseVersion` / `compareVersions` / `groupDocumentFiles` (versioning); `buildTaxonomy`; `nextVersionName(current, bump)` (compute the next `_Vx.y` filename); `computeNextReview(effectiveDate, freqDays)` + `isOverdue(nextReview, today)` (lifecycle); `rollupByStatus(documents)` + `countOverdue(documents, today)` (overview rollups); `DOC_FIELDS`/`STATUS_VALUES`/`DOC_CLASSES` constants.
 - **`DocumentMetadata` (sidecar adapter)** — reads/writes document-level frontmatter on the current version's `.md` sidecar, reusing the existing P21 sidecar mechanism (`processFrontMatter`, the MetadataModal, rename/delete watchers). Extends the existing schema; does not create a parallel system.
@@ -143,12 +143,12 @@ All live in the **current version's sidecar** frontmatter (the note log may also
 | `noteLog` | `[{date, author, body, noteTags[], attachments[], version?}]` | 1 | Development/status log shown in *Recent Notes*. Inline `#tag` → note-tag pill; **note-tags are a separate namespace** from `tags`. Attachments copied into `_notes/` and referenced. `version` parks to the current version (see §14). |
 | `stakeholders` | `[{name, title, role, dept}]` | 1 (Title + Originator) · workflow (Reviewer / Approver rows) | **Title is role-based** so the record isn't person-centred over time. Replaces the old scalar `reviewers`/`finalApprover`. |
 | `relatedDocuments` | `[{kind:'link'\|'ref', target, label}]` | 1 | `link` = a vault-file link; `ref` = reference material (dropped file copied into the Document folder, or a path link). Shown in *Related Documents*. |
-| `definitions` | `[termId]` (ids of included glossary entries) | 1 (include/attach) · later (insert section into .docx) | *Definitions* tab = filterable read-only table of the glossary with a **checkbox** per entry; checking includes it (no add/delete). Optional document-level action inserts the included set into the doc body. |
+| `definitions` | `[termId]` (ids of included glossary entries) | 1 (include) · later (insert) | *Definitions* tab = filterable read-only table of the glossary (**Definitions + Acronyms only**). Columns: Term · Definition (overflow-clamped with a **"more"** expander) · a small **right-aligned include checkbox** (last column); type shown as muted text, **no pills**; no add/delete. Insert into the .docx is a **later** action (§14). |
 | `activityLog` | `[{datetime, actor, action, type}]` | 1 (plugin-originated) · 3 (external) | Read-only feed in the *Log* tab. Plugin records its own actions now; external add/delete/edit arrive with the Phase 3 audit. |
 
 ### 6.4 Glossary source
 
-A **curated glossary in the vault** (decision): a folder/note set the user maintains, each entry = term or criterion + definition text + type. The Definitions tab searches/filters it (title + text + type, comma-AND). Not plugin-managed; version-controlled with the vault. Location is a settings path (default e.g. `Definitions/`).
+A **curated glossary in the vault** (decision): a folder the user maintains holding **Definitions and Acronyms only** (each entry = term + its text + type ∈ {definition, acronym}; no criteria). **Toggled on + path-set in settings** (default `Definitions/`). The Definitions tab filters it (term + text, comma-AND). Not plugin-managed; version-controlled with the vault.
 
 ## 7. Version convention
 
@@ -183,6 +183,7 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 - **Enable Document Browser** (toggle; default off until smoke-tested).
 - **Managed root** (path, default `Documents/`).
 - **Categories** (editable list, default `Governance`, `Projects`, `SOPs`).
+- **Definitions glossary** (toggle + folder path, default `Definitions/`; holds Definitions & Acronyms for the Definitions tab).
 
 ## 11. Testing / verification
 
@@ -202,7 +203,7 @@ Simple model (no primary/editable roles): **current version** (pinned) + **older
 ## 14. Parking lot — future enhancements
 
 - **New note auto-associates with the current/most-active version.** When a note is added, default its `version` to the Document's current pinned `_Vx.y`, so the development log ties to the revision it was written against. User-overridable.
-- **Definitions → insert/refresh section in the .docx.** A document-level action that writes the included glossary entries into a Definitions section in the document body (the "optional insert" half; the checkbox-include half ships in Phase 1).
+- **Definitions → insert into the .docx.** Recommended first form: a manual document-level **"Insert/refresh Definitions & Acronyms section"** action (idempotent, managed region). Heavier future option (user-requested): **live auto-insert/-remove as each checkbox toggles** — requires the doc open + two-way sync of a managed section. The checkbox-include half ships in Phase 1; both insert forms are later.
 
 > The detail-view UI evolution (twin tabbed columns, structured note log + composer, note-scoped tags, Stakeholders Title, Related Documents links/refs, floating footer, Log, Definitions checkbox table) is now folded into §2/§5/§6/§9. Prototype: `.superpowers/brainstorm/sustained-1/content/document-detail-v4.html`.
 
