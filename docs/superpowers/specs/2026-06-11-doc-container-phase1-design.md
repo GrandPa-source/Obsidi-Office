@@ -100,6 +100,16 @@ Four roles, mapped onto real on-disk folders under a single managed root:
 - **ItemView registration + lifecycle** — pattern proven in P21 (`DocxView`/`XlsxView`) and P11/P13 master-detail views.
 - **Open-in-editor handoff** — the existing `obsidi-office` view-open routing.
 
+### 5.4 Cross-platform (iPad / iOS) — HARD REQUIREMENT
+
+The plugin **must run on Obsidian mobile (iPad/iOS)**, not desktop-only. Obsidi-Office is already iPad-verified; doc-container must stay that way:
+
+- **No relative `require('./lib/...')`** — Obsidian mobile cannot resolve sibling-file requires (the existing plugin has *zero* relative requires; it **inlines** vendored code into `main.js`, e.g. `FFLATE_UMD_SOURCE`). So: `lib/doc-container.js` is the **source of truth for `node --test`** (desktop dev), and the **shipped plugin inlines it into `main.js`** via `scripts/inline-doc-container.js`. One source, unit-tested on desktop, mobile-safe at runtime.
+- **No Electron-only APIs in the core path.** "Open in system app" uses `electron.shell` → guard + degrade to a Notice on mobile. File I/O via the vault adapter (async), reusing P21's mobile `vio` pattern; no top-level `fs`/`path` on mobile.
+- **No native modules.** Phase 2 SQLite = **`sql.js` (WASM)**, not `better-sqlite3` (precedent: M01-ARCH on iPad). Phase 4 conversion = **in-process JS** (mammoth/turndown/SheetJS); no Python/Docker.
+- **Responsive UI:** the detail two-column layout + project tabs collapse to one column on narrow panes; touch targets per ui-standards.
+- **Every increment includes an iPad smoke gate** (Tasks 13 / 20 / 29 / 36), run after the desktop gate via Obsidian Sync. Deploy = `main.js` (with core inlined) + `manifest.json` + styles — **not** `lib/` (dev/test only).
+
 ## 6. Metadata schema
 
 One schema, defined now. Phase 1 implements the descriptive subset; workflow fields are reserved (defined, nullable, unused until later phases).
