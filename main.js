@@ -348,6 +348,84 @@ const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
 const VIEW_TYPE_DOC_BROWSER   = 'obsidi-office-doc-browser';
 const VIEW_TYPE_DOC_DETAIL    = 'obsidi-office-doc-detail';
 const VIEW_TYPE_DOC_CONTAINER = 'obsidi-office-doc-container';
+
+// ---------------------------------------------------------------------------
+// doc-container styles (Task 11) — injected once into document.head at load.
+// Covers DocumentBrowserView, DocumentDetailView, ContainerOverviewView.
+// ---------------------------------------------------------------------------
+const DOC_CONTAINER_CSS = `
+.doc-container-pane { font-size: var(--font-ui-small); }
+.doc-container-toolbar { display:flex; align-items:center; justify-content:space-between; padding:6px 10px 4px; color: var(--text-faint); }
+.doc-container-title { font-size:10px; letter-spacing:.07em; text-transform:uppercase; }
+.doc-container-act { cursor:pointer; font-size:13px; }
+.doc-container-act:hover { color: var(--text-normal); }
+.doc-container-filter { width: calc(100% - 16px); margin: 2px 8px 6px; padding:5px 8px; font-size: var(--font-ui-smaller); border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-container-tree { padding-bottom: 8px; }
+.doc-container-node { display:flex; align-items:center; gap:4px; padding:4px 6px; border-radius:5px; white-space:nowrap; cursor:pointer; }
+.doc-container-node:hover { background: var(--background-modifier-hover); }
+.doc-container-node.is-selected { background: var(--background-modifier-active-hover); box-shadow: inset 2px 0 0 var(--interactive-accent); }
+.doc-container-tw { width:11px; color: var(--text-faint); font-size:10px; flex:0 0 auto; }
+.doc-container-ico { flex:0 0 auto; }
+.doc-container-badge { margin-left:auto; font-size:9px; padding:1px 7px; border-radius:9px; background: var(--background-modifier-border); color: var(--text-muted); }
+.doc-container-badge.st-draft { color:#d6a24a; }
+.doc-container-badge.st-active, .doc-container-badge.st-approved { color:#48b884; }
+.doc-container-badge.st-in-review, .doc-container-badge.st-pending-approval { color:#5b8def; }
+.doc-container-badge.st-archived, .doc-container-badge.st-obsolete { color: var(--text-faint); }
+.doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
+.doc-detail-wrap { max-width:980px; padding:14px 18px; }
+.doc-detail-crumb { font-size:12px; color: var(--text-faint); }
+.doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
+.doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
+.doc-detail-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px 22px; }
+.doc-detail-fld.span2 { grid-column: span 2; }
+.doc-detail-lab { font-size:10px; letter-spacing:.05em; text-transform:uppercase; color: var(--text-faint); margin-bottom:4px; }
+.doc-detail-val { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:6px; padding:8px 11px; min-height:34px; font-size:13px; color: var(--text-normal); }
+.doc-detail-val.over { color:#e05c5c; border-color: rgba(224,92,92,.4); }
+.doc-detail-sec { margin-top:22px; }
+.doc-detail-sec h4 { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color: var(--text-faint); border-bottom:1px solid var(--background-modifier-border); padding-bottom:6px; margin:0 0 8px; display:flex; align-items:center; justify-content:space-between; }
+.doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-radius:7px; background: var(--background-secondary); margin:5px 0; }
+.doc-detail-frow.cur { box-shadow: inset 0 0 0 1px rgba(72,184,132,.4); }
+.doc-detail-fl { display:flex; align-items:center; gap:4px; font-size:13px; }
+.doc-detail-vbadge { font-size:9px; padding:2px 8px; border-radius:9px; margin-left:8px; background: var(--background-modifier-border); }
+.doc-detail-vbadge.v-cur { color:#48b884; }
+.doc-detail-vbadge.v-att { color:#5b8def; }
+.doc-detail-vbadge.v-old { color: var(--text-muted); }
+.doc-detail-fbtn, .doc-detail-btn { font-size:11px; padding:4px 11px; border-radius:6px; border:1px solid var(--background-modifier-border); cursor:pointer; margin-left:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-detail-fbtn:hover, .doc-detail-btn:hover { background: var(--background-modifier-hover); }
+.doc-detail-btn.accent { background: var(--interactive-accent); color: var(--text-on-accent); border-color:transparent; }
+.doc-detail-btn.accent:hover { background: var(--interactive-accent-hover); }
+.doc-ov { padding:14px 18px; }
+.doc-ov-crumb { font-size:12px; color: var(--text-faint); }
+.doc-ov-head { display:flex; align-items:baseline; gap:10px; margin:2px 0 10px; }
+.doc-ov-title { font-size:20px; font-weight:600; }
+.doc-ov-rollup { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.doc-ov-pill { font-size:11px; padding:3px 10px; border-radius:10px; background: var(--background-secondary); border:1px solid var(--background-modifier-border); color: var(--text-muted); }
+.doc-ov-pill.st-draft { color:#d6a24a; }
+.doc-ov-pill.st-active, .doc-ov-pill.st-approved { color:#48b884; }
+.doc-ov-pill.st-in-review, .doc-ov-pill.st-pending-approval { color:#5b8def; }
+.doc-ov-pill.over { color:#e05c5c; border-color: rgba(224,92,92,.4); }
+.doc-ov-primary { font-size:12px; padding:6px 13px; border-radius:6px; border:none; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; margin-bottom:14px; }
+.doc-ov-primary:hover { background: var(--interactive-accent-hover); }
+.doc-ov-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); gap:12px; }
+.doc-ov-card { padding:14px; border:1px solid var(--background-modifier-border); border-radius:8px; background: var(--background-secondary); cursor:pointer; transition:border-color .15s; }
+.doc-ov-card:hover { border-color: var(--interactive-accent); }
+.doc-ov-cardname { font-size:14px; font-weight:500; }
+.doc-ov-cardnum { font-size:11px; color: var(--text-muted); margin-top:6px; }
+.doc-ov-filter { width:100%; max-width:340px; display:block; margin:0 0 12px; padding:6px 10px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-ov-table { width:100%; border-collapse:collapse; font-size:13px; }
+.doc-ov-table th { text-align:left; font-size:10px; letter-spacing:.04em; text-transform:uppercase; color: var(--text-faint); padding:6px 10px; border-bottom:1px solid var(--background-modifier-border); }
+.doc-ov-table td { padding:8px 10px; border-bottom:1px solid var(--background-modifier-border); color: var(--text-normal); }
+.doc-ov-table tr.row { cursor:pointer; }
+.doc-ov-table tr.row:hover td { background: var(--background-modifier-hover); }
+.doc-ov-sb { font-size:11px; padding:2px 8px; border-radius:9px; background: var(--background-modifier-border); }
+.doc-ov-sb.st-draft { color:#d6a24a; }
+.doc-ov-sb.st-active, .doc-ov-sb.st-approved { color:#48b884; }
+.doc-ov-sb.st-in-review, .doc-ov-sb.st-pending-approval { color:#5b8def; }
+.doc-ov-overtxt { color:#e05c5c; font-size:11px; font-weight:500; }
+.doc-ov-newinput { width:100%; padding:7px 10px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); margin-bottom:8px; }
+.doc-ov-newpath { font-size:11px; color: var(--text-faint); margin-bottom:12px; font-family: var(--font-monospace); }
+`;
+
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -3649,6 +3727,7 @@ function renderStandaloneLandingPage(containerEl, plugin) {
 class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async onload() {
     await this.loadSettings();
+    this._injectDocContainerStyles();   // Task 11 — idempotent, guarded by element id
     DEBUG = !!this.settings.debugLogging;
     // Set up file-based logging BEFORE the first dlog so onload start is captured.
     await initDebugLog(this);
@@ -5093,6 +5172,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     };
     await mk(root);
     for (const cat of this.settings.docCategories) await mk(`${root}/${cat}`);
+  }
+
+  // ── Task 11: Inject doc-container styles once into document.head ─────────────
+  _injectDocContainerStyles() {
+    if (document.getElementById('doc-container-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'doc-container-styles';
+    style.textContent = DOC_CONTAINER_CSS;
+    document.head.appendChild(style);
   }
 
   async activateDocBrowser() {
