@@ -345,8 +345,9 @@ const VIEW_TYPE = "obsidi-office-docx";
 const VIEW_TYPE_PPTX = "obsidi-office-pptx";
 const VIEW_TYPE_XLSX = "obsidi-office-xlsx";
 const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
-const VIEW_TYPE_DOC_BROWSER = 'obsidi-office-doc-browser';
-const VIEW_TYPE_DOC_DETAIL  = 'obsidi-office-doc-detail';
+const VIEW_TYPE_DOC_BROWSER   = 'obsidi-office-doc-browser';
+const VIEW_TYPE_DOC_DETAIL    = 'obsidi-office-doc-detail';
+const VIEW_TYPE_DOC_CONTAINER = 'obsidi-office-doc-container';
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -2792,6 +2793,117 @@ class DocumentDetailView extends obsidian.ItemView {
 }
 
 // ===========================================================================
+// ContainerOverviewView — shown when a Category / Collection / Root is clicked
+// ===========================================================================
+
+class ContainerOverviewView extends obsidian.ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.path = null; }
+  getViewType() { return VIEW_TYPE_DOC_CONTAINER; }
+  getDisplayText() { return this.path ? this.path.split('/').pop() : 'Documents'; }
+  getIcon() { return 'folder-open'; }
+  async setState(s, r) { if (s && s.path) { this.path = s.path; this.render(); } return super.setState(s, r); }
+  getState() { return { path: this.path }; }
+
+  node() {
+    const root = this.plugin.settings.docRoot;
+    const tree = docContainer.buildTaxonomy(this.app.vault.getFiles().map(f => f.path), root);
+    if (this.path === root) return { kind: 'root', path: root, name: root, children: tree };
+    const find = (nodes) => { for (const n of nodes) { if (n.path === this.path) return n; if (n.children) { const f = find(n.children); if (f) return f; } } return null; };
+    return find(tree);
+  }
+  docsUnder(node) {
+    const out = [];
+    const walk = (n) => { if (n.kind === 'document') out.push(this.docMeta(n)); (n.children||[]).forEach(walk); };
+    (node.children||[]).forEach(walk);
+    if (node.kind === 'document') out.push(this.docMeta(node));
+    return out;
+  }
+  docMeta(n) {
+    const sc = n.current && this.app.vault.getAbstractFileByPath(n.path + '/' + n.current + '.md');
+    const fm = (sc && this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+    const nextReview = fm.nextReviewDate || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
+    return { node: n, title: fm.title || n.name, docNumber: fm.docNumber || '', docClass: fm.docClass || '',
+             status: fm.status || null, nextReviewDate: nextReview, tags: fm.tags || [], modified: fm.modified || '' };
+  }
+
+  render() {
+    const c = this.containerEl.children[1]; c.empty(); c.addClass('doc-ov');
+    const node = this.node();
+    if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
+    const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
+    const docs = this.docsUnder(node);
+
+    c.createDiv({ text: node.path.split('/').slice(0,-1).join(' › ') || '', cls: 'doc-ov-crumb' });
+    const head = c.createDiv('doc-ov-head');
+    head.createSpan({ text: node.name, cls: 'doc-ov-title' });
+    const roll = c.createDiv('doc-ov-rollup');
+    roll.createSpan({ text: `${docs.length} documents`, cls: 'doc-ov-pill' });
+    const by = docContainer.rollupByStatus(docs);
+    Object.keys(by).forEach(k => roll.createSpan({ text: `${by[k]} ${k}`, cls: 'doc-ov-pill st-' + k.toLowerCase().replace(/\s+/g,'-') }));
+    const over = docContainer.countOverdue(docs, today);
+    if (over) roll.createSpan({ text: `${over} review overdue`, cls: 'doc-ov-pill over' });
+
+    if (node.kind === 'collection' || node.kind === 'document') return this.renderDocs(c, node, docs, today);
+    return this.renderContainers(c, node);   // root or category
+  }
+
+  renderContainers(c, node) {
+    const kindLabel = node.kind === 'root' ? 'Category' : 'Collection';
+    const btn = c.createEl('button', { text: `＋ New ${kindLabel}`, cls: 'doc-ov-primary' });
+    btn.onclick = () => this.promptNew(node.path, kindLabel);
+    const grid = c.createDiv('doc-ov-cards');
+    for (const child of (node.children||[])) {
+      if (child.kind === 'document') continue;
+      const card = grid.createDiv('doc-ov-card');
+      card.createDiv({ text: '📂 ' + child.name, cls: 'doc-ov-cardname' });
+      const sub = this.docsUnder(child);
+      card.createDiv({ text: `${sub.length} docs`, cls: 'doc-ov-cardnum' });
+      card.onclick = () => this.plugin.openContainerOverview(child);
+    }
+  }
+
+  renderDocs(c, node, docs, today) {
+    const btn = c.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' });
+    btn.onclick = () => new obsidian.Notice('New Document flow — deferred to a follow-up (needs UX mock)');
+    const filter = c.createEl('input', { cls: 'doc-ov-filter', attr: { placeholder: 'Search by title or #tag…' } });
+    const table = c.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr');
+    ['Title','Doc #','Class','Status','Next review','Modified','Tags'].forEach(h => head.createEl('th', { text: h }));
+    const draw = (term) => {
+      table.querySelectorAll('tr.row').forEach(r => r.remove());
+      const terms = (term||'').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
+      docs.filter(d => { const hay = (d.title + ' ' + (d.tags||[]).map(t=>'#'+t).join(' ')).toLowerCase(); return terms.every(t => hay.includes(t)); })
+        .forEach(d => {
+          const tr = table.createEl('tr', { cls: 'row' });
+          tr.createEl('td', { text: d.title });
+          tr.createEl('td', { text: d.docNumber });
+          tr.createEl('td', { text: d.docClass });
+          tr.createEl('td').createSpan({ text: d.status || '—', cls: d.status ? 'doc-ov-sb st-'+d.status.toLowerCase().replace(/\s+/g,'-') : '' });
+          const nr = tr.createEl('td');
+          if (docContainer.isOverdue(d.nextReviewDate, today)) nr.createSpan({ text: 'overdue', cls: 'doc-ov-overtxt' });
+          else nr.setText(d.nextReviewDate || '—');
+          tr.createEl('td', { text: d.modified || '—' });
+          tr.createEl('td', { text: (d.tags||[]).map(t=>'#'+t).join(' ') });
+          tr.onclick = () => this.plugin.openDocDetail(d.node);
+        });
+    };
+    filter.oninput = () => draw(filter.value);
+    draw('');
+  }
+
+  promptNew(parentPath, kindLabel) {
+    const modal = new obsidian.Modal(this.app);
+    modal.titleEl.setText('New ' + kindLabel);
+    const input = modal.contentEl.createEl('input', { attr: { placeholder: kindLabel + ' name' }, cls: 'doc-ov-newinput' });
+    const path = modal.contentEl.createDiv({ cls: 'doc-ov-newpath', text: parentPath + '/…' });
+    input.oninput = () => path.setText(parentPath + '/' + (input.value || '…'));
+    const create = modal.contentEl.createEl('button', { text: 'Create folder', cls: 'mod-cta' });
+    create.onclick = async () => { await this.plugin.createTaxonomyFolder(parentPath, input.value); modal.close(); this.render(); };
+    modal.open(); input.focus();
+  }
+}
+
+// ===========================================================================
 // Settings tab
 // ===========================================================================
 
@@ -3689,8 +3801,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // PDF PoC (Gate 1) — register view + a temp command. NO registerExtensions
     // for pdf yet (default opt-in per design; PoC opens via the command only).
     this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfView(leaf, this));
-    this.registerView(VIEW_TYPE_DOC_BROWSER, (leaf) => new DocumentBrowserView(leaf, this));
-    this.registerView(VIEW_TYPE_DOC_DETAIL,  (leaf) => new DocumentDetailView(leaf, this));
+    this.registerView(VIEW_TYPE_DOC_BROWSER,   (leaf) => new DocumentBrowserView(leaf, this));
+    this.registerView(VIEW_TYPE_DOC_DETAIL,    (leaf) => new DocumentDetailView(leaf, this));
+    this.registerView(VIEW_TYPE_DOC_CONTAINER, (leaf) => new ContainerOverviewView(leaf, this));
 
     if (this.settings.docBrowserEnabled) {
       this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
@@ -4953,7 +5066,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
-  openContainerOverview(node) { new obsidian.Notice('Container: ' + node.name); }
+  async openContainerOverview(node) {
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER)[0]
+            || this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0]
+            || this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path: node ? node.path : this.settings.docRoot } });
+    this.app.workspace.revealLeaf(leaf);
+  }
+  async createTaxonomyFolder(parentPath, name) {
+    const clean = (name||'').trim(); if (!clean) return;
+    const path = `${parentPath}/${clean}`;
+    if (!this.app.vault.getAbstractFileByPath(path)) await this.app.vault.createFolder(path);
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+    return path;
+  }
 
   // ── Task 9: Detail action handlers ───────────────────────────────────────────
   async openFileInEditor(path) {
