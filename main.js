@@ -5076,7 +5076,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async createTaxonomyFolder(parentPath, name) {
     const clean = (name||'').trim(); if (!clean) return;
     const path = `${parentPath}/${clean}`;
-    if (!this.app.vault.getAbstractFileByPath(path)) await this.app.vault.createFolder(path);
+    if (this.app.vault.getAbstractFileByPath(path)) { new obsidian.Notice('Folder already exists: ' + clean); return path; }
+    try { await this.app.vault.createFolder(path); }
+    catch (e) { new obsidian.Notice('Could not create folder: ' + clean); return; }
+    // An empty folder won't surface in the tree yet (buildTaxonomy only shows folders
+    // that contain a managed document) — tell the user rather than appear to do nothing.
+    new obsidian.Notice('Created “' + clean + '”. It appears in the tree once it contains a document.');
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
     return path;
   }
