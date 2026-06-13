@@ -2653,31 +2653,48 @@ class DocumentBrowserView extends obsidian.ItemView {
     toolbar.createSpan({ text: 'DOCUMENT BROWSER', cls: 'doc-container-title' });
     const refresh = toolbar.createSpan({ text: '↻', cls: 'doc-container-act' });
     refresh.onclick = () => this.render();
+    const filter = c.createEl('input', { cls: 'doc-container-filter', attr: { placeholder: 'Filter title or #tag…' } });
+    filter.value = this._q || '';
     const tree = c.createDiv('doc-container-tree');
-    const nodes = this.scan();
-    if (!nodes.length) { tree.createDiv({ text: 'No documents found under ' + this.plugin.settings.docRoot, cls: 'doc-container-empty' }); return; }
-    for (const n of nodes) this.renderNode(tree, n, 0);
+    filter.oninput = () => { this._q = filter.value; this.renderTreeBody(tree); };
+    this.renderTreeBody(tree);
   }
 
-  renderNode(parent, node, depth) {
-    const row = parent.createDiv('doc-container-node');
-    row.style.paddingLeft = (8 + depth * 16) + 'px';
+  renderTreeBody(tree) {
+    tree.empty();
+    const nodes = this.scan();
+    const terms = (this._q || '').toLowerCase().split(',').map(s => s.trim()).filter(Boolean);
+    if (!nodes.length) { tree.createDiv({ text: 'No documents found under ' + this.plugin.settings.docRoot, cls: 'doc-container-empty' }); return; }
+    let any = false;
+    for (const n of nodes) { if (this.renderNode(tree, n, 0, terms)) any = true; }
+    if (terms.length && !any) tree.createDiv({ text: 'No matches', cls: 'doc-container-empty' });
+  }
+
+  renderNode(parent, node, depth, terms) {
+    const filtering = terms && terms.length > 0;
     if (node.kind === 'document') {
+      if (filtering && !this._docMatches(node, terms)) return false;
+      const row = parent.createDiv('doc-container-node');
+      row.style.paddingLeft = (8 + depth * 16) + 'px';
       row.addClass('is-doc');
       row.createSpan({ text: '📄 ', cls: 'doc-container-ico' });
       row.createSpan({ text: node.name });
       const status = this.readStatus(node);
       if (status) row.createSpan({ text: status, cls: 'doc-container-badge st-' + status.toLowerCase().replace(/\s+/g, '-') });
       row.onclick = () => { this.plugin.openDocDetail(node); this.markSelected(row); };
-    } else {
-      const isCollapsed = this.collapsed.has(node.path);
-      const tw = row.createSpan({ text: isCollapsed ? '▸ ' : '▾ ', cls: 'doc-container-tw' });
-      tw.onclick = (e) => { e.stopPropagation(); if (isCollapsed) this.collapsed.delete(node.path); else this.collapsed.add(node.path); this.render(); };
-      row.createSpan({ text: (node.kind === 'category' ? '📁 ' : '📂 ') });
-      row.createSpan({ text: node.name });
-      row.onclick = () => { this.plugin.openContainerOverview(node); this.markSelected(row); };
-      if (!isCollapsed) for (const ch of node.children) this.renderNode(parent, ch, depth + 1);
+      return true;
     }
+    if (filtering && !this._subtreeMatches(node, terms)) return false;
+    const row = parent.createDiv('doc-container-node');
+    row.style.paddingLeft = (8 + depth * 16) + 'px';
+    const isCollapsed = !filtering && this.collapsed.has(node.path);   // force-expand while filtering
+    const tw = row.createSpan({ text: isCollapsed ? '▸ ' : '▾ ', cls: 'doc-container-tw' });
+    tw.onclick = (e) => { e.stopPropagation(); if (this.collapsed.has(node.path)) this.collapsed.delete(node.path); else this.collapsed.add(node.path); this.render(); };
+    row.createSpan({ text: (node.kind === 'category' ? '📁 ' : '📂 ') });
+    row.createSpan({ text: node.name });
+    row.onclick = () => { this.plugin.openContainerOverview(node); this.markSelected(row); };
+    if (!isCollapsed) for (const ch of (node.children || [])) this.renderNode(parent, ch, depth + 1, terms);
+    return true;
   }
 
   readStatus(node) {
@@ -2686,6 +2703,19 @@ class DocumentBrowserView extends obsidian.ItemView {
     if (!sidecar) return null;
     const cache = this.app.metadataCache.getFileCache(sidecar);
     return (cache && cache.frontmatter && cache.frontmatter.status) || null;
+  }
+
+  _docMatches(node, terms) {
+    const sc = node.current && this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
+    const fm = (sc && this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+    const title = fm.title || node.name;
+    const tags = fm.tags || [];
+    const hay = (title + ' ' + tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ')).toLowerCase();
+    return terms.every(t => hay.includes(t));
+  }
+  _subtreeMatches(node, terms) {
+    if (node.kind === 'document') return this._docMatches(node, terms);
+    return (node.children || []).some(ch => this._subtreeMatches(ch, terms));
   }
 
   markSelected(row) {
