@@ -4111,6 +4111,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // existing notes are never rewritten.
     this.app.workspace.onLayoutReady(() => {
       this.ensureDocTaxonomy();
+      // Doc-container live refresh: re-render the sidebar tree (status badges,
+      // added/removed files) when a managed-root file or sidecar changes.
+      // Registered INSIDE onLayoutReady so the startup index burst doesn't
+      // trigger a render storm.
+      const refreshIfManaged = (file) => {
+        if (!this.settings.docBrowserEnabled) return;
+        if (!file || !file.path || !file.path.startsWith(this.settings.docRoot + '/')) return;
+        this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      };
+      this.registerEvent(this.app.vault.on('create', refreshIfManaged));
+      this.registerEvent(this.app.vault.on('delete', refreshIfManaged));
+      this.registerEvent(this.app.vault.on('rename', (f) => refreshIfManaged(f)));
+      this.registerEvent(this.app.metadataCache.on('changed', refreshIfManaged));
       this.registerEvent(this.app.vault.on("create", (file) => {
         if (!(file instanceof obsidian.TFile)) return;
         if (file.extension !== "md") return;
