@@ -4972,14 +4972,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
   openMetadataModal(path) {
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (file) { new MetadataModal(this.app, path).open(); }   // takes the office path; appends .md itself
+    if (!file) { new obsidian.Notice('File not found: ' + path); return; }
+    new MetadataModal(this.app, path).open();   // takes the office path; appends .md itself
   }
 
   revealInExplorer(path) {
     const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) return;
-    this.app.workspace.openLinkText(path, '', false);
-    this.app.commands.executeCommandById('file-explorer:reveal-active-file');
+    if (!file) { new obsidian.Notice('File not found: ' + path); return; }
+    const fe = this.app.workspace.getLeavesOfType('file-explorer')[0];
+    if (fe && fe.view && typeof fe.view.revealInFolder === 'function') {
+      fe.view.revealInFolder(file);
+      this.app.workspace.revealLeaf(fe);
+    } else {
+      new obsidian.Notice('File explorer is not available');
+    }
   }
 
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
