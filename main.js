@@ -2813,6 +2813,8 @@ class DocumentDetailView extends obsidian.ItemView {
   getDisplayText() { return this.node ? this.node.name : 'Document Status'; }
   getIcon() { return 'file-text'; }
 
+  async onOpen() { this.render(); }   // paint empty-state on workspace restore (setState re-renders with data)
+
   async setState(state, result) {
     if (state && state.docPath) {
       const paths = this.app.vault.getFiles().map(f => f.path);
@@ -2909,6 +2911,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   getViewType() { return VIEW_TYPE_DOC_CONTAINER; }
   getDisplayText() { return this.path ? this.path.split('/').pop() : 'Documents'; }
   getIcon() { return 'folder-open'; }
+  async onOpen() { this.render(); }   // paint on workspace restore (setState re-renders with data)
   async setState(s, r) { if (s && s.path) { this.path = s.path; this.render(); } return super.setState(s, r); }
   getState() { return { path: this.path }; }
 
@@ -4317,6 +4320,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF);  // PDF PoC
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_DOC_BROWSER);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_DOC_DETAIL);
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_DOC_CONTAINER);
   }
 
   async loadSettings() {
