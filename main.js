@@ -2694,6 +2694,104 @@ class DocumentBrowserView extends obsidian.ItemView {
 }
 
 // ===========================================================================
+// DocumentDetailView — single-pane document status form (v0.1 MVP)
+// v0.2 will restructure into tabbed columns; do NOT add tabs here (YAGNI).
+// ===========================================================================
+
+class DocumentDetailView extends obsidian.ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.node = null; }
+  getViewType() { return VIEW_TYPE_DOC_DETAIL; }
+  getDisplayText() { return this.node ? this.node.name : 'Document Status'; }
+  getIcon() { return 'file-text'; }
+
+  async setState(state, result) {
+    if (state && state.docPath) {
+      const paths = this.app.vault.getFiles().map(f => f.path);
+      const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
+      this.node = this.findDoc(tree, state.docPath);
+      this.render();
+    }
+    return super.setState(state, result);
+  }
+  getState() { return { docPath: this.node ? this.node.path : null }; }
+
+  findDoc(nodes, path) {
+    for (const n of nodes) {
+      if (n.kind === 'document' && n.path === path) return n;
+      if (n.children) { const f = this.findDoc(n.children, path); if (f) return f; }
+    }
+    return null;
+  }
+
+  sidecarFor(file) { return this.app.vault.getAbstractFileByPath(this.node.path + '/' + file + '.md'); }
+  frontmatter() {
+    if (!this.node || !this.node.current) return {};
+    const sc = this.sidecarFor(this.node.current);
+    if (!sc) return {};
+    const cache = this.app.metadataCache.getFileCache(sc);
+    return (cache && cache.frontmatter) || {};
+  }
+
+  render() {
+    const c = this.containerEl.children[1];
+    c.empty(); c.addClass('doc-detail');
+    if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
+    const fm = this.frontmatter();
+    const wrap = c.createDiv('doc-detail-wrap');
+    wrap.createDiv({ text: this.node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-detail-crumb' });
+    wrap.createDiv({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
+    wrap.createDiv({ text: 'Document Status', cls: 'doc-detail-sub' });
+
+    const grid = wrap.createDiv('doc-detail-grid');
+    for (const f of docContainer.DOC_FIELDS.phase1) {
+      const cell = grid.createDiv('doc-detail-fld');
+      if (f.type === 'textarea' || f.key === 'title') cell.addClass('span2');
+      cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
+      let val = fm[f.key];
+      if (f.key === 'tags' && Array.isArray(val)) val = val.map(t => '#' + String(t).replace(/^#/, '')).join(' ');
+      if (f.key === 'revision' && !val && this.node.current) val = docContainer.parseVersion(this.node.current).label.replace('rev ', '');
+      // Next Review: compute when empty; flag overdue
+      if (f.key === 'nextReviewDate') {
+        const nr = val || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
+        const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
+        if (nr && docContainer.isOverdue(nr, today)) { cell.createDiv({ text: nr + ' · overdue', cls: 'doc-detail-val over' }); continue; }
+        val = nr;
+      }
+      cell.createDiv({ text: val != null && val !== '' ? String(val) : '—', cls: 'doc-detail-val' });
+    }
+
+    // Files & Versions
+    const fv = wrap.createDiv('doc-detail-sec');
+    const fvHead = fv.createEl('h4', { text: 'Files & Versions' });
+    const newVerBtn = fvHead.createSpan({ text: ' ⎘ New version', cls: 'doc-detail-fbtn' });
+    newVerBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
+    const rowFor = (name, badge, badgeCls, isCurrent) => {
+      const r = fv.createDiv('doc-detail-frow' + (isCurrent ? ' cur' : ''));
+      const left = r.createDiv('doc-detail-fl');
+      left.createSpan({ text: (badgeCls === 'v-att' ? '📎 ' : '📄 ') + name });
+      left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
+      const openBtn = r.createSpan({ text: 'Open', cls: 'doc-detail-fbtn' });
+      openBtn.onclick = () => this.plugin.openFileInEditor(this.node.path + '/' + name);
+    };
+    (this.node.files || []).forEach((f) => {
+      const isCur = f === this.node.current;
+      rowFor(f, isCur ? 'current' : docContainer.parseVersion(f).label, isCur ? 'v-cur' : 'v-old', isCur);
+    });
+    (this.node.attachments || []).forEach(a => rowFor(a, 'attachment', 'v-att', false));
+
+    // Actions
+    const act = wrap.createDiv('doc-detail-sec');
+    act.createEl('h4', { text: 'Actions' });
+    const mkBtn = (label, cls, fn) => { const b = act.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls||'') }); b.onclick = fn; };
+    mkBtn('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
+    mkBtn('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
+    mkBtn('Edit metadata', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
+    mkBtn('New version', '', () => this.plugin.newDocumentVersion(this.node));
+    mkBtn('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
+  }
+}
+
+// ===========================================================================
 // Settings tab
 // ===========================================================================
 
@@ -3592,6 +3690,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // for pdf yet (default opt-in per design; PoC opens via the command only).
     this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfView(leaf, this));
     this.registerView(VIEW_TYPE_DOC_BROWSER, (leaf) => new DocumentBrowserView(leaf, this));
+    this.registerView(VIEW_TYPE_DOC_DETAIL,  (leaf) => new DocumentDetailView(leaf, this));
 
     if (this.settings.docBrowserEnabled) {
       this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
@@ -4846,8 +4945,71 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
-  openDocDetail(node) { new obsidian.Notice('Document: ' + node.name); }
+  // ── Task 8: Real openDocDetail — reuse existing leaf if open ─────────────────
+  async openDocDetail(node) {
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
+    if (!leaf) leaf = this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path } });
+    this.app.workspace.revealLeaf(leaf);
+  }
+
   openContainerOverview(node) { new obsidian.Notice('Container: ' + node.name); }
+
+  // ── Task 9: Detail action handlers ───────────────────────────────────────────
+  async openFileInEditor(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) { new obsidian.Notice('File not found: ' + path); return; }
+    await this._openInView(file);   // existing P21 office-editor router; takes a TFile (uses file.extension)
+  }
+
+  openInSystemApp(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return;
+    const full = (this.app.vault.adapter.getFullPath) ? this.app.vault.adapter.getFullPath(path) : path;
+    try { const { shell } = require('electron'); shell.openPath(full); }
+    catch (e) { new obsidian.Notice('System app unavailable on this platform'); }   // mobile/iPad: graceful
+  }
+
+  openMetadataModal(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (file) { new MetadataModal(this.app, path).open(); }   // takes the office path; appends .md itself
+  }
+
+  revealInExplorer(path) {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!file) return;
+    this.app.workspace.openLinkText(path, '', false);
+    this.app.commands.executeCommandById('file-explorer:reveal-active-file');
+  }
+
+  // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
+  async newDocumentVersion(node) {
+    if (!node || !node.current) { new obsidian.Notice('No current file to version'); return; }
+    const bump = await new Promise(res => {
+      const m = new obsidian.Modal(this.app); m.titleEl.setText('New version');
+      m.contentEl.createEl('p', { text: 'Bump which part of the revision?' });
+      const mk = (label, val) => { const b = m.contentEl.createEl('button', { text: label, cls: 'mod-cta' }); b.style.marginRight = '8px'; b.onclick = () => { res(val); m.close(); }; };
+      mk('Minor (x.Y)', 'minor'); mk('Major (X.0)', 'major');
+      m.onClose = () => res(null); m.open();
+    });
+    if (!bump) return;
+    const nextName = docContainer.nextVersionName(node.current, bump);
+    const srcPath = node.path + '/' + node.current;
+    const src = this.app.vault.getAbstractFileByPath(srcPath);
+    if (!src) { new obsidian.Notice('Source file not found'); return; }
+    if (this.app.vault.getAbstractFileByPath(node.path + '/' + nextName)) { new obsidian.Notice(nextName + ' already exists'); return; }
+    const data = await this.app.vault.readBinary(src);
+    await this.app.vault.createBinary(node.path + '/' + nextName, data);
+    // carry metadata forward by copying the sidecar (MetadataModal owns the schema)
+    const sc = this.app.vault.getAbstractFileByPath(srcPath + '.md');
+    if (sc && !this.app.vault.getAbstractFileByPath(node.path + '/' + nextName + '.md')) {
+      const fm = await this.app.vault.read(sc);
+      await this.app.vault.create(node.path + '/' + nextName + '.md', fm);
+    }
+    new obsidian.Notice('Created ' + nextName);
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+    this.openDocDetail(node);   // re-scan picks the new current as pinned
+  }
 }
 
 // ===========================================================================
