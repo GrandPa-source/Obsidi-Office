@@ -345,6 +345,8 @@ const VIEW_TYPE = "obsidi-office-docx";
 const VIEW_TYPE_PPTX = "obsidi-office-pptx";
 const VIEW_TYPE_XLSX = "obsidi-office-xlsx";
 const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
+const VIEW_TYPE_DOC_BROWSER = 'obsidi-office-doc-browser';
+const VIEW_TYPE_DOC_DETAIL  = 'obsidi-office-doc-detail';
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
 
 // HTML entry files in the OnlyOffice tree that need the shim injected.
@@ -2624,6 +2626,74 @@ class PdfView extends OfficeEditorView {
 }
 
 // ===========================================================================
+// DocumentBrowserView — sidebar tree for doc-container feature
+// ===========================================================================
+
+class DocumentBrowserView extends obsidian.ItemView {
+  constructor(leaf, plugin) { super(leaf); this.plugin = plugin; this.collapsed = new Set(); }
+  getViewType() { return VIEW_TYPE_DOC_BROWSER; }
+  getDisplayText() { return 'Document Browser'; }
+  getIcon() { return 'folder-tree'; }
+
+  async onOpen() { this.render(); }
+  async onClose() {}
+
+  scan() {
+    const root = this.plugin.settings.docRoot;
+    const paths = this.app.vault.getFiles().map(f => f.path);
+    return docContainer.buildTaxonomy(paths, root);
+  }
+
+  render() {
+    const c = this.containerEl.children[1];
+    c.empty();
+    c.addClass('doc-container-pane');
+    const toolbar = c.createDiv('doc-container-toolbar');
+    toolbar.createSpan({ text: 'DOCUMENT BROWSER', cls: 'doc-container-title' });
+    const refresh = toolbar.createSpan({ text: '↻', cls: 'doc-container-act' });
+    refresh.onclick = () => this.render();
+    const tree = c.createDiv('doc-container-tree');
+    const nodes = this.scan();
+    if (!nodes.length) { tree.createDiv({ text: 'No documents found under ' + this.plugin.settings.docRoot, cls: 'doc-container-empty' }); return; }
+    for (const n of nodes) this.renderNode(tree, n, 0);
+  }
+
+  renderNode(parent, node, depth) {
+    const row = parent.createDiv('doc-container-node');
+    row.style.paddingLeft = (8 + depth * 16) + 'px';
+    if (node.kind === 'document') {
+      row.addClass('is-doc');
+      row.createSpan({ text: '📄 ', cls: 'doc-container-ico' });
+      row.createSpan({ text: node.name });
+      const status = this.readStatus(node);
+      if (status) row.createSpan({ text: status, cls: 'doc-container-badge st-' + status.toLowerCase().replace(/\s+/g, '-') });
+      row.onclick = () => { this.plugin.openDocDetail(node); this.markSelected(row); };
+    } else {
+      const isCollapsed = this.collapsed.has(node.path);
+      const tw = row.createSpan({ text: isCollapsed ? '▸ ' : '▾ ', cls: 'doc-container-tw' });
+      tw.onclick = (e) => { e.stopPropagation(); if (isCollapsed) this.collapsed.delete(node.path); else this.collapsed.add(node.path); this.render(); };
+      row.createSpan({ text: (node.kind === 'category' ? '📁 ' : '📂 ') });
+      row.createSpan({ text: node.name });
+      row.onclick = () => { this.plugin.openContainerOverview(node); this.markSelected(row); };
+      if (!isCollapsed) for (const ch of node.children) this.renderNode(parent, ch, depth + 1);
+    }
+  }
+
+  readStatus(node) {
+    if (!node.current) return null;
+    const sidecar = this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
+    if (!sidecar) return null;
+    const cache = this.app.metadataCache.getFileCache(sidecar);
+    return (cache && cache.frontmatter && cache.frontmatter.status) || null;
+  }
+
+  markSelected(row) {
+    this.containerEl.querySelectorAll('.doc-container-node.is-selected').forEach(e => e.removeClass('is-selected'));
+    row.addClass('is-selected');
+  }
+}
+
+// ===========================================================================
 // Settings tab
 // ===========================================================================
 
@@ -3521,6 +3591,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // PDF PoC (Gate 1) — register view + a temp command. NO registerExtensions
     // for pdf yet (default opt-in per design; PoC opens via the command only).
     this.registerView(VIEW_TYPE_PDF, (leaf) => new PdfView(leaf, this));
+    this.registerView(VIEW_TYPE_DOC_BROWSER, (leaf) => new DocumentBrowserView(leaf, this));
+
+    if (this.settings.docBrowserEnabled) {
+      this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
+      this.addCommand({ id: 'open-document-browser', name: 'Open Document Browser',
+        callback: () => this.activateDocBrowser() });
+    }
+
     this.addCommand({
       id: "pdf-poc-open",
       name: "PDF PoC: open active/last .pdf in editor",
@@ -4760,6 +4838,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await mk(root);
     for (const cat of this.settings.docCategories) await mk(`${root}/${cat}`);
   }
+
+  async activateDocBrowser() {
+    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER)[0];
+    if (!leaf) { leaf = this.app.workspace.getLeftLeaf(false); await leaf.setViewState({ type: VIEW_TYPE_DOC_BROWSER, active: true }); }
+    this.app.workspace.revealLeaf(leaf);
+  }
+
+  openDocDetail(node) { new obsidian.Notice('Document: ' + node.name); }
+  openContainerOverview(node) { new obsidian.Notice('Container: ' + node.name); }
 }
 
 // ===========================================================================
