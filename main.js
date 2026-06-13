@@ -3982,6 +3982,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PPTX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_XLSX);
     this.app.workspace.detachLeavesOfType(VIEW_TYPE_PDF);  // PDF PoC
+    this.app.workspace.detachLeavesOfType(VIEW_TYPE_DOC_BROWSER);
   }
 
   async loadSettings() {
