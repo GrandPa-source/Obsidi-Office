@@ -474,6 +474,43 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); display:flex; align-items:center; gap:8px; padding:10px 18px; box-shadow: 0 -4px 12px rgba(0,0,0,.12); flex-wrap:wrap; }
 .doc-detail-footer .doc-detail-btn { margin-left:0; }
 .doc-detail-fspace { flex:1; }
+/* ── v0.2 left tabs: stakeholders / related / definitions ── */
+.doc-detail-tbl { width:100%; border-collapse:collapse; font-size:12px; }
+.doc-detail-tbl th { text-align:left; color: var(--text-faint); font-weight:500; padding:6px 9px; border-bottom:1px solid var(--background-modifier-border); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+.doc-detail-tbl td { padding:6px 9px; border-bottom:1px solid var(--background-modifier-border); }
+.doc-detail-muted { color: var(--text-faint); }
+.doc-detail-role { font-size:10px; background: var(--background-modifier-border); border-radius:20px; padding:2px 9px; color: var(--text-muted); }
+.doc-detail-dropzone { border:1.5px dashed var(--background-modifier-border); border-radius:9px; padding:14px; text-align:center; color: var(--text-faint); font-size:12px; cursor:default; margin-bottom:8px; transition:.12s; }
+.doc-detail-dropzone.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); color: var(--text-normal); }
+.doc-detail-dzlink { color: var(--interactive-accent); text-decoration:underline; cursor:pointer; }
+.doc-detail-relright { display:flex; align-items:center; gap:6px; }
+.doc-detail-reltype { font-size:9px; padding:2px 8px; border-radius:9px; }
+.doc-detail-reltype.rt-link { color:#5b8def; }
+.doc-detail-reltype.rt-ref { color:#b3a8f5; }
+.doc-detail-remove { color: var(--text-faint); cursor:pointer; font-size:13px; }
+.doc-detail-remove:hover { color:#e05c5c; }
+.doc-detail-linkinput { width:100%; padding:6px 9px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-detail-linksug { max-height:220px; overflow:auto; margin-top:6px; }
+.doc-detail-sugitem { padding:5px 8px; font-size:12px; cursor:pointer; border-radius:5px; }
+.doc-detail-sugitem:hover { background: var(--background-modifier-hover); }
+.doc-detail-sh-edit { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
+.doc-detail-sh-row { display:flex; gap:6px; align-items:center; }
+.doc-detail-sh-row input { flex:1; min-width:0; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
+.doc-detail-sh-rm { color: var(--text-faint); cursor:pointer; flex:0 0 auto; }
+.doc-detail-sh-rm:hover { color:#e05c5c; }
+.doc-detail-sh-bar { display:flex; gap:8px; justify-content:flex-end; margin-top:10px; }
+.doc-detail-deffilter { width:100%; padding:6px 9px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); margin-bottom:8px; }
+.doc-detail-deftbl { width:100%; border-collapse:collapse; font-size:12px; table-layout:fixed; }
+.doc-detail-deftbl th { text-align:left; color: var(--text-faint); font-weight:500; padding:7px 9px; border-bottom:1px solid var(--background-modifier-border); font-size:10px; text-transform:uppercase; letter-spacing:.04em; }
+.doc-detail-deftbl td { padding:7px 9px; border-bottom:1px solid var(--background-modifier-border); vertical-align:top; }
+.doc-detail-deftbl th:nth-child(1), .doc-detail-deftbl td:nth-child(1) { width:30%; }
+.doc-detail-deftbl th:nth-child(3), .doc-detail-deftbl td:nth-child(3) { width:44px; text-align:right; }
+.doc-detail-defterm { font-size:12.5px; font-weight:500; }
+.doc-detail-defkind { font-size:9px; color: var(--text-faint); text-transform:uppercase; letter-spacing:.04em; margin-left:7px; }
+.doc-detail-deftext { color: var(--text-muted); display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
+.doc-detail-deftext.expanded { -webkit-line-clamp:unset; }
+.doc-detail-defmore { color: var(--interactive-accent); cursor:pointer; font-size:10.5px; margin-top:3px; display:inline-block; }
+.doc-detail-defck input { width:13px; height:13px; cursor:pointer; accent-color: var(--interactive-accent); }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -647,6 +684,8 @@ const DEFAULT_SETTINGS = {
   docBrowserEnabled: false,
   docRoot: 'Documents',
   docCategories: ['Governance', 'Projects', 'SOPs'],
+  docGlossaryEnabled: false,
+  docGlossaryRoot: 'Definitions',
 };
 
 // ===========================================================================
@@ -2863,7 +2902,13 @@ class DocumentDetailView extends obsidian.ItemView {
   getDisplayText() { return this.node ? this.node.name : 'Document Status'; }
   getIcon() { return 'file-text'; }
 
-  async onOpen() { this.render(); }   // paint empty-state on workspace restore (setState re-renders with data)
+  async onOpen() {
+    this.render();   // paint empty-state on workspace restore (setState re-renders with data)
+    // Re-render when THIS document's sidecar changes (stakeholders / related / definitions / notes / log writes)
+    this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+      if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
+    }));
+  }
 
   async setState(state, result) {
     if (state && state.docPath) {
@@ -3017,9 +3062,167 @@ class DocumentDetailView extends obsidian.ItemView {
     });
     (this.node.attachments || []).forEach(a => rowFor(a, 'attachment', 'v-att', false));
   }
-  _renderStakeholdersPane(p, fm) { p.createDiv({ text: 'Stakeholders — filled in T23', cls: 'doc-detail-stub' }); }
-  _renderRelatedPane(p, fm) { p.createDiv({ text: 'Related Documents — filled in T24', cls: 'doc-detail-stub' }); }
-  _renderDefinitionsPane(p, fm) { p.createDiv({ text: 'Definitions — filled in T28', cls: 'doc-detail-stub' }); }
+  // Write a key into the current version's sidecar (create the sidecar if absent);
+  // the metadataCache 'changed' listener re-renders the detail afterward.
+  async _saveSidecar(key, value) {
+    if (!this.node || !this.node.current) return;
+    const scPath = this.node.path + '/' + this.node.current + '.md';
+    let sc = this.app.vault.getAbstractFileByPath(scPath);
+    if (!sc) sc = await this.app.vault.create(scPath, '---\n---\n');
+    await this.app.fileManager.processFrontMatter(sc, (front) => { front[key] = value; });
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+  }
+
+  // ── T23: Stakeholders (Title is the load-bearing, role-based field) ─────────
+  _stakeholders(fm) {
+    if (Array.isArray(fm.stakeholders) && fm.stakeholders.length) return fm.stakeholders;
+    return [
+      { name: fm.originator || '—', title: fm.originatorTitle || '—', role: 'Originator', dept: fm.department || '—' },
+      { name: '—', title: '—', role: 'Reviewer', dept: '—' },
+      { name: '—', title: '—', role: 'Final Approver', dept: '—' },
+    ];
+  }
+  _renderStakeholdersPane(p, fm) {
+    const table = p.createEl('table', { cls: 'doc-detail-tbl' });
+    const head = table.createEl('tr');
+    ['Name', 'Title', 'Role', 'Dept'].forEach(h => head.createEl('th', { text: h }));
+    for (const s of this._stakeholders(fm)) {
+      const tr = table.createEl('tr');
+      const td = (v) => { const c = tr.createEl('td', { text: v || '—' }); if (!v || v === '—') c.addClass('doc-detail-muted'); };
+      td(s.name); td(s.title);
+      tr.createEl('td').createSpan({ text: s.role || '—', cls: 'doc-detail-role' });
+      td(s.dept);
+    }
+    const foot = p.createDiv('doc-detail-paneacts');
+    const edit = foot.createSpan({ text: '✎ Edit stakeholders', cls: 'doc-detail-hbtn' });
+    edit.onclick = () => this._editStakeholders(fm);
+    p.createDiv({ cls: 'doc-detail-stub', text: 'Title is role-based so the record stays meaningful when the person changes. Reviewer / Final Approver populate in the workflow phase.' });
+  }
+  _editStakeholders(fm) {
+    const rows = this._stakeholders(fm).map(s => ({
+      name: s.name === '—' ? '' : (s.name || ''), title: s.title === '—' ? '' : (s.title || ''),
+      role: s.role || '', dept: s.dept === '—' ? '' : (s.dept || ''),
+    }));
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit stakeholders');
+    const list = m.contentEl.createDiv('doc-detail-sh-edit');
+    const draw = () => {
+      list.empty();
+      rows.forEach((r, i) => {
+        const rowEl = list.createDiv('doc-detail-sh-row');
+        const mk = (key, ph) => { const inp = rowEl.createEl('input', { attr: { placeholder: ph } }); inp.value = r[key] || ''; inp.oninput = () => r[key] = inp.value; };
+        mk('name', 'Name'); mk('title', 'Title'); mk('role', 'Role'); mk('dept', 'Dept');
+        const rm = rowEl.createSpan({ text: '✕', cls: 'doc-detail-sh-rm' }); rm.onclick = () => { rows.splice(i, 1); draw(); };
+      });
+    };
+    draw();
+    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const add = bar.createEl('button', { text: '＋ Add row' }); add.onclick = () => { rows.push({ name: '', title: '', role: '', dept: '' }); draw(); };
+    const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
+    save.onclick = async () => {
+      const clean = rows.filter(r => r.name || r.title || r.role || r.dept)
+        .map(r => ({ name: r.name || '', title: r.title || '', role: r.role || '', dept: r.dept || '' }));
+      await this._saveSidecar('stakeholders', clean);
+      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Stakeholders edited', 'meta');
+      m.close();
+    };
+    m.open();
+  }
+
+  // ── T24: Related Documents (vault links + drag-drop reference copies) ───────
+  _renderRelatedPane(p, fm) {
+    const rel = Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.slice() : [];
+    const dz = p.createDiv('doc-detail-dropzone');
+    dz.createSpan({ text: 'Drag a file here to attach as a reference, or ' });
+    const addLink = dz.createSpan({ text: '＋ Add link to a vault file', cls: 'doc-detail-dzlink' });
+    addLink.onclick = (e) => { e.stopPropagation(); this._addRelatedLink(fm, rel); };
+    dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
+    dz.ondragleave = () => dz.removeClass('drag');
+    dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
+    const listEl = p.createDiv();
+    rel.forEach((r, i) => {
+      const row = listEl.createDiv('doc-detail-frow');
+      row.createDiv('doc-detail-fl').createSpan({ text: (r.kind === 'link' ? '🔗 ' : '📎 ') + (r.label || r.target) });
+      const right = row.createDiv('doc-detail-relright');
+      right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
+      const rm = right.createSpan({ text: '✕', cls: 'doc-detail-remove' });
+      rm.onclick = async () => { rel.splice(i, 1); await this._saveSidecar('relatedDocuments', rel); };
+    });
+    if (!rel.length) p.createDiv({ cls: 'doc-detail-stub', text: 'No related documents yet.' });
+  }
+  _addRelatedLink(fm, rel) {
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Add link to a vault file');
+    const input = m.contentEl.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Type to search files…' } });
+    const sug = m.contentEl.createDiv('doc-detail-linksug');
+    const pick = async (file) => {
+      rel.push({ kind: 'link', target: file.path, label: file.basename });
+      await this._saveSidecar('relatedDocuments', rel);
+      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Related link added: ' + file.basename, 'link');
+      m.close();
+    };
+    input.oninput = () => {
+      const q = input.value.toLowerCase(); sug.empty();
+      if (!q) return;
+      const files = this.app.vault.getFiles()
+        .filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path))
+        .slice(0, 15);
+      for (const f of files) { const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' }); it.onclick = () => pick(f); }
+    };
+    m.open(); window.setTimeout(() => input.focus(), 0);
+  }
+  async _dropRelatedRefs(fm, rel, e) {
+    const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+    if (!files.length) return;
+    for (const f of files) {
+      try {
+        const buf = await f.arrayBuffer();
+        let dest = this.node.path + '/' + f.name;
+        if (this.app.vault.getAbstractFileByPath(dest)) dest = this.node.path + '/' + Date.now() + '-' + f.name;
+        await this.app.vault.createBinary(dest, buf);
+        rel.push({ kind: 'ref', target: dest, label: f.name });
+      } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+    }
+    await this._saveSidecar('relatedDocuments', rel);
+    if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Reference attached', 'attach');
+  }
+
+  // ── T28: Definitions (read-only glossary checkbox table) ───────────────────
+  _renderDefinitionsPane(p, fm) {
+    if (!this.plugin.settings.docGlossaryEnabled) {
+      p.createDiv({ cls: 'doc-detail-stub', text: 'Enable the glossary in Obsidi-Office settings (Document Browser → Glossary) to include Definitions & Acronyms here.' });
+      return;
+    }
+    const included = Array.isArray(fm.definitions) ? fm.definitions.slice() : [];
+    const search = p.createEl('input', { cls: 'doc-detail-deffilter', attr: { placeholder: 'Filter terms & acronyms…' } });
+    const tableWrap = p.createDiv();
+    const draw = () => {
+      const entries = this.plugin._glossaryCache || [];
+      tableWrap.empty();
+      const terms = (search.value || '').toLowerCase().trim().split(/\s+/).filter(Boolean);
+      const rows = entries.filter(g => { const hay = (g.term + ' ' + g.text + ' ' + g.type).toLowerCase(); return terms.every(t => hay.includes(t)); });
+      const table = tableWrap.createEl('table', { cls: 'doc-detail-deftbl' });
+      const head = table.createEl('tr'); ['Term', 'Definition', 'Incl.'].forEach(h => head.createEl('th', { text: h }));
+      if (!entries.length) { table.createEl('tr').createEl('td', { text: 'Glossary folder is empty or not found.', cls: 'doc-detail-stub', attr: { colspan: '3' } }); return; }
+      if (!rows.length) { table.createEl('tr').createEl('td', { text: 'No entries match.', cls: 'doc-detail-stub', attr: { colspan: '3' } }); return; }
+      for (const g of rows) {
+        const tr = table.createEl('tr');
+        const tTd = tr.createEl('td'); tTd.createSpan({ text: g.term, cls: 'doc-detail-defterm' }); tTd.createSpan({ text: g.type, cls: 'doc-detail-defkind' });
+        const dTd = tr.createEl('td');
+        const txt = dTd.createDiv({ text: g.text || '—', cls: 'doc-detail-deftext' });
+        if ((g.text || '').length > 90) { const more = dTd.createSpan({ text: 'more', cls: 'doc-detail-defmore' }); more.onclick = () => { const ex = txt.classList.toggle('expanded'); more.setText(ex ? 'less' : 'more'); }; }
+        const cTd = tr.createEl('td', { cls: 'doc-detail-defck' });
+        const cb = cTd.createEl('input', { attr: { type: 'checkbox' } }); cb.checked = included.includes(g.id);
+        cb.onchange = async () => {
+          const i = included.indexOf(g.id);
+          if (i >= 0) included.splice(i, 1); else included.push(g.id);
+          await this._saveSidecar('definitions', included);
+          if (this.plugin.logActivity) this.plugin.logActivity(this.node, (cb.checked ? 'Definition included: ' : 'Definition removed: ') + g.term, 'meta');
+        };
+      }
+    };
+    search.oninput = draw; draw();
+    p.createDiv({ cls: 'doc-detail-stub', text: 'Tick a term to include it in this document. Source: your vault glossary (read-only — no add/delete here). Inserting into the .docx is a later action.' });
+    if (!this.plugin._glossaryCache) this.plugin.loadGlossary().then(() => { if (this.node) draw(); });
+  }
   _renderRecentNotesPane(p, fm) { p.createDiv({ text: 'Recent Notes — filled in T25', cls: 'doc-detail-stub' }); }
   _renderSearchNotesPane(p, fm) { p.createDiv({ text: 'Search Notes — filled in T26', cls: 'doc-detail-stub' }); }
   _renderLogPane(p, fm) { p.createDiv({ text: 'Log — filled in T27', cls: 'doc-detail-stub' }); }
@@ -3303,6 +3506,16 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .setDesc('Comma-separated top-level categories ensured under the root.')
       .addText(t => t.setValue(this.plugin.settings.docCategories.join(', '))
         .onChange(async v => { this.plugin.settings.docCategories = v.split(',').map(s => s.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
+      .setName('Glossary (Definitions tab)')
+      .setDesc('Show a Definitions tab in the document detail, sourced from a vault folder of Definitions & Acronyms.')
+      .addToggle(t => t.setValue(this.plugin.settings.docGlossaryEnabled)
+        .onChange(async v => { this.plugin.settings.docGlossaryEnabled = v; await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
+      .setName('Glossary folder')
+      .setDesc('Vault-relative folder holding one note per term (basename = term; frontmatter `type: definition|acronym` + `definition:` text, or the first body line).')
+      .addText(t => t.setValue(this.plugin.settings.docGlossaryRoot)
+        .onChange(async v => { this.plugin.settings.docGlossaryRoot = v.trim() || 'Definitions'; this.plugin._glossaryCache = null; await this.plugin.saveSettings(); }));
   }
 }
 
@@ -5311,6 +5524,32 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     };
     await mk(root);
     for (const cat of this.settings.docCategories) await mk(`${root}/${cat}`);
+  }
+
+  // ── T28: load the vault glossary (one note per term) into a cached list ─────
+  // Each note: basename = term; frontmatter `type: definition|acronym` (default
+  // definition) + `definition:`/`text:` for the text, else the first body line.
+  async loadGlossary() {
+    const root = (this.settings.docGlossaryRoot || 'Definitions').replace(/\/+$/, '');
+    const prefix = root + '/';
+    const out = [];
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(prefix)) continue;   // only notes inside the glossary folder
+      const cache = this.app.metadataCache.getFileCache(f) || {};
+      const fmm = cache.frontmatter || {};
+      const type = (String(fmm.type).toLowerCase() === 'acronym') ? 'acronym' : 'definition';
+      let text = fmm.definition || fmm.text || '';
+      if (!text) {
+        try {
+          const raw = await this.app.vault.cachedRead(f);
+          text = raw.replace(/^---[\s\S]*?---\s*/, '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+        } catch (e) { /* unreadable — leave blank */ }
+      }
+      out.push({ id: f.basename, term: f.basename, type, text: String(text) });
+    }
+    out.sort((a, b) => a.term.localeCompare(b.term));
+    this._glossaryCache = out;
+    return out;
   }
 
   // ── Task 11: Inject doc-container styles once into document.head ─────────────
