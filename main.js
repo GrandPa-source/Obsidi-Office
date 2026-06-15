@@ -203,6 +203,22 @@ function nextVersionName(current, bump) {
   return `${v.base}_V${major}.${minor}${extPart}`;
 }
 
+// ── Task 21 (v0.2): inline note-tag extraction ───────────────────────────────
+
+// Pull completed "#tag " tokens out of free text. `flush=true` (on Add) also
+// captures a trailing "#tag" with no following space. Returns the cleaned body
+// (collapsed whitespace) + the extracted tag names (no leading #).
+function extractInlineTags(text, flush) {
+  const tags = []; let body = text;
+  const re = /(^|\s)#([\w-]+)\s/;            // a completed "#tag " token
+  let m; while ((m = body.match(re))) { tags.push(m[2]); body = body.replace(re, '$1'); }
+  if (flush) {                                // on Add: also take a trailing "#tag" with no space
+    const t = body.match(/(^|\s)#([\w-]+)\s*$/);
+    if (t) { tags.push(t[2]); body = body.replace(/(^|\s)#([\w-]+)\s*$/, '$1'); }
+  }
+  return { body: body.trim().replace(/\s+/g, ' '), tags };
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -221,6 +237,7 @@ module.exports = {
   rollupByStatus,
   countOverdue,
   nextVersionName,
+  extractInlineTags,
 };
 
 return module.exports; })();
