@@ -511,6 +511,44 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-deftext.expanded { -webkit-line-clamp:unset; }
 .doc-detail-defmore { color: var(--interactive-accent); cursor:pointer; font-size:10.5px; margin-top:3px; display:inline-block; }
 .doc-detail-defck input { width:13px; height:13px; cursor:pointer; accent-color: var(--interactive-accent); }
+/* ── v0.2 right tabs: recent notes / search / log ── */
+.doc-detail-composer { background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:9px; padding:10px; }
+.doc-detail-composer-top { display:flex; gap:8px; align-items:center; }
+.doc-detail-ninput { flex:1; width:100%; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:7px; padding:7px 10px; color: var(--text-normal); font-size:12.5px; }
+.doc-detail-ninput:focus { border-color: var(--interactive-accent); outline:none; }
+.doc-detail-addnote { font-size:12px; padding:7px 14px; border-radius:7px; background: var(--interactive-accent); color: var(--text-on-accent); border:none; cursor:pointer; white-space:nowrap; }
+.doc-detail-staged { display:flex; gap:5px; flex-wrap:wrap; margin-top:8px; }
+.doc-detail-staged:empty { display:none; }
+.doc-detail-schip { font-size:9.5px; padding:2px 8px; border-radius:9px; display:inline-flex; align-items:center; }
+.doc-detail-schip.schip-tag { background: rgba(72,184,132,.16); color:#48b884; }
+.doc-detail-schip.schip-file { background: rgba(91,141,239,.14); color:#5b8def; }
+.doc-detail-schipx { cursor:pointer; opacity:.7; }
+.doc-detail-schipx:hover { opacity:1; }
+.doc-detail-notedrop { margin-top:8px; border:1.5px dashed var(--background-modifier-border); border-radius:9px; padding:12px; text-align:center; color: var(--text-faint); font-size:11.5px; transition:.12s; }
+.doc-detail-notedrop.disabled { opacity:.45; pointer-events:none; }
+.doc-detail-notedrop.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); color: var(--text-normal); }
+.doc-detail-noteshint { font-size:10px; color: var(--text-faint); margin:8px 0 10px; }
+.doc-detail-notelist { display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; }
+.doc-detail-note { background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:8px; padding:9px 11px; }
+.doc-detail-nmeta { font-size:10px; color: var(--text-faint); margin-bottom:3px; display:flex; justify-content:space-between; }
+.doc-detail-nbody { font-size:12.5px; line-height:1.45; color: var(--text-normal); }
+.doc-detail-nfoot { margin-top:8px; display:flex; flex-wrap:wrap; gap:5px; }
+.doc-detail-ntag { font-size:9.5px; background: rgba(72,184,132,.16); color:#48b884; padding:2px 8px; border-radius:9px; }
+.doc-detail-nfile { font-size:9.5px; background: rgba(91,141,239,.14); color:#5b8def; padding:2px 8px; border-radius:9px; }
+.doc-detail-searchbar { display:flex; gap:8px; align-items:center; }
+.doc-detail-filterbtn { font-size:11px; padding:7px 10px; border-radius:7px; border:1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-muted); cursor:pointer; white-space:nowrap; }
+.doc-detail-filterbtn:hover { color: var(--text-normal); }
+.doc-detail-filterbtn.is-active { border-color: var(--interactive-accent); background: var(--interactive-accent); color: var(--text-on-accent); }
+.doc-detail-datefilter { align-items:center; gap:8px; margin-top:9px; padding:9px 11px; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:8px; }
+.doc-detail-dfl { color: var(--text-faint); text-transform:uppercase; font-size:9px; letter-spacing:.05em; }
+.doc-detail-dinput { background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:6px; padding:5px 8px; color: var(--text-normal); font-size:12px; }
+.doc-detail-dclear { margin-left:auto; color: var(--interactive-accent); cursor:pointer; font-size:11px; }
+.doc-detail-loglist { max-height:380px; overflow:auto; }
+.doc-detail-logrow { display:flex; gap:10px; padding:9px 4px; border-bottom:1px solid var(--background-modifier-border); }
+.doc-detail-logrow:last-child { border-bottom:none; }
+.doc-detail-logico { font-size:13px; width:18px; text-align:center; opacity:.85; flex:0 0 auto; }
+.doc-detail-logaction { font-size:12.5px; line-height:1.35; color: var(--text-normal); }
+.doc-detail-logmeta { font-size:10px; color: var(--text-faint); margin-top:2px; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3223,9 +3261,141 @@ class DocumentDetailView extends obsidian.ItemView {
     p.createDiv({ cls: 'doc-detail-stub', text: 'Tick a term to include it in this document. Source: your vault glossary (read-only — no add/delete here). Inserting into the .docx is a later action.' });
     if (!this.plugin._glossaryCache) this.plugin.loadGlossary().then(() => { if (this.node) draw(); });
   }
-  _renderRecentNotesPane(p, fm) { p.createDiv({ text: 'Recent Notes — filled in T25', cls: 'doc-detail-stub' }); }
-  _renderSearchNotesPane(p, fm) { p.createDiv({ text: 'Search Notes — filled in T26', cls: 'doc-detail-stub' }); }
-  _renderLogPane(p, fm) { p.createDiv({ text: 'Log — filled in T27', cls: 'doc-detail-stub' }); }
+  // ── T25: Recent Notes (structured noteLog + inline-tag composer + gated attach)
+  _renderRecentNotesPane(p, fm) {
+    const noteLog = Array.isArray(fm.noteLog) ? fm.noteLog : [];
+    let stagedTags = [], stagedFiles = [];   // stagedFiles: {name, data}
+
+    const comp = p.createDiv('doc-detail-composer');
+    const top = comp.createDiv('doc-detail-composer-top');
+    const input = top.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Add a note…  (type #tag to add a tag)' } });
+    const addBtn = top.createEl('button', { text: 'Add note', cls: 'doc-detail-addnote' });
+    const stagedTagsEl = comp.createDiv('doc-detail-staged');
+    const drop = comp.createDiv('doc-detail-notedrop disabled');
+    drop.setText('Enter note text first to attach files');
+    const stagedFilesEl = comp.createDiv('doc-detail-staged');
+
+    const renderStaged = () => {
+      stagedTagsEl.empty();
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedFilesEl.empty();
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); s.createSpan({ text: '📎 ' + f.name }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+    };
+    const updateDropState = () => {
+      const has = input.value.trim().length > 0;
+      drop.toggleClass('disabled', !has);
+      if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
+    };
+    input.oninput = () => {
+      const r = docContainer.extractInlineTags(input.value, false);
+      if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); }
+      updateDropState();
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
+    drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
+    drop.ondrop = async (e) => {
+      if (drop.hasClass('disabled')) return;
+      e.preventDefault(); drop.removeClass('drag');
+      const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])];
+      for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } }
+      renderStaged(); updateDropState();
+    };
+
+    const add = async () => {
+      const r = docContainer.extractInlineTags(input.value, true);
+      const tags = stagedTags.concat(r.tags);
+      const body = r.body;
+      if (!body && !tags.length && !stagedFiles.length) return;
+      const attachments = [];
+      for (const f of stagedFiles) {
+        try {
+          const dir = this.node.path + '/_notes';
+          if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
+          let dest = dir + '/' + f.name;
+          if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
+          await this.app.vault.createBinary(dest, f.data);
+          attachments.push(f.name);
+        } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+      }
+      const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments, version: this.node.current };
+      await this._saveSidecar('noteLog', noteLog.concat([entry]));   // re-renders via metadataCache change
+      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Note added', 'note');
+    };
+    addBtn.onclick = add;
+
+    p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the document's tags. Newest first." });
+    this._renderNoteList(p.createDiv('doc-detail-notelist'), noteLog);
+    renderStaged(); updateDropState();
+  }
+
+  _renderNoteList(listEl, notes) {
+    listEl.empty();
+    const sorted = notes.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!sorted.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: 'No notes match.' }); return; }
+    for (const n of sorted) {
+      const note = listEl.createDiv('doc-detail-note');
+      const meta = note.createDiv('doc-detail-nmeta');
+      meta.createSpan({ text: n.author || '—' });
+      meta.createSpan({ text: n.date || '' });
+      note.createDiv({ text: n.body || '', cls: 'doc-detail-nbody' });
+      const tags = n.noteTags || [], files = n.attachments || [];
+      if (tags.length || files.length) {
+        const foot = note.createDiv('doc-detail-nfoot');
+        tags.forEach(t => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
+        files.forEach(f => foot.createSpan({ text: '📎 ' + f, cls: 'doc-detail-nfile' }));
+      }
+    }
+  }
+
+  // ── T26: Search Notes (text + note-tag + date range) ───────────────────────
+  _renderSearchNotesPane(p, fm) {
+    const noteLog = Array.isArray(fm.noteLog) ? fm.noteLog : [];
+    const bar = p.createDiv('doc-detail-searchbar');
+    const input = bar.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Search notes by text or #note-tag…' } });
+    const fbtn = bar.createSpan({ cls: 'doc-detail-filterbtn', text: '▤ Dates' });
+    const dateRow = p.createDiv('doc-detail-datefilter');
+    dateRow.style.display = 'none';
+    dateRow.createSpan({ text: 'From', cls: 'doc-detail-dfl' });
+    const from = dateRow.createEl('input', { attr: { type: 'date' }, cls: 'doc-detail-dinput' });
+    dateRow.createSpan({ text: 'To', cls: 'doc-detail-dfl' });
+    const to = dateRow.createEl('input', { attr: { type: 'date' }, cls: 'doc-detail-dinput' });
+    const clear = dateRow.createSpan({ text: 'Clear', cls: 'doc-detail-dclear' });
+    fbtn.onclick = () => { const show = dateRow.style.display === 'none'; dateRow.style.display = show ? 'flex' : 'none'; fbtn.toggleClass('is-active', show); };
+    clear.onclick = () => { from.value = ''; to.value = ''; run(); };
+    const results = p.createDiv('doc-detail-notelist');
+    const run = () => {
+      const terms = (input.value || '').toLowerCase().replace(/#/g, '').split(/\s+/).filter(Boolean);
+      const f = from.value, t = to.value;
+      const hits = noteLog.filter(n => {
+        const hay = ((n.date || '') + ' ' + (n.author || '') + ' ' + (n.body || '') + ' ' + (n.noteTags || []).join(' ')).toLowerCase();
+        if (!terms.every(x => hay.includes(x))) return false;
+        if (f && String(n.date) < f) return false;
+        if (t && String(n.date) > t) return false;
+        return true;
+      });
+      this._renderNoteList(results, hits);
+    };
+    input.oninput = run; from.onchange = run; to.onchange = run; run();
+  }
+
+  // ── T27: Log (read-only activity feed) ─────────────────────────────────────
+  _renderLogPane(p, fm) {
+    const log = Array.isArray(fm.activityLog) ? fm.activityLog : [];
+    p.createDiv({ cls: 'doc-detail-noteshint', text: 'System activity — read-only. Notes are your commentary; the Log records actions on the document.' });
+    const list = p.createDiv('doc-detail-loglist');
+    const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
+    if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
+    const ICON = { create: '➕', version: '⎘', status: '🔄', note: '📝', edit: '✎', delete: '🗑', attach: '📎', link: '🔗', meta: '✱' };
+    for (const l of sorted) {
+      const row = list.createDiv('doc-detail-logrow');
+      row.createSpan({ text: ICON[l.type] || '•', cls: 'doc-detail-logico' });
+      const main = row.createDiv();
+      main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
+      main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
+    }
+  }
 
   _renderFooter(c) {
     const footer = c.createDiv('doc-detail-footer');
@@ -5628,6 +5798,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  // ── T27: append a plugin-originated entry to the current sidecar's activityLog
+  async logActivity(node, action, type) {
+    if (!node || !node.current) return;
+    const scPath = node.path + '/' + node.current + '.md';
+    let sc = this.app.vault.getAbstractFileByPath(scPath);
+    if (!sc) sc = await this.app.vault.create(scPath, '---\n---\n');
+    const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const actor = getUsername();
+    await this.app.fileManager.processFrontMatter(sc, (front) => {
+      if (!Array.isArray(front.activityLog)) front.activityLog = [];
+      front.activityLog.push({ datetime, actor, action, type });
+    });
+  }
+
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
   async newDocumentVersion(node) {
     if (!node || !node.current) { new obsidian.Notice('No current file to version'); return; }
@@ -5652,6 +5836,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const fm = await this.app.vault.read(sc);
       await this.app.vault.create(node.path + '/' + nextName + '.md', fm);
     }
+    // Log the version event onto the NEW version's sidecar (carries the log forward)
+    await this.logActivity({ path: node.path, current: nextName }, 'Version ' + docContainer.parseVersion(nextName).label.replace('rev ', '') + ' created', 'version');
     new obsidian.Notice('Created ' + nextName);
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
     this.openDocDetail(node);   // re-scan picks the new current as pinned
