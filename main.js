@@ -2942,8 +2942,11 @@ class DocumentDetailView extends obsidian.ItemView {
 
   async onOpen() {
     this.render();   // paint empty-state on workspace restore (setState re-renders with data)
-    // Re-render when THIS document's sidecar changes (stakeholders / related / definitions / notes / log writes)
+    // Re-render when THIS document's sidecar changes (stakeholders / related / definitions / notes / log writes).
+    // Skip while a note is being composed so an unrelated sidecar write (definition toggle, Sync pull,
+    // activity-log append) can't wipe the in-progress draft — the composer rebuilds only on the user's own Add.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+      if (this._composerDirty) return;
       if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
     }));
   }
@@ -2980,6 +2983,7 @@ class DocumentDetailView extends obsidian.ItemView {
   render() {
     const c = this.containerEl.children[1];
     c.empty(); c.addClass('doc-detail');
+    this._composerDirty = false;   // a fresh render means the composer is empty again
     if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
     const fm = this.frontmatter();
 
@@ -3100,14 +3104,23 @@ class DocumentDetailView extends obsidian.ItemView {
     });
     (this.node.attachments || []).forEach(a => rowFor(a, 'attachment', 'v-att', false));
   }
-  // Write a key into the current version's sidecar (create the sidecar if absent);
-  // the metadataCache 'changed' listener re-renders the detail afterward.
-  async _saveSidecar(key, value) {
+  // Write a key into the current version's sidecar (create it if absent), optionally
+  // appending an activityLog entry in the SAME transaction (one write, one re-render).
+  // The metadataCache 'changed' listener re-renders the detail afterward.
+  async _saveSidecar(key, value, log) {
     if (!this.node || !this.node.current) return;
     const scPath = this.node.path + '/' + this.node.current + '.md';
     let sc = this.app.vault.getAbstractFileByPath(scPath);
-    if (!sc) sc = await this.app.vault.create(scPath, '---\n---\n');
-    await this.app.fileManager.processFrontMatter(sc, (front) => { front[key] = value; });
+    if (!sc) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
+    if (!sc) return;
+    await this.app.fileManager.processFrontMatter(sc, (front) => {
+      front[key] = value;
+      if (log) {
+        if (!Array.isArray(front.activityLog)) front.activityLog = [];
+        const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
+        front.activityLog.push({ datetime, actor: getUsername(), action: log.action, type: log.type });
+      }
+    });
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
   }
 
@@ -3159,8 +3172,7 @@ class DocumentDetailView extends obsidian.ItemView {
     save.onclick = async () => {
       const clean = rows.filter(r => r.name || r.title || r.role || r.dept)
         .map(r => ({ name: r.name || '', title: r.title || '', role: r.role || '', dept: r.dept || '' }));
-      await this._saveSidecar('stakeholders', clean);
-      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Stakeholders edited', 'meta');
+      await this._saveSidecar('stakeholders', clean, { action: 'Stakeholders edited', type: 'meta' });
       m.close();
     };
     m.open();
@@ -3193,8 +3205,7 @@ class DocumentDetailView extends obsidian.ItemView {
     const sug = m.contentEl.createDiv('doc-detail-linksug');
     const pick = async (file) => {
       rel.push({ kind: 'link', target: file.path, label: file.basename });
-      await this._saveSidecar('relatedDocuments', rel);
-      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Related link added: ' + file.basename, 'link');
+      await this._saveSidecar('relatedDocuments', rel, { action: 'Related link added: ' + file.basename, type: 'link' });
       m.close();
     };
     input.oninput = () => {
@@ -3219,8 +3230,7 @@ class DocumentDetailView extends obsidian.ItemView {
         rel.push({ kind: 'ref', target: dest, label: f.name });
       } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
     }
-    await this._saveSidecar('relatedDocuments', rel);
-    if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Reference attached', 'attach');
+    await this._saveSidecar('relatedDocuments', rel, { action: 'Reference attached', type: 'attach' });
   }
 
   // ── T28: Definitions (read-only glossary checkbox table) ───────────────────
@@ -3252,8 +3262,7 @@ class DocumentDetailView extends obsidian.ItemView {
         cb.onchange = async () => {
           const i = included.indexOf(g.id);
           if (i >= 0) included.splice(i, 1); else included.push(g.id);
-          await this._saveSidecar('definitions', included);
-          if (this.plugin.logActivity) this.plugin.logActivity(this.node, (cb.checked ? 'Definition included: ' : 'Definition removed: ') + g.term, 'meta');
+          await this._saveSidecar('definitions', included, { action: (cb.checked ? 'Definition included: ' : 'Definition removed: ') + g.term, type: 'meta' });
         };
       }
     };
@@ -3287,6 +3296,7 @@ class DocumentDetailView extends obsidian.ItemView {
       if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
     };
     input.oninput = () => {
+      this._composerDirty = input.value.trim().length > 0 || stagedTags.length > 0 || stagedFiles.length > 0;
       const r = docContainer.extractInlineTags(input.value, false);
       if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); }
       updateDropState();
@@ -3299,6 +3309,7 @@ class DocumentDetailView extends obsidian.ItemView {
       e.preventDefault(); drop.removeClass('drag');
       const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])];
       for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } }
+      this._composerDirty = true;
       renderStaged(); updateDropState();
     };
 
@@ -3320,20 +3331,20 @@ class DocumentDetailView extends obsidian.ItemView {
       }
       const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments, version: this.node.current };
-      await this._saveSidecar('noteLog', noteLog.concat([entry]));   // re-renders via metadataCache change
-      if (this.plugin.logActivity) this.plugin.logActivity(this.node, 'Note added', 'note');
+      this._composerDirty = false;   // committing — allow the post-save re-render to rebuild a fresh composer
+      await this._saveSidecar('noteLog', noteLog.concat([entry]), { action: 'Note added', type: 'note' });   // one write, one re-render
     };
     addBtn.onclick = add;
 
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the document's tags. Newest first." });
-    this._renderNoteList(p.createDiv('doc-detail-notelist'), noteLog);
+    this._renderNoteList(p.createDiv('doc-detail-notelist'), noteLog, 'No notes yet.');
     renderStaged(); updateDropState();
   }
 
-  _renderNoteList(listEl, notes) {
+  _renderNoteList(listEl, notes, emptyText) {
     listEl.empty();
     const sorted = notes.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
-    if (!sorted.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: 'No notes match.' }); return; }
+    if (!sorted.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: emptyText || 'No notes match.' }); return; }
     for (const n of sorted) {
       const note = listEl.createDiv('doc-detail-note');
       const meta = note.createDiv('doc-detail-nmeta');
@@ -5803,7 +5814,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     if (!node || !node.current) return;
     const scPath = node.path + '/' + node.current + '.md';
     let sc = this.app.vault.getAbstractFileByPath(scPath);
-    if (!sc) sc = await this.app.vault.create(scPath, '---\n---\n');
+    if (!sc) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
+    if (!sc) return;
     const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
     const actor = getUsername();
     await this.app.fileManager.processFrontMatter(sc, (front) => {
