@@ -389,7 +389,7 @@ const DOC_CONTAINER_CSS = `
 .doc-container-badge.st-in-review, .doc-container-badge.st-pending-approval { color:#5b8def; }
 .doc-container-badge.st-archived, .doc-container-badge.st-obsolete { color: var(--text-faint); }
 .doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
-.doc-detail-wrap { max-width:980px; padding:14px 18px; }
+.doc-detail-wrap { max-width:1100px; padding:14px 18px; }
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 .doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
 .doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
@@ -441,6 +441,39 @@ const DOC_CONTAINER_CSS = `
 .doc-ov-overtxt { color:#e05c5c; font-size:11px; font-weight:500; }
 .doc-ov-newinput { width:100%; padding:7px 10px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); margin-bottom:8px; }
 .doc-ov-newpath { font-size:11px; color: var(--text-faint); margin-bottom:12px; font-family: var(--font-monospace); }
+/* ── v0.2 detail shell: scroll body + sticky footer + twin tab columns ── */
+.doc-detail { display:flex; flex-direction:column; height:100%; padding:0; }
+.doc-detail-scroll { flex:1 1 auto; overflow:auto; min-height:0; }
+.doc-detail-h1row { display:flex; align-items:center; gap:12px; margin-top:2px; }
+.doc-detail-h1row .doc-detail-title { margin-top:0; }
+.doc-detail-chip { font-size:11px; font-weight:600; padding:3px 11px; border-radius:20px; background: var(--background-modifier-border); color: var(--text-muted); }
+.doc-detail-chip.c-draft { background: rgba(214,162,74,.18); color:#d6a24a; }
+.doc-detail-chip.c-active { background: rgba(72,184,132,.18); color:#48b884; }
+.doc-detail-chip.c-review { background: rgba(91,141,239,.18); color:#5b8def; }
+.doc-detail-chip.c-arch { color: var(--text-faint); }
+.doc-detail-editbtn { margin-left:auto; font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
+.doc-detail-editbtn:hover { background: var(--interactive-accent-hover); }
+.doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px 16px 16px; margin-top:6px; }
+.doc-detail-grp { font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; color: var(--text-muted); font-weight:600; margin:14px 0 9px; }
+.doc-detail-grp:first-child { margin-top:0; }
+.doc-detail-metacard .doc-detail-grid { grid-template-columns: repeat(4, 1fr); }
+.doc-detail-metacard .doc-detail-fld.span2 { grid-column: span 2; }
+.doc-detail-cols { display:grid; grid-template-columns: 1.3fr 1fr; gap:20px; margin-top:22px; align-items:start; }
+.doc-detail-col { min-width:0; }
+.doc-detail-tabs { display:flex; gap:3px; border-bottom:1px solid var(--background-modifier-border); flex-wrap:wrap; }
+.doc-detail-tabb { font-size:12px; padding:7px 12px; color: var(--text-muted); cursor:pointer; border-radius:7px 7px 0 0; border:1px solid transparent; border-bottom:none; display:flex; align-items:center; gap:5px; }
+.doc-detail-tabb:hover { color: var(--text-normal); }
+.doc-detail-tabb.is-active { color: var(--text-normal); background: var(--background-secondary); border-color: var(--background-modifier-border); }
+.doc-detail-tabcnt { font-size:9px; opacity:.7; }
+.doc-detail-tabpane { display:none; background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 9px 9px; padding:10px; }
+.doc-detail-tabpane.is-active { display:block; }
+.doc-detail-paneacts { display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px; }
+.doc-detail-hbtn { font-size:11px; color: var(--interactive-accent); cursor:pointer; border:1px solid var(--background-modifier-border); border-radius:5px; padding:3px 9px; }
+.doc-detail-hbtn:hover { border-color: var(--interactive-accent); }
+.doc-detail-stub { font-size:11px; color: var(--text-faint); font-style:italic; padding:8px 4px; }
+.doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); display:flex; align-items:center; gap:8px; padding:10px 18px; box-shadow: 0 -4px 12px rgba(0,0,0,.12); flex-wrap:wrap; }
+.doc-detail-footer .doc-detail-btn { margin-left:0; }
+.doc-detail-fspace { flex:1; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -2860,45 +2893,122 @@ class DocumentDetailView extends obsidian.ItemView {
     return (cache && cache.frontmatter) || {};
   }
 
+  // ── v0.2 (T22): tabbed shell — scroll body + 2 tab columns + sticky footer ──
   render() {
     const c = this.containerEl.children[1];
     c.empty(); c.addClass('doc-detail');
     if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
     const fm = this.frontmatter();
-    const wrap = c.createDiv('doc-detail-wrap');
+
+    const scroll = c.createDiv('doc-detail-scroll');
+    const wrap = scroll.createDiv('doc-detail-wrap');
+
+    // Header: crumb · title + status chip + Edit · subhead
     wrap.createDiv({ text: this.node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-detail-crumb' });
-    wrap.createDiv({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
+    const h1 = wrap.createDiv('doc-detail-h1row');
+    h1.createSpan({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
+    if (fm.status) h1.createSpan({ text: fm.status, cls: 'doc-detail-chip ' + this._chipCls(fm.status) });
+    const editBtn = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
+    editBtn.onclick = () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current);
     wrap.createDiv({ text: 'Document Status', cls: 'doc-detail-sub' });
 
-    const grid = wrap.createDiv('doc-detail-grid');
-    for (const f of docContainer.DOC_FIELDS.phase1) {
-      const cell = grid.createDiv('doc-detail-fld');
-      if (f.type === 'textarea' || f.key === 'title') cell.addClass('span2');
-      cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
-      let val = fm[f.key];
-      if (f.key === 'tags' && Array.isArray(val)) val = val.map(t => '#' + String(t).replace(/^#/, '')).join(' ');
-      if (f.key === 'revision' && !val && this.node.current) val = docContainer.parseVersion(this.node.current).label.replace('rev ', '');
-      // Next Review: compute when empty; flag overdue
-      if (f.key === 'nextReviewDate') {
-        const nr = val || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
-        const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
-        if (nr && docContainer.isOverdue(nr, today)) { cell.createDiv({ text: nr + ' · overdue', cls: 'doc-detail-val over' }); continue; }
-        val = nr;
-      }
-      cell.createDiv({ text: val != null && val !== '' ? String(val) : '—', cls: 'doc-detail-val' });
-    }
+    // Metadata card (4 groups)
+    this._renderMeta(wrap, fm);
 
-    // Files & Versions
-    const fv = wrap.createDiv('doc-detail-sec');
-    const fvHead = fv.createEl('h4', { text: 'Files & Versions' });
-    const newVerBtn = fvHead.createSpan({ text: ' ⎘ New version', cls: 'doc-detail-fbtn' });
-    newVerBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
+    // Twin tab columns (scoped — each column switches independently)
+    const cols = wrap.createDiv('doc-detail-cols');
+    const leftCol = cols.createDiv('doc-detail-col');
+    const rightCol = cols.createDiv('doc-detail-col');
+    const arr = (v) => Array.isArray(v) ? v : [];
+
+    this._tabGroup(leftCol, [
+      { id: 'files',   label: 'Files & Versions', count: (this.node.files || []).length, fill: (p) => this._renderFilesPane(p) },
+      { id: 'stake',   label: 'Stakeholders',                                            fill: (p) => this._renderStakeholdersPane(p, fm) },
+      { id: 'reldocs', label: 'Related Documents', count: arr(fm.relatedDocuments).length, fill: (p) => this._renderRelatedPane(p, fm) },
+      { id: 'defs',    label: 'Definitions',       count: arr(fm.definitions).length,      fill: (p) => this._renderDefinitionsPane(p, fm) },
+    ]);
+    this._tabGroup(rightCol, [
+      { id: 'recent', label: 'Recent Notes', count: arr(fm.noteLog).length,     fill: (p) => this._renderRecentNotesPane(p, fm) },
+      { id: 'search', label: 'Search Notes',                                     fill: (p) => this._renderSearchNotesPane(p, fm) },
+      { id: 'log',    label: 'Log',          count: arr(fm.activityLog).length,  fill: (p) => this._renderLogPane(p, fm) },
+    ]);
+
+    // Sticky footer (5 actions)
+    this._renderFooter(c);
+  }
+
+  _chipCls(status) {
+    const s = String(status).toLowerCase();
+    if (s === 'draft') return 'c-draft';
+    if (s === 'active' || s === 'approved') return 'c-active';
+    if (s === 'in review' || s === 'pending approval') return 'c-review';
+    if (s === 'archived' || s === 'obsolete') return 'c-arch';
+    return '';
+  }
+
+  // Build a scoped tab group inside one column. specs: [{id,label,count?,fill(paneEl)}]
+  _tabGroup(colEl, specs) {
+    const bar = colEl.createDiv('doc-detail-tabs');
+    const panes = colEl.createDiv('doc-detail-panes');
+    specs.forEach((spec, i) => {
+      const tab = bar.createDiv('doc-detail-tabb');
+      tab.createSpan({ text: spec.label });
+      if (spec.count != null) tab.createSpan({ text: String(spec.count), cls: 'doc-detail-tabcnt' });
+      const pane = panes.createDiv('doc-detail-tabpane');
+      spec.fill(pane);
+      const activate = () => {
+        bar.querySelectorAll('.doc-detail-tabb').forEach(t => t.removeClass('is-active'));
+        panes.querySelectorAll('.doc-detail-tabpane').forEach(p => p.removeClass('is-active'));
+        tab.addClass('is-active'); pane.addClass('is-active');
+      };
+      tab.onclick = activate;
+      if (i === 0) activate();
+    });
+  }
+
+  _renderMeta(wrap, fm) {
+    const card = wrap.createDiv('doc-detail-metacard');
+    const byKey = {}; for (const f of docContainer.DOC_FIELDS.phase1) byKey[f.key] = f;
+    const groups = [
+      ['Identification', ['title', 'docNumber', 'docClass']],
+      ['Classification & Status', ['revision', 'status', 'department', 'originator']],
+      ['Lifecycle', ['originationDate', 'effectiveDate', 'reviewFrequencyDays', 'nextReviewDate']],
+      ['Description', ['summary', 'tags']],
+    ];
+    for (const [label, keys] of groups) {
+      card.createDiv({ text: label, cls: 'doc-detail-grp' });
+      const grid = card.createDiv('doc-detail-grid');
+      for (const k of keys) { const f = byKey[k]; if (f) this._valCell(grid, f, fm); }
+    }
+  }
+
+  _valCell(grid, f, fm) {
+    const cell = grid.createDiv('doc-detail-fld');
+    if (f.type === 'textarea' || f.key === 'title' || f.key === 'tags') cell.addClass('span2');
+    cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
+    let val = fm[f.key];
+    if (f.key === 'tags' && Array.isArray(val)) val = val.map(t => '#' + String(t).replace(/^#/, '')).join(' ');
+    if (f.key === 'revision' && !val && this.node.current) val = docContainer.parseVersion(this.node.current).label.replace('rev ', '');
+    if (f.key === 'nextReviewDate') {
+      const nr = val || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
+      const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      if (nr && docContainer.isOverdue(nr, today)) { cell.createDiv({ text: nr + ' · overdue', cls: 'doc-detail-val over' }); return; }
+      val = nr;
+    }
+    cell.createDiv({ text: val != null && val !== '' ? String(val) : '—', cls: 'doc-detail-val' });
+  }
+
+  // ── Tab panes — Files & Versions is real; the rest are filled in T23–T28 ────
+  _renderFilesPane(p) {
+    const acts = p.createDiv('doc-detail-paneacts');
+    const nv = acts.createSpan({ text: '⎘ New version', cls: 'doc-detail-hbtn' });
+    nv.onclick = () => this.plugin.newDocumentVersion(this.node);
     const rowFor = (name, badge, badgeCls, isCurrent) => {
-      const r = fv.createDiv('doc-detail-frow' + (isCurrent ? ' cur' : ''));
+      const r = p.createDiv('doc-detail-frow' + (isCurrent ? ' cur' : ''));
       const left = r.createDiv('doc-detail-fl');
       left.createSpan({ text: (badgeCls === 'v-att' ? '📎 ' : '📄 ') + name });
       left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
-      const openBtn = r.createSpan({ text: 'Open', cls: 'doc-detail-fbtn' });
+      const openBtn = r.createSpan({ text: isCurrent ? 'Open in editor' : 'Open', cls: 'doc-detail-fbtn' });
       openBtn.onclick = () => this.plugin.openFileInEditor(this.node.path + '/' + name);
     };
     (this.node.files || []).forEach((f) => {
@@ -2906,16 +3016,23 @@ class DocumentDetailView extends obsidian.ItemView {
       rowFor(f, isCur ? 'current' : docContainer.parseVersion(f).label, isCur ? 'v-cur' : 'v-old', isCur);
     });
     (this.node.attachments || []).forEach(a => rowFor(a, 'attachment', 'v-att', false));
+  }
+  _renderStakeholdersPane(p, fm) { p.createDiv({ text: 'Stakeholders — filled in T23', cls: 'doc-detail-stub' }); }
+  _renderRelatedPane(p, fm) { p.createDiv({ text: 'Related Documents — filled in T24', cls: 'doc-detail-stub' }); }
+  _renderDefinitionsPane(p, fm) { p.createDiv({ text: 'Definitions — filled in T28', cls: 'doc-detail-stub' }); }
+  _renderRecentNotesPane(p, fm) { p.createDiv({ text: 'Recent Notes — filled in T25', cls: 'doc-detail-stub' }); }
+  _renderSearchNotesPane(p, fm) { p.createDiv({ text: 'Search Notes — filled in T26', cls: 'doc-detail-stub' }); }
+  _renderLogPane(p, fm) { p.createDiv({ text: 'Log — filled in T27', cls: 'doc-detail-stub' }); }
 
-    // Actions
-    const act = wrap.createDiv('doc-detail-sec');
-    act.createEl('h4', { text: 'Actions' });
-    const mkBtn = (label, cls, fn) => { const b = act.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls||'') }); b.onclick = fn; };
-    mkBtn('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
-    mkBtn('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
-    mkBtn('Edit metadata', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
-    mkBtn('New version', '', () => this.plugin.newDocumentVersion(this.node));
-    mkBtn('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
+  _renderFooter(c) {
+    const footer = c.createDiv('doc-detail-footer');
+    const mk = (label, cls, fn) => { const b = footer.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls || '') }); b.onclick = fn; return b; };
+    mk('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
+    mk('⎘ New version', '', () => this.plugin.newDocumentVersion(this.node));
+    mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
+    mk('Edit metadata', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
+    footer.createSpan({ cls: 'doc-detail-fspace' });
+    mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
   }
 }
 
