@@ -596,6 +596,13 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-md-lab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
 .doc-detail-md-row input, .doc-detail-md-row select, .doc-detail-md-row textarea { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
 .doc-detail-md-row textarea { resize:vertical; line-height:1.4; }
+/* ── inline view/edit mode: metadata inputs + ghost button ── */
+.doc-detail-vinput { width:100%; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:6px; padding:7px 10px; font-size:13px; color: var(--text-normal); font-family: inherit; }
+.doc-detail-vinput:focus { outline:none; border-color: var(--interactive-accent); }
+textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px; }
+.doc-detail-editbtn.ghost { background: transparent; color: var(--text-muted); border:1px solid var(--background-modifier-border); }
+.doc-detail-editbtn.ghost:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.doc-pv-ta-view { white-space:pre-wrap; min-height:auto; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -2994,7 +3001,7 @@ class DocumentDetailView extends obsidian.ItemView {
     // Skip while a note is being composed so an unrelated sidecar write (definition toggle, Sync pull,
     // activity-log append) can't wipe the in-progress draft — the composer rebuilds only on the user's own Add.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
-      if (this._composerDirty) return;
+      if (this._composerDirty || this._editMode) return;   // don't blow away an in-progress note draft or metadata edit
       if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
     }));
   }
@@ -3004,6 +3011,7 @@ class DocumentDetailView extends obsidian.ItemView {
       const paths = this.app.vault.getFiles().map(f => f.path);
       const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
       this.node = this.findDoc(tree, state.docPath);
+      this._editMode = false;   // navigating to a document always opens in view mode
       this.render();
     }
     return super.setState(state, result);
@@ -3043,9 +3051,16 @@ class DocumentDetailView extends obsidian.ItemView {
     const h1 = wrap.createDiv('doc-detail-h1row');
     h1.createSpan({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
     if (fm.status) h1.createSpan({ text: fm.status, cls: 'doc-detail-chip ' + this._chipCls(fm.status) });
-    const editBtn = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
-    editBtn.onclick = () => this._editDocMetadata();
-    wrap.createDiv({ text: 'Document Status', cls: 'doc-detail-sub' });
+    if (this._editMode) {
+      const save = h1.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' });
+      save.onclick = () => this._saveMetaEdits();
+      const cancel = h1.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' });
+      cancel.onclick = () => { this._editMode = false; this.render(); };
+    } else {
+      const editBtn = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
+      editBtn.onclick = () => { this._editMode = true; this.render(); };
+    }
+    wrap.createDiv({ text: this._editMode ? 'Editing metadata — Save or Cancel' : 'Document Status', cls: 'doc-detail-sub' });
 
     // Metadata card (4 groups)
     this._renderMeta(wrap, fm);
@@ -3102,6 +3117,7 @@ class DocumentDetailView extends obsidian.ItemView {
   }
 
   _renderMeta(wrap, fm) {
+    if (this._editMode) this._mdInputs = {};
     const card = wrap.createDiv('doc-detail-metacard');
     const byKey = {}; for (const f of docContainer.DOC_FIELDS.phase1) byKey[f.key] = f;
     const groups = [
@@ -3121,6 +3137,32 @@ class DocumentDetailView extends obsidian.ItemView {
     const cell = grid.createDiv('doc-detail-fld');
     if (f.type === 'textarea' || f.key === 'title' || f.key === 'tags') cell.addClass('span2');
     cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
+
+    if (this._editMode) {
+      const isTags = f.key === 'tags';
+      const seed = isTags
+        ? (Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || ''))
+        : (fm[f.key] != null ? String(fm[f.key]) : '');
+      let inp;
+      if (f.type === 'select') {
+        inp = cell.createEl('select', { cls: 'doc-detail-vinput' });
+        inp.createEl('option', { text: '—', value: '' });
+        for (const opt of (f.options || [])) inp.createEl('option', { text: opt, value: opt });
+        inp.value = seed;
+      } else if (f.type === 'textarea') {
+        inp = cell.createEl('textarea', { cls: 'doc-detail-vinput' }); inp.rows = 2; inp.value = seed;
+      } else {
+        inp = cell.createEl('input', { cls: 'doc-detail-vinput' });
+        if (f.type === 'date') inp.type = 'date';
+        else if (f.type === 'number') inp.type = 'number';
+        inp.value = seed;
+        if (isTags) inp.placeholder = 'comma-separated';
+        if (f.key === 'nextReviewDate') inp.placeholder = 'auto from effective + frequency if blank';
+      }
+      this._mdInputs[f.key] = { inp, orig: seed, field: f };
+      return;
+    }
+
     let val = fm[f.key];
     if (f.key === 'tags' && Array.isArray(val)) val = val.map(t => '#' + String(t).replace(/^#/, '')).join(' ');
     if (f.key === 'revision' && !val && this.node.current) val = docContainer.parseVersion(this.node.current).label.replace('rev ', '');
@@ -3176,55 +3218,27 @@ class DocumentDetailView extends obsidian.ItemView {
   // ── Edit the doc-container metadata schema (DOC_FIELDS.phase1) on the sidecar.
   // (The h1 Edit + footer "Edit metadata" used to open the old tags/links modal,
   // leaving the schema fields read-only — this is the real editor.)
-  _editDocMetadata() {
-    const fm = this.frontmatter();
-    const fields = docContainer.DOC_FIELDS.phase1;
-    const vals = {};
-    for (const f of fields) {
-      vals[f.key] = (f.key === 'tags')
-        ? (Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || ''))
-        : (fm[f.key] != null ? String(fm[f.key]) : '');
-    }
-    const orig = { ...vals };
-    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit document metadata');
-    const wrap = m.contentEl.createDiv('doc-detail-md-edit');
-    for (const f of fields) {
-      const row = wrap.createDiv('doc-detail-md-row');
-      row.createSpan({ text: f.label, cls: 'doc-detail-md-lab' });
-      let inp;
-      if (f.type === 'select') {
-        inp = row.createEl('select');
-        inp.createEl('option', { text: '—', value: '' });
-        for (const opt of (f.options || [])) inp.createEl('option', { text: opt, value: opt });
-        inp.value = vals[f.key] || '';
-      } else if (f.type === 'textarea') {
-        inp = row.createEl('textarea'); inp.rows = 3; inp.value = vals[f.key];
-      } else {
-        inp = row.createEl('input');
-        if (f.type === 'date') inp.type = 'date';
-        else if (f.type === 'number') inp.type = 'number';
-        inp.value = vals[f.key];
-        if (f.key === 'tags') inp.placeholder = 'comma-separated';
-        if (f.key === 'nextReviewDate') inp.placeholder = 'auto from effective + frequency if blank';
+  // Save the in-page metadata edits (the metadata grid renders inputs in edit mode;
+  // _mdInputs holds {inp, orig, field} per key). Writes only changed fields.
+  async _saveMetaEdits() {
+    const inputs = this._mdInputs || {};
+    let changed = false;
+    for (const k in inputs) if (inputs[k].inp.value !== inputs[k].orig) { changed = true; break; }
+    this._editMode = false;                  // set before await so the listener re-render shows view mode
+    if (!changed) { this.render(); return; }  // nothing to write — just exit edit mode (no stale read)
+    const st = inputs.status;
+    const statusChanged = st && st.inp.value !== st.orig;
+    await this._mutateSidecar((front) => {
+      for (const k in inputs) {
+        const { inp, orig, field } = inputs[k];
+        const v = inp.value;
+        if (v === orig) continue;             // never clobber untouched/hand-authored values
+        if (k === 'tags') front.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+        else if (field.type === 'number') front[k] = v === '' ? null : Number(v);
+        else front[k] = v === '' ? null : v;
       }
-      const sync = () => { vals[f.key] = inp.value; };
-      inp.oninput = sync; inp.onchange = sync;
-    }
-    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
-    const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
-    save.onclick = async () => {
-      const statusChanged = vals.status !== orig.status;
-      await this._mutateSidecar((front) => {
-        for (const f of fields) {
-          if (vals[f.key] === orig[f.key]) continue;   // only write changed fields — never clobber untouched/hand-authored values
-          if (f.key === 'tags') front.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
-          else if (f.type === 'number') front[f.key] = vals[f.key] === '' ? null : Number(vals[f.key]);
-          else front[f.key] = vals[f.key] === '' ? null : vals[f.key];
-        }
-      }, statusChanged ? { action: 'Status changed: ' + (orig.status || '—') + ' → ' + (vals.status || '—'), type: 'status' } : { action: 'Metadata edited', type: 'meta' });
-      m.close();
-    };
-    m.open();
+    }, statusChanged ? { action: 'Status changed: ' + (st.orig || '—') + ' → ' + (st.inp.value || '—'), type: 'status' } : { action: 'Metadata edited', type: 'meta' });
+    // the metadataCache 'changed' listener re-renders view-mode with fresh data (no manual render → no stale read)
   }
 
   // ── T23: Stakeholders (Title is the load-bearing, role-based field) ─────────
@@ -3521,7 +3535,7 @@ class DocumentDetailView extends obsidian.ItemView {
     mk('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
     mk('⎘ New version', '', () => this.plugin.newDocumentVersion(this.node));
     mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
-    mk('Edit metadata', '', () => this._editDocMetadata());
+    mk('Edit metadata', '', () => { this._editMode = true; this.render(); });
     mk('Edit tags & links', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
     footer.createSpan({ cls: 'doc-detail-fspace' });
     mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
@@ -3544,13 +3558,13 @@ class ContainerOverviewView extends obsidian.ItemView {
     // Mirrors DocDetailView — a manual render() right after processFrontMatter would
     // read stale metadataCache; the 'changed' event fires after the re-parse.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
-      if (this._projComposerDirty) return;   // don't wipe an in-progress project-note draft
+      if (this._projComposerDirty || this._projEditMode) return;   // don't wipe an in-progress draft or metadata edit
       if (!f || !this.path) return;
       if (f.path === this.path + '/_project.md' || f.path.startsWith(this.path + '/')) this.render();
     }));
   }
   async setState(s, r) {
-    if (s && s.path) { if (s.path !== this.path) this._projActiveTab = null; this.path = s.path; this.render(); }
+    if (s && s.path) { if (s.path !== this.path) { this._projActiveTab = null; this._projEditMode = false; } this.path = s.path; this.render(); }
     return super.setState(s, r);
   }
   getState() { return { path: this.path }; }
@@ -3614,55 +3628,118 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
   renderProjectView(c, node) {
     const pn = this.plugin.readProjectNote(node);
+    const editing = this._projEditMode;
+    if (editing) this._pjInputs = {};
     c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-ov-crumb' });
     const h1 = c.createDiv('doc-pv-h1row');
     h1.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
     if (pn.status) h1.createSpan({ text: pn.status, cls: 'doc-detail-chip ' + this._projChipCls(pn.status) });
     h1.createSpan({ text: 'Project', cls: 'doc-ov-typetag' });
-    const edit = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
-    edit.onclick = () => this._editProject(node, pn);
-    c.createDiv({ text: 'Stored in project note · _project.md', cls: 'doc-pv-sub' });
+    if (editing) {
+      const save = h1.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' }); save.onclick = () => this._saveProjEdits(node);
+      const cancel = h1.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' }); cancel.onclick = () => { this._projEditMode = false; this.render(); };
+    } else {
+      const edit = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' }); edit.onclick = () => { this._projEditMode = true; this.render(); };
+    }
+    c.createDiv({ text: editing ? 'Editing project — Save or Cancel' : 'Stored in project note · _project.md', cls: 'doc-pv-sub' });
 
-    // Progress bar
-    const pct = Math.max(0, Math.min(100, Number(pn.percentComplete) || 0));
-    const prog = c.createDiv('doc-pv-progtop');
-    prog.createSpan({ text: 'Completion', cls: 'doc-pv-plab' });
-    const bar = prog.createDiv('doc-pv-prog'); bar.createEl('i').style.width = pct + '%';
-    prog.createSpan({ text: pct + '%', cls: 'doc-pv-prognum' });
-    const meta = [pn.phase, pn.targetCompletion ? 'target ' + pn.targetCompletion : ''].filter(Boolean).join(' · ');
-    if (meta) prog.createSpan({ text: meta, cls: 'doc-pv-progmeta' });
+    // Progress bar (view mode only; percentComplete + phase are inputs in edit mode)
+    if (!editing) {
+      const pct = Math.max(0, Math.min(100, Number(pn.percentComplete) || 0));
+      const prog = c.createDiv('doc-pv-progtop');
+      prog.createSpan({ text: 'Completion', cls: 'doc-pv-plab' });
+      const bar = prog.createDiv('doc-pv-prog'); bar.createEl('i').style.width = pct + '%';
+      prog.createSpan({ text: pct + '%', cls: 'doc-pv-prognum' });
+      const meta = [pn.phase, pn.targetCompletion ? 'target ' + pn.targetCompletion : ''].filter(Boolean).join(' · ');
+      if (meta) prog.createSpan({ text: meta, cls: 'doc-pv-progmeta' });
+    }
 
-    // Metadata card
     const card = c.createDiv('doc-detail-metacard');
+    const fld = (grid, lab, key, type, options, span2) => {
+      const cell = grid.createDiv('doc-detail-fld' + (span2 ? ' span2' : ''));
+      cell.createDiv({ text: lab.toUpperCase(), cls: 'doc-detail-lab' });
+      const seed = this._pjSeed(pn, key);
+      let inp;
+      if (type === 'select') { inp = cell.createEl('select', { cls: 'doc-detail-vinput' }); inp.createEl('option', { text: '—', value: '' }); (options || []).forEach(o => inp.createEl('option', { text: o, value: o })); inp.value = seed; }
+      else if (type === 'textarea') { inp = cell.createEl('textarea', { cls: 'doc-detail-vinput' }); inp.rows = 2; inp.value = seed; }
+      else { inp = cell.createEl('input', { cls: 'doc-detail-vinput' }); if (type === 'date') inp.type = 'date'; else if (type === 'number') inp.type = 'number'; inp.value = seed; if (key === 'tags') inp.placeholder = 'comma-separated'; }
+      this._pjInputs[key] = { inp, type };
+    };
+
+    // Identification
     card.createDiv({ text: 'Identification', cls: 'doc-detail-grp' });
-    const compact = card.createDiv('doc-pv-compact');
-    const kv = (k, v, span2) => {
-      const el = compact.createDiv('doc-pv-kv' + (span2 ? ' span2' : ''));
-      el.createSpan({ text: k, cls: 'doc-pv-k' });
-      el.createSpan({ text: v || '—', cls: 'doc-pv-v' + (v ? '' : ' doc-detail-muted') });
-    };
-    kv('Name', pn.projectName, true); kv('Code', pn.projectCode); kv('Dept', pn.department);
-    kv('Lead', pn.lead); kv('Lead title', pn.leadTitle); kv('Sponsor', pn.sponsor); kv('Priority', pn.priority);
+    if (editing) {
+      const grid = card.createDiv('doc-detail-grid');
+      fld(grid, 'Name', 'projectName', 'text', null, true);
+      fld(grid, 'Code', 'projectCode', 'text');
+      fld(grid, 'Department', 'department', 'text');
+      fld(grid, 'Lead', 'lead', 'text');
+      fld(grid, 'Lead title', 'leadTitle', 'text');
+      fld(grid, 'Sponsor', 'sponsor', 'text');
+      fld(grid, 'Priority', 'priority', 'select', ['High', 'Medium', 'Low']);
+      fld(grid, 'Phase', 'phase', 'text');
+      fld(grid, 'Percent complete', 'percentComplete', 'number');
+    } else {
+      const compact = card.createDiv('doc-pv-compact');
+      const kv = (k, v, span2) => { const el = compact.createDiv('doc-pv-kv' + (span2 ? ' span2' : '')); el.createSpan({ text: k, cls: 'doc-pv-k' }); el.createSpan({ text: v || '—', cls: 'doc-pv-v' + (v ? '' : ' doc-detail-muted') }); };
+      kv('Name', pn.projectName, true); kv('Code', pn.projectCode); kv('Dept', pn.department);
+      kv('Lead', pn.lead); kv('Lead title', pn.leadTitle); kv('Sponsor', pn.sponsor); kv('Priority', pn.priority);
+    }
 
+    // Status & Timeline
     card.createDiv({ text: 'Status & Timeline', cls: 'doc-detail-grp' });
-    const grid = card.createDiv('doc-detail-grid');
-    const val = (lab, v) => { const cell = grid.createDiv('doc-detail-fld'); cell.createDiv({ text: lab.toUpperCase(), cls: 'doc-detail-lab' }); cell.createDiv({ text: v || '—', cls: 'doc-detail-val' }); };
-    val('Status', pn.status); val('Start Date', pn.startDate); val('Target Completion', pn.targetCompletion);
-    const tagsCell = grid.createDiv('doc-detail-fld'); tagsCell.createDiv({ text: 'TAGS', cls: 'doc-detail-lab' });
-    const tags = Array.isArray(pn.tags) ? pn.tags : [];
-    tagsCell.createDiv({ text: tags.length ? tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ') : '—', cls: 'doc-detail-val' });
+    const grid2 = card.createDiv('doc-detail-grid');
+    if (editing) {
+      fld(grid2, 'Status', 'status', 'select', ['Planning', 'Active', 'On Hold', 'Complete', 'Cancelled']);
+      fld(grid2, 'Start Date', 'startDate', 'date');
+      fld(grid2, 'Target Completion', 'targetCompletion', 'date');
+      fld(grid2, 'Tags', 'tags', 'text', null, true);
+    } else {
+      const val = (lab, v) => { const cell = grid2.createDiv('doc-detail-fld'); cell.createDiv({ text: lab.toUpperCase(), cls: 'doc-detail-lab' }); cell.createDiv({ text: v || '—', cls: 'doc-detail-val' }); };
+      val('Status', pn.status); val('Start Date', pn.startDate); val('Target Completion', pn.targetCompletion);
+      const tagsCell = grid2.createDiv('doc-detail-fld'); tagsCell.createDiv({ text: 'TAGS', cls: 'doc-detail-lab' });
+      const tags = Array.isArray(pn.tags) ? pn.tags : [];
+      tagsCell.createDiv({ text: tags.length ? tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ') : '—', cls: 'doc-detail-val' });
+    }
 
+    // Description
     card.createDiv({ text: 'Description / Purpose / Scope', cls: 'doc-detail-grp' });
-    const ta = card.createEl('textarea', { cls: 'doc-pv-ta' });
-    ta.value = pn.objective || '';
-    ta.placeholder = 'Describe the project purpose and scope…';
-    ta.onblur = async () => {
-      const cur = (this.plugin.readProjectNote(node) || {}).objective || '';   // compare live, not the stale render-time capture
-      if (ta.value !== cur) await this.plugin.writeProjectNote(node, 'objective', ta.value);
-    };
+    if (editing) {
+      const ta = card.createEl('textarea', { cls: 'doc-pv-ta' }); ta.value = pn.objective || ''; ta.placeholder = 'Describe the project purpose and scope…';
+      this._pjInputs.objective = { inp: ta, type: 'textarea' };
+    } else {
+      card.createDiv({ cls: 'doc-pv-ta doc-pv-ta-view', text: pn.objective || '—' });
+    }
 
-    // Tabs
     this._projTabs(c.createDiv('doc-pv-tabwrap'), node, pn);
+  }
+
+  _pjSeed(pn, key) {
+    if (key === 'tags') return Array.isArray(pn.tags) ? pn.tags.join(', ') : '';
+    return pn[key] != null ? String(pn[key]) : '';
+  }
+
+  async _saveProjEdits(node) {
+    const inputs = this._pjInputs || {};
+    const pn = this.plugin.readProjectNote(node);
+    this._projEditMode = false;               // set before await so the listener re-render shows view mode
+    let changed = false;
+    for (const k in inputs) if (inputs[k].inp.value !== this._pjSeed(pn, k)) { changed = true; break; }
+    if (!changed) { this.render(); return; }
+    const stInp = inputs.status;
+    const statusChanged = stInp && stInp.inp.value !== (pn.status || '');
+    await this.plugin.writeProjectNote(node, (fm) => {
+      for (const k in inputs) {
+        const { inp, type } = inputs[k];
+        const v = inp.value;
+        if (v === this._pjSeed(pn, k)) continue;   // only write changed fields
+        if (k === 'tags') fm.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+        else if (type === 'number') { const n = Number(v); fm[k] = v === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null); }
+        else fm[k] = v === '' ? null : v;
+      }
+      this._pushProjLog(fm, statusChanged ? 'Status changed: ' + (pn.status || '—') + ' → ' + (stInp.inp.value || '—') : 'Project metadata edited', statusChanged ? 'status' : 'meta');
+    });
+    // listener re-renders view-mode fresh (no manual render → no stale read)
   }
 
   _projTabs(parent, node, pn) {
@@ -3896,43 +3973,6 @@ class ContainerOverviewView extends obsidian.ItemView {
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
     }
-  }
-
-  _editProject(node, pn) {
-    const fields = [
-      ['projectName', 'Name'], ['projectCode', 'Code'], ['department', 'Department'],
-      ['lead', 'Lead'], ['leadTitle', 'Lead title'], ['sponsor', 'Sponsor'],
-      ['priority', 'Priority (High/Medium/Low)'], ['status', 'Status (Planning/Active/On Hold/Complete/Cancelled)'],
-      ['startDate', 'Start date (YYYY-MM-DD)'], ['targetCompletion', 'Target completion (YYYY-MM-DD)'],
-      ['phase', 'Phase (e.g. Phase 3 of 5)'], ['percentComplete', 'Percent complete (0-100)'],
-      ['tags', 'Tags (comma-separated)'],
-    ];
-    const vals = {};
-    fields.forEach(([k]) => { vals[k] = (k === 'tags') ? (Array.isArray(pn.tags) ? pn.tags.join(', ') : '') : (pn[k] != null ? String(pn[k]) : ''); });
-    const orig = { ...vals };
-    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit project');
-    const wrap = m.contentEl.createDiv('doc-pv-edit');
-    fields.forEach(([k, label]) => {
-      const row = wrap.createDiv('doc-pv-editrow');
-      row.createSpan({ text: label, cls: 'doc-pv-editlab' });
-      const inp = row.createEl('input'); inp.value = vals[k]; inp.oninput = () => vals[k] = inp.value;
-    });
-    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
-    const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
-    save.onclick = async () => {
-      await this.plugin.writeProjectNote(node, (fm) => {
-        // Only write fields the user actually changed — don't clobber hand-authored values left blank in the modal
-        const scalars = ['projectName', 'projectCode', 'department', 'lead', 'leadTitle', 'sponsor', 'priority', 'status', 'startDate', 'targetCompletion', 'phase'];
-        for (const k of scalars) { if (vals[k] !== orig[k]) fm[k] = vals[k] === '' ? null : vals[k]; }
-        if (vals.percentComplete !== orig.percentComplete) {
-          const n = Number(vals.percentComplete);
-          fm.percentComplete = vals.percentComplete === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null);
-        }
-        if (vals.tags !== orig.tags) fm.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
-      });
-      m.close();   // listener re-renders
-    };
-    m.open();
   }
 
   renderContainers(c, node) {
