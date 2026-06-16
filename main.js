@@ -3261,6 +3261,9 @@ class DocumentDetailView extends obsidian.ItemView {
   }
   _renderStakeholdersPane(p, fm) {
     if (this._stakeEdit) return this._renderStakeholdersEdit(p, fm);
+    const acts = p.createDiv('doc-detail-paneacts');
+    const edit = acts.createSpan({ text: '✎ Edit', cls: 'doc-detail-hbtn' });
+    edit.onclick = () => { this._stakeEdit = true; this.render(); };
     const table = p.createEl('table', { cls: 'doc-detail-tbl' });
     const head = table.createEl('tr');
     ['Name', 'Title', 'Role', 'Dept'].forEach(h => head.createEl('th', { text: h }));
@@ -3271,9 +3274,6 @@ class DocumentDetailView extends obsidian.ItemView {
       tr.createEl('td').createSpan({ text: s.role || '—', cls: 'doc-detail-role' });
       td(s.dept);
     }
-    const foot = p.createDiv('doc-detail-paneacts');
-    const edit = foot.createSpan({ text: '✎ Edit', cls: 'doc-detail-hbtn' });
-    edit.onclick = () => { this._stakeEdit = true; this.render(); };
     p.createDiv({ cls: 'doc-detail-stub', text: 'Title is role-based so the record stays meaningful when the person changes. Reviewer / Final Approver populate in the workflow phase.' });
   }
   // Inline edit (no modal) — seeds from REAL stakeholders only (never the synthetic placeholder rows)
