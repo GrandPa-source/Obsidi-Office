@@ -589,6 +589,8 @@ const DOC_CONTAINER_CSS = `
 .doc-pv-editrow { display:flex; align-items:center; gap:10px; }
 .doc-pv-editlab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
 .doc-pv-editrow input { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
+.doc-pv-dcount { font-size:9.5px; background: rgba(124,108,239,.16); color:#b3a8f5; border-radius:9px; padding:1px 7px; margin-right:7px; }
+.doc-pv-dchip { font-size:9px; color: var(--text-faint); margin-right:5px; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3592,6 +3594,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       { id: 'pnotes', label: 'Notes', count: arr(pn.noteLog).length, fill: (p) => this._projNotesPane(p, node, arr(pn.noteLog)) },
       { id: 'plog', label: 'Log', count: arr(pn.activityLog).length, right: true, fill: (p) => this._projLogPane(p, arr(pn.activityLog)) },
     ];
+    const hasActive = specs.some(s => s.id === this._projActiveTab);
     specs.forEach((spec, i) => {
       const tab = bar.createDiv('doc-detail-tabb' + (spec.right ? ' right' : ''));
       tab.createSpan({ text: spec.label });
@@ -3599,21 +3602,217 @@ class ContainerOverviewView extends obsidian.ItemView {
       const pane = panes.createDiv('doc-detail-tabpane');
       spec.fill(pane);
       const activate = () => {
+        this._projActiveTab = spec.id;
         bar.querySelectorAll('.doc-detail-tabb').forEach(t => t.removeClass('is-active'));
         panes.querySelectorAll('.doc-detail-tabpane').forEach(p => p.removeClass('is-active'));
         tab.addClass('is-active'); pane.addClass('is-active');
       };
       tab.onclick = activate;
-      if (i === 0) activate();
+      // Restore the previously-active tab across a re-render (after a project edit); else first
+      if (hasActive ? spec.id === this._projActiveTab : i === 0) activate();
     });
   }
 
-  // Stub panes — filled in T33 (Documents/Milestones), T34 (Team), T35 (Notes/Log)
-  _projDocsPane(p, node, docs) { p.createDiv({ text: 'Documents — built in T33', cls: 'doc-detail-stub' }); }
-  _projMilesPane(p, node, miles) { p.createDiv({ text: 'Milestones — built in T33', cls: 'doc-detail-stub' }); }
-  _projTeamPane(p, node, team, docs) { p.createDiv({ text: 'Team — built in T34', cls: 'doc-detail-stub' }); }
-  _projNotesPane(p, node, notes) { p.createDiv({ text: 'Notes — built in T35', cls: 'doc-detail-stub' }); }
-  _projLogPane(p, log) { p.createDiv({ text: 'Log — built in T35', cls: 'doc-detail-stub' }); }
+  _pushProjLog(fm, action, type) {
+    if (!Array.isArray(fm.activityLog)) fm.activityLog = [];
+    const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
+    fm.activityLog.push({ datetime, actor: getUsername(), action, type });
+  }
+  _renderNoteListInto(listEl, notes, emptyText) {
+    const sorted = notes.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
+    if (!sorted.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: emptyText || 'No notes yet.' }); return; }
+    for (const n of sorted) {
+      const note = listEl.createDiv('doc-detail-note');
+      const meta = note.createDiv('doc-detail-nmeta');
+      meta.createSpan({ text: n.author || '—' }); meta.createSpan({ text: n.date || '' });
+      note.createDiv({ text: n.body || '', cls: 'doc-detail-nbody' });
+      const tags = n.noteTags || [], files = n.attachments || [];
+      if (tags.length || files.length) {
+        const foot = note.createDiv('doc-detail-nfoot');
+        tags.forEach(t => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
+        files.forEach(f => foot.createSpan({ text: '📎 ' + f, cls: 'doc-detail-nfile' }));
+      }
+    }
+  }
+  // Read each project document's current-version stakeholders for the rollup
+  _projDocStakeholders(node) {
+    const out = [];
+    const walk = (n) => {
+      if (n.kind === 'document' && n.current) {
+        const sc = this.app.vault.getAbstractFileByPath(n.path + '/' + n.current + '.md');
+        const fm = (sc && this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+        out.push({ title: fm.title || n.name, stakeholders: Array.isArray(fm.stakeholders) ? fm.stakeholders : [] });
+      }
+      (n.children || []).forEach(walk);
+    };
+    walk(node);
+    return out;
+  }
+
+  // ── T33: Documents + Milestones ────────────────────────────────────────────
+  _projDocsPane(p, node, docs) {
+    const acts = p.createDiv('doc-detail-paneacts');
+    const nd = acts.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' }); nd.style.marginBottom = '0';
+    nd.onclick = () => new obsidian.Notice('New Document flow — deferred to a follow-up (needs UX mock)');
+    if (!docs.length) { p.createDiv({ text: 'No documents in this project yet.', cls: 'doc-detail-stub' }); return; }
+    const table = p.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr'); ['Title', 'Doc #', 'Class', 'Status', 'Modified'].forEach(h => head.createEl('th', { text: h }));
+    for (const d of docs) {
+      const tr = table.createEl('tr', { cls: 'row' });
+      tr.createEl('td', { text: d.title }); tr.createEl('td', { text: d.docNumber }); tr.createEl('td', { text: d.docClass });
+      tr.createEl('td').createSpan({ text: d.status || '—', cls: d.status ? 'doc-ov-sb st-' + d.status.toLowerCase().replace(/\s+/g, '-') : '' });
+      tr.createEl('td', { text: d.modified || '—' });
+      tr.onclick = () => this.plugin.openDocDetail(d.node);
+    }
+  }
+  _projMilesPane(p, node, miles) {
+    const acts = p.createDiv('doc-detail-paneacts');
+    const add = acts.createEl('button', { text: '＋ Add milestone', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
+    add.onclick = () => this._addMilestone(node);
+    if (!miles.length) { p.createDiv({ text: 'No milestones yet.', cls: 'doc-detail-stub' }); return; }
+    const table = p.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr'); ['Milestone', 'Target', 'Status'].forEach(h => head.createEl('th', { text: h }));
+    for (const ms of miles) {
+      const tr = table.createEl('tr');
+      tr.createEl('td', { text: ms.name || '—' }); tr.createEl('td', { text: ms.target || '—' });
+      tr.createEl('td').createSpan({ text: ms.status || '—', cls: 'doc-ov-sb' });
+    }
+  }
+  _addMilestone(node) {
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Add milestone');
+    const name = m.contentEl.createEl('input', { attr: { placeholder: 'Milestone name' }, cls: 'doc-ov-newinput' });
+    const target = m.contentEl.createEl('input', { attr: { placeholder: 'Target date (YYYY-MM-DD)' }, cls: 'doc-ov-newinput' });
+    const status = m.contentEl.createEl('input', { attr: { placeholder: 'Status (Not started / In progress / Done)' }, cls: 'doc-ov-newinput' });
+    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const save = bar.createEl('button', { text: 'Add', cls: 'mod-cta' });
+    save.onclick = async () => {
+      if (!name.value.trim()) { m.close(); return; }
+      await this.plugin.writeProjectNote(node, (fm) => {
+        if (!Array.isArray(fm.milestones)) fm.milestones = [];
+        fm.milestones.push({ name: name.value.trim(), target: target.value.trim(), status: status.value.trim() || 'Not started' });
+        this._pushProjLog(fm, 'Milestone "' + name.value.trim() + '" added', 'milestone');
+      });
+      m.close(); this.render();
+    };
+    m.open();
+  }
+
+  // ── T34: Team roster + cross-document stakeholder rollup ────────────────────
+  _projTeamPane(p, node, team, docs) {
+    const acts = p.createDiv('doc-detail-paneacts');
+    const add = acts.createEl('button', { text: '＋ Add member', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
+    add.onclick = () => this._addMember(node);
+    p.createDiv({ text: 'Project team', cls: 'doc-detail-grp' });
+    if (!team.length) p.createDiv({ text: 'No team members yet.', cls: 'doc-detail-stub' });
+    else {
+      const table = p.createEl('table', { cls: 'doc-detail-tbl' });
+      const head = table.createEl('tr'); ['Name', 'Title', 'Project role'].forEach(h => head.createEl('th', { text: h }));
+      for (const t of team) {
+        const tr = table.createEl('tr');
+        const td = (v) => { const c = tr.createEl('td', { text: v || '—' }); if (!v) c.addClass('doc-detail-muted'); };
+        td(t.name); td(t.title);
+        tr.createEl('td').createSpan({ text: t.role || '—', cls: 'doc-detail-role' });
+      }
+    }
+    p.createDiv({ text: 'Stakeholders across documents', cls: 'doc-detail-grp' });
+    p.createDiv({ text: 'Auto-derived from the documents in this project — read-only.', cls: 'doc-detail-stub' });
+    const agg = docContainer.aggregateStakeholders(this._projDocStakeholders(node));
+    if (!agg.length) { p.createDiv({ text: 'No document stakeholders yet.', cls: 'doc-detail-stub' }); return; }
+    const table = p.createEl('table', { cls: 'doc-detail-tbl' });
+    const head = table.createEl('tr'); ['Name', 'Title', 'Role(s)', 'In documents'].forEach(h => head.createEl('th', { text: h }));
+    for (const e of agg) {
+      const tr = table.createEl('tr');
+      const nameTd = tr.createEl('td', { text: e.name || '—' }); if (!e.name) nameTd.addClass('doc-detail-muted');
+      tr.createEl('td', { text: e.title || '—' });
+      const rolesTd = tr.createEl('td'); e.roles.forEach(r => rolesTd.createSpan({ text: r, cls: 'doc-detail-role' }));
+      const docsTd = tr.createEl('td');
+      docsTd.createSpan({ text: e.docs.length > 1 ? e.docs.length + ' docs' : '1 doc', cls: 'doc-pv-dcount' });
+      e.docs.forEach(d => docsTd.createSpan({ text: d, cls: 'doc-pv-dchip' }));
+    }
+  }
+  _addMember(node) {
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Add team member');
+    const name = m.contentEl.createEl('input', { attr: { placeholder: 'Name' }, cls: 'doc-ov-newinput' });
+    const title = m.contentEl.createEl('input', { attr: { placeholder: 'Title (role-based)' }, cls: 'doc-ov-newinput' });
+    const role = m.contentEl.createEl('input', { attr: { placeholder: 'Project role (e.g. Member)' }, cls: 'doc-ov-newinput' });
+    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const save = bar.createEl('button', { text: 'Add', cls: 'mod-cta' });
+    save.onclick = async () => {
+      if (!name.value.trim() && !title.value.trim()) { m.close(); return; }
+      await this.plugin.writeProjectNote(node, (fm) => {
+        if (!Array.isArray(fm.team)) fm.team = [];
+        fm.team.push({ name: name.value.trim(), title: title.value.trim(), role: role.value.trim() });
+        this._pushProjLog(fm, 'Team member added: ' + (name.value.trim() || title.value.trim()), 'member');
+      });
+      m.close(); this.render();
+    };
+    m.open();
+  }
+
+  // ── T35: Notes (project-scoped composer) + Log ─────────────────────────────
+  _projNotesPane(p, node, notes) {
+    let stagedTags = [], stagedFiles = [];
+    const comp = p.createDiv('doc-detail-composer');
+    const top = comp.createDiv('doc-detail-composer-top');
+    const input = top.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Add a note…  (type #tag to add a tag)' } });
+    const addBtn = top.createEl('button', { text: 'Add note', cls: 'doc-detail-addnote' });
+    const stagedTagsEl = comp.createDiv('doc-detail-staged');
+    const drop = comp.createDiv('doc-detail-notedrop disabled'); drop.setText('Enter note text first to attach files');
+    const stagedFilesEl = comp.createDiv('doc-detail-staged');
+    const renderStaged = () => {
+      stagedTagsEl.empty();
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedFilesEl.empty();
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); s.createSpan({ text: '📎 ' + f.name }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+    };
+    const updateDropState = () => {
+      const has = input.value.trim().length > 0;
+      drop.toggleClass('disabled', !has);
+      if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
+    };
+    input.oninput = () => { const r = docContainer.extractInlineTags(input.value, false); if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); } updateDropState(); };
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
+    drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
+    drop.ondrop = async (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.removeClass('drag'); const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])]; for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } } renderStaged(); updateDropState(); };
+    const add = async () => {
+      const r = docContainer.extractInlineTags(input.value, true);
+      const tags = stagedTags.concat(r.tags); const body = r.body;
+      if (!body && !tags.length && !stagedFiles.length) return;
+      const attachments = [];
+      for (const f of stagedFiles) {
+        try {
+          const dir = node.path + '/_notes';
+          if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
+          let dest = dir + '/' + f.name;
+          if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
+          await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
+        } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+      }
+      const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
+      await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
+      this.render();
+    };
+    addBtn.onclick = add;
+    p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the project's tags. Newest first." });
+    this._renderNoteListInto(p.createDiv('doc-detail-notelist'), notes, 'No notes yet.');
+    renderStaged(); updateDropState();
+  }
+  _projLogPane(p, log) {
+    p.createDiv({ cls: 'doc-detail-noteshint', text: 'Project activity — read-only. Notes are commentary; the Log records actions.' });
+    const list = p.createDiv('doc-detail-loglist');
+    const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
+    if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
+    const ICON = { create: '➕', status: '🔄', doc: '📄', milestone: '🏁', member: '👤', note: '📝', meta: '✱' };
+    for (const l of sorted) {
+      const row = list.createDiv('doc-detail-logrow');
+      row.createSpan({ text: ICON[l.type] || '•', cls: 'doc-detail-logico' });
+      const main = row.createDiv();
+      main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
+      main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
+    }
+  }
 
   _editProject(node, pn) {
     const fields = [
