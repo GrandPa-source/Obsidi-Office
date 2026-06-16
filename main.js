@@ -3472,8 +3472,21 @@ class ContainerOverviewView extends obsidian.ItemView {
   getViewType() { return VIEW_TYPE_DOC_CONTAINER; }
   getDisplayText() { return this.path ? this.path.split('/').pop() : 'Documents'; }
   getIcon() { return 'folder-open'; }
-  async onOpen() { this.render(); }   // paint on workspace restore (setState re-renders with data)
-  async setState(s, r) { if (s && s.path) { this.path = s.path; this.render(); } return super.setState(s, r); }
+  async onOpen() {
+    this.render();   // paint on workspace restore (setState re-renders with data)
+    // Re-render when THIS container's _project.md or any descendant sidecar changes
+    // (project edits, milestone/member/note adds, and the cross-document rollup).
+    // Mirrors DocDetailView — a manual render() right after processFrontMatter would
+    // read stale metadataCache; the 'changed' event fires after the re-parse.
+    this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+      if (!f || !this.path) return;
+      if (f.path === this.path + '/_project.md' || f.path.startsWith(this.path + '/')) this.render();
+    }));
+  }
+  async setState(s, r) {
+    if (s && s.path) { if (s.path !== this.path) this._projActiveTab = null; this.path = s.path; this.render(); }
+    return super.setState(s, r);
+  }
   getState() { return { path: this.path }; }
 
   node() {
@@ -3576,7 +3589,10 @@ class ContainerOverviewView extends obsidian.ItemView {
     const ta = card.createEl('textarea', { cls: 'doc-pv-ta' });
     ta.value = pn.objective || '';
     ta.placeholder = 'Describe the project purpose and scope…';
-    ta.onblur = async () => { if (ta.value !== (pn.objective || '')) await this.plugin.writeProjectNote(node, 'objective', ta.value); };
+    ta.onblur = async () => {
+      const cur = (this.plugin.readProjectNote(node) || {}).objective || '';   // compare live, not the stale render-time capture
+      if (ta.value !== cur) await this.plugin.writeProjectNote(node, 'objective', ta.value);
+    };
 
     // Tabs
     this._projTabs(c.createDiv('doc-pv-tabwrap'), node, pn);
@@ -3692,7 +3708,7 @@ class ContainerOverviewView extends obsidian.ItemView {
         fm.milestones.push({ name: name.value.trim(), target: target.value.trim(), status: status.value.trim() || 'Not started' });
         this._pushProjLog(fm, 'Milestone "' + name.value.trim() + '" added', 'milestone');
       });
-      m.close(); this.render();
+      m.close();   // metadataCache 'changed' listener re-renders with fresh data
     };
     m.open();
   }
@@ -3744,7 +3760,7 @@ class ContainerOverviewView extends obsidian.ItemView {
         fm.team.push({ name: name.value.trim(), title: title.value.trim(), role: role.value.trim() });
         this._pushProjLog(fm, 'Team member added: ' + (name.value.trim() || title.value.trim()), 'member');
       });
-      m.close(); this.render();
+      m.close();   // listener re-renders
     };
     m.open();
   }
@@ -3792,7 +3808,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
       await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
-      this.render();
+      // listener re-renders (Notes tab persists via _projActiveTab) with the fresh note
     };
     addBtn.onclick = add;
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the project's tags. Newest first." });
@@ -3840,10 +3856,11 @@ class ContainerOverviewView extends obsidian.ItemView {
         fm.lead = vals.lead; fm.leadTitle = vals.leadTitle; fm.sponsor = vals.sponsor;
         fm.priority = vals.priority; fm.status = vals.status; fm.startDate = vals.startDate;
         fm.targetCompletion = vals.targetCompletion; fm.phase = vals.phase;
-        fm.percentComplete = vals.percentComplete === '' ? null : Number(vals.percentComplete);
+        const n = Number(vals.percentComplete);
+        fm.percentComplete = vals.percentComplete === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null);
         fm.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
       });
-      m.close(); this.render();
+      m.close();   // listener re-renders
     };
     m.open();
   }
