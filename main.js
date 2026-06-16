@@ -3909,6 +3909,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     ];
     const vals = {};
     fields.forEach(([k]) => { vals[k] = (k === 'tags') ? (Array.isArray(pn.tags) ? pn.tags.join(', ') : '') : (pn[k] != null ? String(pn[k]) : ''); });
+    const orig = { ...vals };
     const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit project');
     const wrap = m.contentEl.createDiv('doc-pv-edit');
     fields.forEach(([k, label]) => {
@@ -3920,13 +3921,14 @@ class ContainerOverviewView extends obsidian.ItemView {
     const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
     save.onclick = async () => {
       await this.plugin.writeProjectNote(node, (fm) => {
-        fm.projectName = vals.projectName; fm.projectCode = vals.projectCode; fm.department = vals.department;
-        fm.lead = vals.lead; fm.leadTitle = vals.leadTitle; fm.sponsor = vals.sponsor;
-        fm.priority = vals.priority; fm.status = vals.status; fm.startDate = vals.startDate;
-        fm.targetCompletion = vals.targetCompletion; fm.phase = vals.phase;
-        const n = Number(vals.percentComplete);
-        fm.percentComplete = vals.percentComplete === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null);
-        fm.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+        // Only write fields the user actually changed — don't clobber hand-authored values left blank in the modal
+        const scalars = ['projectName', 'projectCode', 'department', 'lead', 'leadTitle', 'sponsor', 'priority', 'status', 'startDate', 'targetCompletion', 'phase'];
+        for (const k of scalars) { if (vals[k] !== orig[k]) fm[k] = vals[k] === '' ? null : vals[k]; }
+        if (vals.percentComplete !== orig.percentComplete) {
+          const n = Number(vals.percentComplete);
+          fm.percentComplete = vals.percentComplete === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null);
+        }
+        if (vals.tags !== orig.tags) fm.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
       });
       m.close();   // listener re-renders
     };
@@ -4131,9 +4133,13 @@ class SettingsTab extends obsidian.PluginSettingTab {
     new obsidian.Setting(containerEl).setName('Document Browser').setHeading();
     new obsidian.Setting(containerEl)
       .setName('Enable Document Browser')
-      .setDesc('Adds a Documents pane to the left sidebar (reload to apply).')
+      .setDesc('Adds a Documents pane to the left sidebar.')
       .addToggle(t => t.setValue(this.plugin.settings.docBrowserEnabled)
-        .onChange(async v => { this.plugin.settings.docBrowserEnabled = v; await this.plugin.saveSettings(); }));
+        .onChange(async v => {
+          this.plugin.settings.docBrowserEnabled = v;
+          await this.plugin.saveSettings();
+          if (v) { await this.plugin.ensureDocTaxonomy(); new obsidian.Notice('Document Browser enabled — reload Obsidian (or disable/enable the plugin) to show its ribbon icon & command.'); }
+        }));
     new obsidian.Setting(containerEl)
       .setName('Managed root folder')
       .setDesc('Vault-relative folder that holds the document taxonomy.')
