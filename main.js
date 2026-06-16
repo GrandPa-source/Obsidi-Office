@@ -566,6 +566,29 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-logico { font-size:13px; width:18px; text-align:center; opacity:.85; flex:0 0 auto; }
 .doc-detail-logaction { font-size:12.5px; line-height:1.35; color: var(--text-normal); }
 .doc-detail-logmeta { font-size:10px; color: var(--text-faint); margin-top:2px; }
+.doc-detail-tabb.right { margin-left:auto; }
+/* ── v0.3 Project view ── */
+.doc-pv-h1row { display:flex; align-items:center; gap:12px; margin:2px 0; }
+.doc-ov-typetag { font-size:9px; text-transform:uppercase; letter-spacing:.05em; background: rgba(124,108,239,.16); color:#b3a8f5; padding:2px 8px; border-radius:9px; }
+.doc-pv-sub { font-size:12px; color: var(--text-muted); margin-bottom:14px; }
+.doc-pv-progtop { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:12px 16px; display:flex; align-items:center; gap:14px; margin-bottom:14px; }
+.doc-pv-plab { font-size:9px; text-transform:uppercase; letter-spacing:.05em; color: var(--text-faint); flex:0 0 auto; }
+.doc-pv-prog { flex:1; height:9px; border-radius:6px; background: var(--background-modifier-border); overflow:hidden; }
+.doc-pv-prog > i { display:block; height:100%; background: linear-gradient(90deg, var(--interactive-accent), #9b8cf5); border-radius:6px; }
+.doc-pv-prognum { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; min-width:44px; text-align:right; flex:0 0 auto; }
+.doc-pv-progmeta { font-size:11px; color: var(--text-muted); white-space:nowrap; flex:0 0 auto; }
+.doc-pv-compact { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 18px; }
+.doc-pv-kv { display:flex; align-items:baseline; gap:8px; font-size:12.5px; padding:5px 0; border-bottom:1px solid var(--background-modifier-border); }
+.doc-pv-kv.span2 { grid-column:span 2; }
+.doc-pv-k { font-size:10px; text-transform:uppercase; letter-spacing:.04em; color: var(--text-faint); min-width:74px; flex:0 0 auto; }
+.doc-pv-v { color: var(--text-normal); }
+.doc-pv-ta { width:100%; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:7px; padding:10px 12px; font-size:12.8px; min-height:110px; line-height:1.55; color: var(--text-normal); resize:vertical; }
+.doc-pv-ta:focus { outline:none; border-color: var(--interactive-accent); }
+.doc-pv-tabwrap { margin-top:22px; }
+.doc-pv-edit { display:flex; flex-direction:column; gap:7px; margin:8px 0; }
+.doc-pv-editrow { display:flex; align-items:center; gap:10px; }
+.doc-pv-editlab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
+.doc-pv-editrow input { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3498,14 +3521,132 @@ class ContainerOverviewView extends obsidian.ItemView {
     return this.renderContainers(c, node);   // root or category
   }
 
-  // ── T31 stub: Project view (filled in T32/33/34/35) ────────────────────────
+  // ── T32: Project view — progress, compact identification, description, tabs ─
+  _projChipCls(status) {
+    const s = String(status).toLowerCase();
+    if (s === 'active' || s === 'complete') return 'c-active';
+    if (s === 'planning') return 'c-review';
+    if (s === 'on hold') return 'c-draft';
+    if (s === 'cancelled') return 'c-arch';
+    return '';
+  }
   renderProjectView(c, node) {
     const pn = this.plugin.readProjectNote(node);
     c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-ov-crumb' });
-    const head = c.createDiv('doc-ov-head');
-    head.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
-    head.createSpan({ text: 'Project', cls: 'doc-ov-typetag' });
-    c.createDiv({ text: 'Project view — built in T32', cls: 'doc-ov-empty' });
+    const h1 = c.createDiv('doc-pv-h1row');
+    h1.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
+    if (pn.status) h1.createSpan({ text: pn.status, cls: 'doc-detail-chip ' + this._projChipCls(pn.status) });
+    h1.createSpan({ text: 'Project', cls: 'doc-ov-typetag' });
+    const edit = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
+    edit.onclick = () => this._editProject(node, pn);
+    c.createDiv({ text: 'Stored in project note · _project.md', cls: 'doc-pv-sub' });
+
+    // Progress bar
+    const pct = Math.max(0, Math.min(100, Number(pn.percentComplete) || 0));
+    const prog = c.createDiv('doc-pv-progtop');
+    prog.createSpan({ text: 'Completion', cls: 'doc-pv-plab' });
+    const bar = prog.createDiv('doc-pv-prog'); bar.createEl('i').style.width = pct + '%';
+    prog.createSpan({ text: pct + '%', cls: 'doc-pv-prognum' });
+    const meta = [pn.phase, pn.targetCompletion ? 'target ' + pn.targetCompletion : ''].filter(Boolean).join(' · ');
+    if (meta) prog.createSpan({ text: meta, cls: 'doc-pv-progmeta' });
+
+    // Metadata card
+    const card = c.createDiv('doc-detail-metacard');
+    card.createDiv({ text: 'Identification', cls: 'doc-detail-grp' });
+    const compact = card.createDiv('doc-pv-compact');
+    const kv = (k, v, span2) => {
+      const el = compact.createDiv('doc-pv-kv' + (span2 ? ' span2' : ''));
+      el.createSpan({ text: k, cls: 'doc-pv-k' });
+      el.createSpan({ text: v || '—', cls: 'doc-pv-v' + (v ? '' : ' doc-detail-muted') });
+    };
+    kv('Name', pn.projectName, true); kv('Code', pn.projectCode); kv('Dept', pn.department);
+    kv('Lead', pn.lead); kv('Lead title', pn.leadTitle); kv('Sponsor', pn.sponsor); kv('Priority', pn.priority);
+
+    card.createDiv({ text: 'Status & Timeline', cls: 'doc-detail-grp' });
+    const grid = card.createDiv('doc-detail-grid');
+    const val = (lab, v) => { const cell = grid.createDiv('doc-detail-fld'); cell.createDiv({ text: lab.toUpperCase(), cls: 'doc-detail-lab' }); cell.createDiv({ text: v || '—', cls: 'doc-detail-val' }); };
+    val('Status', pn.status); val('Start Date', pn.startDate); val('Target Completion', pn.targetCompletion);
+    const tagsCell = grid.createDiv('doc-detail-fld'); tagsCell.createDiv({ text: 'TAGS', cls: 'doc-detail-lab' });
+    const tags = Array.isArray(pn.tags) ? pn.tags : [];
+    tagsCell.createDiv({ text: tags.length ? tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ') : '—', cls: 'doc-detail-val' });
+
+    card.createDiv({ text: 'Description / Purpose / Scope', cls: 'doc-detail-grp' });
+    const ta = card.createEl('textarea', { cls: 'doc-pv-ta' });
+    ta.value = pn.objective || '';
+    ta.placeholder = 'Describe the project purpose and scope…';
+    ta.onblur = async () => { if (ta.value !== (pn.objective || '')) await this.plugin.writeProjectNote(node, 'objective', ta.value); };
+
+    // Tabs
+    this._projTabs(c.createDiv('doc-pv-tabwrap'), node, pn);
+  }
+
+  _projTabs(parent, node, pn) {
+    const bar = parent.createDiv('doc-detail-tabs');
+    const panes = parent.createDiv('doc-detail-panes');
+    const docs = this.docsUnder(node);
+    const arr = (v) => Array.isArray(v) ? v : [];
+    const specs = [
+      { id: 'pdocs', label: 'Documents', count: docs.length, fill: (p) => this._projDocsPane(p, node, docs) },
+      { id: 'pmiles', label: 'Milestones', count: arr(pn.milestones).length, fill: (p) => this._projMilesPane(p, node, arr(pn.milestones)) },
+      { id: 'pteam', label: 'Team', count: arr(pn.team).length, fill: (p) => this._projTeamPane(p, node, arr(pn.team), docs) },
+      { id: 'pnotes', label: 'Notes', count: arr(pn.noteLog).length, fill: (p) => this._projNotesPane(p, node, arr(pn.noteLog)) },
+      { id: 'plog', label: 'Log', count: arr(pn.activityLog).length, right: true, fill: (p) => this._projLogPane(p, arr(pn.activityLog)) },
+    ];
+    specs.forEach((spec, i) => {
+      const tab = bar.createDiv('doc-detail-tabb' + (spec.right ? ' right' : ''));
+      tab.createSpan({ text: spec.label });
+      if (spec.count != null) tab.createSpan({ text: String(spec.count), cls: 'doc-detail-tabcnt' });
+      const pane = panes.createDiv('doc-detail-tabpane');
+      spec.fill(pane);
+      const activate = () => {
+        bar.querySelectorAll('.doc-detail-tabb').forEach(t => t.removeClass('is-active'));
+        panes.querySelectorAll('.doc-detail-tabpane').forEach(p => p.removeClass('is-active'));
+        tab.addClass('is-active'); pane.addClass('is-active');
+      };
+      tab.onclick = activate;
+      if (i === 0) activate();
+    });
+  }
+
+  // Stub panes — filled in T33 (Documents/Milestones), T34 (Team), T35 (Notes/Log)
+  _projDocsPane(p, node, docs) { p.createDiv({ text: 'Documents — built in T33', cls: 'doc-detail-stub' }); }
+  _projMilesPane(p, node, miles) { p.createDiv({ text: 'Milestones — built in T33', cls: 'doc-detail-stub' }); }
+  _projTeamPane(p, node, team, docs) { p.createDiv({ text: 'Team — built in T34', cls: 'doc-detail-stub' }); }
+  _projNotesPane(p, node, notes) { p.createDiv({ text: 'Notes — built in T35', cls: 'doc-detail-stub' }); }
+  _projLogPane(p, log) { p.createDiv({ text: 'Log — built in T35', cls: 'doc-detail-stub' }); }
+
+  _editProject(node, pn) {
+    const fields = [
+      ['projectName', 'Name'], ['projectCode', 'Code'], ['department', 'Department'],
+      ['lead', 'Lead'], ['leadTitle', 'Lead title'], ['sponsor', 'Sponsor'],
+      ['priority', 'Priority (High/Medium/Low)'], ['status', 'Status (Planning/Active/On Hold/Complete/Cancelled)'],
+      ['startDate', 'Start date (YYYY-MM-DD)'], ['targetCompletion', 'Target completion (YYYY-MM-DD)'],
+      ['phase', 'Phase (e.g. Phase 3 of 5)'], ['percentComplete', 'Percent complete (0-100)'],
+      ['tags', 'Tags (comma-separated)'],
+    ];
+    const vals = {};
+    fields.forEach(([k]) => { vals[k] = (k === 'tags') ? (Array.isArray(pn.tags) ? pn.tags.join(', ') : '') : (pn[k] != null ? String(pn[k]) : ''); });
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit project');
+    const wrap = m.contentEl.createDiv('doc-pv-edit');
+    fields.forEach(([k, label]) => {
+      const row = wrap.createDiv('doc-pv-editrow');
+      row.createSpan({ text: label, cls: 'doc-pv-editlab' });
+      const inp = row.createEl('input'); inp.value = vals[k]; inp.oninput = () => vals[k] = inp.value;
+    });
+    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
+    save.onclick = async () => {
+      await this.plugin.writeProjectNote(node, (fm) => {
+        fm.projectName = vals.projectName; fm.projectCode = vals.projectCode; fm.department = vals.department;
+        fm.lead = vals.lead; fm.leadTitle = vals.leadTitle; fm.sponsor = vals.sponsor;
+        fm.priority = vals.priority; fm.status = vals.status; fm.startDate = vals.startDate;
+        fm.targetCompletion = vals.targetCompletion; fm.phase = vals.phase;
+        fm.percentComplete = vals.percentComplete === '' ? null : Number(vals.percentComplete);
+        fm.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+      });
+      m.close(); this.render();
+    };
+    m.open();
   }
 
   renderContainers(c, node) {
