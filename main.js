@@ -591,6 +591,11 @@ const DOC_CONTAINER_CSS = `
 .doc-pv-editrow input { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
 .doc-pv-dcount { font-size:9.5px; background: rgba(124,108,239,.16); color:#b3a8f5; border-radius:9px; padding:1px 7px; margin-right:7px; }
 .doc-pv-dchip { font-size:9px; color: var(--text-faint); margin-right:5px; }
+.doc-detail-md-edit { display:flex; flex-direction:column; gap:8px; margin:8px 0; max-height:60vh; overflow:auto; }
+.doc-detail-md-row { display:flex; align-items:center; gap:10px; }
+.doc-detail-md-lab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
+.doc-detail-md-row input, .doc-detail-md-row select, .doc-detail-md-row textarea { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
+.doc-detail-md-row textarea { resize:vertical; line-height:1.4; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3039,7 +3044,7 @@ class DocumentDetailView extends obsidian.ItemView {
     h1.createSpan({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
     if (fm.status) h1.createSpan({ text: fm.status, cls: 'doc-detail-chip ' + this._chipCls(fm.status) });
     const editBtn = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
-    editBtn.onclick = () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current);
+    editBtn.onclick = () => this._editDocMetadata();
     wrap.createDiv({ text: 'Document Status', cls: 'doc-detail-sub' });
 
     // Metadata card (4 groups)
@@ -3150,14 +3155,14 @@ class DocumentDetailView extends obsidian.ItemView {
   // Write a key into the current version's sidecar (create it if absent), optionally
   // appending an activityLog entry in the SAME transaction (one write, one re-render).
   // The metadataCache 'changed' listener re-renders the detail afterward.
-  async _saveSidecar(key, value, log) {
+  async _mutateSidecar(applyFn, log) {
     if (!this.node || !this.node.current) return;
     const scPath = this.node.path + '/' + this.node.current + '.md';
     let sc = this.app.vault.getAbstractFileByPath(scPath);
     if (!sc) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
     if (!sc) return;
     await this.app.fileManager.processFrontMatter(sc, (front) => {
-      front[key] = value;
+      applyFn(front);
       if (log) {
         if (!Array.isArray(front.activityLog)) front.activityLog = [];
         const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
@@ -3165,6 +3170,61 @@ class DocumentDetailView extends obsidian.ItemView {
       }
     });
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+  }
+  async _saveSidecar(key, value, log) { return this._mutateSidecar((front) => { front[key] = value; }, log); }
+
+  // ── Edit the doc-container metadata schema (DOC_FIELDS.phase1) on the sidecar.
+  // (The h1 Edit + footer "Edit metadata" used to open the old tags/links modal,
+  // leaving the schema fields read-only — this is the real editor.)
+  _editDocMetadata() {
+    const fm = this.frontmatter();
+    const fields = docContainer.DOC_FIELDS.phase1;
+    const vals = {};
+    for (const f of fields) {
+      vals[f.key] = (f.key === 'tags')
+        ? (Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || ''))
+        : (fm[f.key] != null ? String(fm[f.key]) : '');
+    }
+    const orig = { ...vals };
+    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit document metadata');
+    const wrap = m.contentEl.createDiv('doc-detail-md-edit');
+    for (const f of fields) {
+      const row = wrap.createDiv('doc-detail-md-row');
+      row.createSpan({ text: f.label, cls: 'doc-detail-md-lab' });
+      let inp;
+      if (f.type === 'select') {
+        inp = row.createEl('select');
+        inp.createEl('option', { text: '—', value: '' });
+        for (const opt of (f.options || [])) inp.createEl('option', { text: opt, value: opt });
+        inp.value = vals[f.key] || '';
+      } else if (f.type === 'textarea') {
+        inp = row.createEl('textarea'); inp.rows = 3; inp.value = vals[f.key];
+      } else {
+        inp = row.createEl('input');
+        if (f.type === 'date') inp.type = 'date';
+        else if (f.type === 'number') inp.type = 'number';
+        inp.value = vals[f.key];
+        if (f.key === 'tags') inp.placeholder = 'comma-separated';
+        if (f.key === 'nextReviewDate') inp.placeholder = 'auto from effective + frequency if blank';
+      }
+      const sync = () => { vals[f.key] = inp.value; };
+      inp.oninput = sync; inp.onchange = sync;
+    }
+    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
+    save.onclick = async () => {
+      const statusChanged = vals.status !== orig.status;
+      await this._mutateSidecar((front) => {
+        for (const f of fields) {
+          if (vals[f.key] === orig[f.key]) continue;   // only write changed fields — never clobber untouched/hand-authored values
+          if (f.key === 'tags') front.tags = vals.tags.split(',').map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+          else if (f.type === 'number') front[f.key] = vals[f.key] === '' ? null : Number(vals[f.key]);
+          else front[f.key] = vals[f.key] === '' ? null : vals[f.key];
+        }
+      }, statusChanged ? { action: 'Status changed: ' + (orig.status || '—') + ' → ' + (vals.status || '—'), type: 'status' } : { action: 'Metadata edited', type: 'meta' });
+      m.close();
+    };
+    m.open();
   }
 
   // ── T23: Stakeholders (Title is the load-bearing, role-based field) ─────────
@@ -3193,10 +3253,14 @@ class DocumentDetailView extends obsidian.ItemView {
     p.createDiv({ cls: 'doc-detail-stub', text: 'Title is role-based so the record stays meaningful when the person changes. Reviewer / Final Approver populate in the workflow phase.' });
   }
   _editStakeholders(fm) {
-    const rows = this._stakeholders(fm).map(s => ({
+    // Seed from REAL stakeholders only — never persist the synthetic placeholder rows
+    // (Reviewer / Final Approver) the display pane shows when none exist yet.
+    const base = (Array.isArray(fm.stakeholders) && fm.stakeholders.length) ? fm.stakeholders : [];
+    const rows = base.map(s => ({
       name: s.name === '—' ? '' : (s.name || ''), title: s.title === '—' ? '' : (s.title || ''),
       role: s.role || '', dept: s.dept === '—' ? '' : (s.dept || ''),
     }));
+    if (!rows.length) rows.push({ name: '', title: '', role: 'Originator', dept: '' });
     const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit stakeholders');
     const list = m.contentEl.createDiv('doc-detail-sh-edit');
     const draw = () => {
@@ -3457,7 +3521,8 @@ class DocumentDetailView extends obsidian.ItemView {
     mk('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
     mk('⎘ New version', '', () => this.plugin.newDocumentVersion(this.node));
     mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
-    mk('Edit metadata', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
+    mk('Edit metadata', '', () => this._editDocMetadata());
+    mk('Edit tags & links', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
     footer.createSpan({ cls: 'doc-detail-fspace' });
     mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
   }
@@ -3479,6 +3544,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     // Mirrors DocDetailView — a manual render() right after processFrontMatter would
     // read stale metadataCache; the 'changed' event fires after the re-parse.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+      if (this._projComposerDirty) return;   // don't wipe an in-progress project-note draft
       if (!f || !this.path) return;
       if (f.path === this.path + '/_project.md' || f.path.startsWith(this.path + '/')) this.render();
     }));
@@ -3513,6 +3579,7 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   render() {
     const c = this.containerEl.children[1]; c.empty(); c.addClass('doc-ov');
+    this._projComposerDirty = false;   // a fresh render means the project composer is empty again
     const node = this.node();
     if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
     // T31: project-type collections get the Project view; everything else is grouping
@@ -3786,11 +3853,11 @@ class ContainerOverviewView extends obsidian.ItemView {
       drop.toggleClass('disabled', !has);
       if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
     };
-    input.oninput = () => { const r = docContainer.extractInlineTags(input.value, false); if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); } updateDropState(); };
+    input.oninput = () => { this._projComposerDirty = input.value.trim().length > 0 || stagedTags.length > 0 || stagedFiles.length > 0; const r = docContainer.extractInlineTags(input.value, false); if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); } updateDropState(); };
     input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
     drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
     drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
-    drop.ondrop = async (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.removeClass('drag'); const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])]; for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } } renderStaged(); updateDropState(); };
+    drop.ondrop = async (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.removeClass('drag'); const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])]; for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } } this._projComposerDirty = true; renderStaged(); updateDropState(); };
     const add = async () => {
       const r = docContainer.extractInlineTags(input.value, true);
       const tags = stagedTags.concat(r.tags); const body = r.body;
@@ -3807,6 +3874,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       }
       const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
+      this._projComposerDirty = false;   // committing — allow the listener re-render
       await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
       // listener re-renders (Notes tab persists via _projActiveTab) with the fresh note
     };
