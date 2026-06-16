@@ -741,6 +741,7 @@ const DEFAULT_SETTINGS = {
   docCategories: ['Governance', 'Projects', 'SOPs'],
   docGlossaryEnabled: false,
   docGlossaryRoot: 'Definitions',
+  docCategoryTypeMap: { Projects: 'project' },   // category → container type (else 'grouping')
 };
 
 // ===========================================================================
@@ -3476,6 +3477,10 @@ class ContainerOverviewView extends obsidian.ItemView {
     const c = this.containerEl.children[1]; c.empty(); c.addClass('doc-ov');
     const node = this.node();
     if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
+    // T31: project-type collections get the Project view; everything else is grouping
+    if (node.kind === 'collection' && this.plugin.resolveContainerType(node) === 'project') {
+      return this.renderProjectView(c, node);
+    }
     const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
     const docs = this.docsUnder(node);
 
@@ -3491,6 +3496,16 @@ class ContainerOverviewView extends obsidian.ItemView {
 
     if (node.kind === 'collection' || node.kind === 'document') return this.renderDocs(c, node, docs, today);
     return this.renderContainers(c, node);   // root or category
+  }
+
+  // ── T31 stub: Project view (filled in T32/33/34/35) ────────────────────────
+  renderProjectView(c, node) {
+    const pn = this.plugin.readProjectNote(node);
+    c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-ov-crumb' });
+    const head = c.createDiv('doc-ov-head');
+    head.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
+    head.createSpan({ text: 'Project', cls: 'doc-ov-typetag' });
+    c.createDiv({ text: 'Project view — built in T32', cls: 'doc-ov-empty' });
   }
 
   renderContainers(c, node) {
@@ -3714,6 +3729,16 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .setDesc('Vault-relative folder holding one note per term (basename = term; frontmatter `type: definition|acronym` + `definition:` text, or the first body line).')
       .addText(t => t.setValue(this.plugin.settings.docGlossaryRoot)
         .onChange(async v => { this.plugin.settings.docGlossaryRoot = v.trim() || 'Definitions'; this.plugin._glossaryCache = null; await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
+      .setName('Project-type categories')
+      .setDesc('Comma-separated categories whose containers are Projects (Project view instead of the Collection page). Each project folder may also carry a `_project.md` with `type: project`.')
+      .addText(t => t.setValue(Object.keys(this.plugin.settings.docCategoryTypeMap || {}).filter(k => this.plugin.settings.docCategoryTypeMap[k] === 'project').join(', '))
+        .onChange(async v => {
+          const map = {};
+          v.split(',').map(s => s.trim()).filter(Boolean).forEach(c => { map[c] = 'project'; });
+          this.plugin.settings.docCategoryTypeMap = map;
+          await this.plugin.saveSettings();
+        }));
   }
 }
 
@@ -5748,6 +5773,41 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     out.sort((a, b) => a.term.localeCompare(b.term));
     this._glossaryCache = out;
     return out;
+  }
+
+  // ── T31: container-type registry (project-note type → category map → grouping)
+  resolveContainerType(node) {
+    if (!node || !node.path) return 'grouping';
+    const pnote = this.app.vault.getAbstractFileByPath(node.path + '/_project.md');
+    if (pnote) {
+      const fm = (this.app.metadataCache.getFileCache(pnote) || {}).frontmatter || {};
+      if (fm.type) return String(fm.type);
+    }
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const rel = node.path.startsWith(root + '/') ? node.path.slice(root.length + 1) : node.path;
+    const topCat = rel.split('/')[0];
+    const map = this.settings.docCategoryTypeMap || {};
+    if (map[topCat]) return map[topCat];
+    return 'grouping';
+  }
+
+  // ── T31: _project.md adapter (read frontmatter / write a key or via mutator) ─
+  readProjectNote(node) {
+    const pnote = node && this.app.vault.getAbstractFileByPath(node.path + '/_project.md');
+    if (!pnote) return {};
+    return (this.app.metadataCache.getFileCache(pnote) || {}).frontmatter || {};
+  }
+  async writeProjectNote(node, keyOrMutator, value) {
+    if (!node || !node.path) return;
+    const path = node.path + '/_project.md';
+    let pnote = this.app.vault.getAbstractFileByPath(path);
+    if (!pnote) { try { pnote = await this.app.vault.create(path, '---\ntype: project\n---\n'); } catch (e) { pnote = this.app.vault.getAbstractFileByPath(path); } }
+    if (!pnote) return;
+    await this.app.fileManager.processFrontMatter(pnote, (fm) => {
+      if (!fm.type) fm.type = 'project';
+      if (typeof keyOrMutator === 'function') keyOrMutator(fm);
+      else fm[keyOrMutator] = value;
+    });
   }
 
   // ── Task 11: Inject doc-container styles once into document.head ─────────────
