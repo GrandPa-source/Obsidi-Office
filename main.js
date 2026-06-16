@@ -603,6 +603,7 @@ textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px;
 .doc-detail-editbtn.ghost { background: transparent; color: var(--text-muted); border:1px solid var(--background-modifier-border); }
 .doc-detail-editbtn.ghost:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .doc-pv-ta-view { white-space:pre-wrap; min-height:auto; }
+.doc-detail-addlink { margin:6px 0 8px; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3001,7 +3002,10 @@ class DocumentDetailView extends obsidian.ItemView {
     // Skip while a note is being composed so an unrelated sidecar write (definition toggle, Sync pull,
     // activity-log append) can't wipe the in-progress draft — the composer rebuilds only on the user's own Add.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
-      if (this._composerDirty || this._editMode) return;   // don't blow away an in-progress note draft or metadata edit
+      // don't blow away an in-progress note draft, metadata edit, or stakeholder-row edit.
+      // (Related-docs edit is NOT guarded — its add/remove are atomic writes and rely on this
+      //  listener to repaint the fresh list; only a half-typed search box is transient.)
+      if (this._composerDirty || this._editMode || this._stakeEdit) return;
       if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
     }));
   }
@@ -3011,7 +3015,8 @@ class DocumentDetailView extends obsidian.ItemView {
       const paths = this.app.vault.getFiles().map(f => f.path);
       const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
       this.node = this.findDoc(tree, state.docPath);
-      this._editMode = false;   // navigating to a document always opens in view mode
+      this._editMode = false; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode
+      this._activeTab = {};     // new document → default tabs (Files & Versions / Recent Notes)
       this.render();
     }
     return super.setState(state, result);
@@ -3076,12 +3081,12 @@ class DocumentDetailView extends obsidian.ItemView {
       { id: 'stake',   label: 'Stakeholders',                                            fill: (p) => this._renderStakeholdersPane(p, fm) },
       { id: 'reldocs', label: 'Related Documents', count: arr(fm.relatedDocuments).length, fill: (p) => this._renderRelatedPane(p, fm) },
       { id: 'defs',    label: 'Definitions',       count: arr(fm.definitions).length,      fill: (p) => this._renderDefinitionsPane(p, fm) },
-    ]);
+    ], 'left');
     this._tabGroup(rightCol, [
       { id: 'recent', label: 'Recent Notes', count: arr(fm.noteLog).length,     fill: (p) => this._renderRecentNotesPane(p, fm) },
       { id: 'search', label: 'Search Notes',                                     fill: (p) => this._renderSearchNotesPane(p, fm) },
       { id: 'log',    label: 'Log',          count: arr(fm.activityLog).length,  fill: (p) => this._renderLogPane(p, fm) },
-    ]);
+    ], 'right');
 
     // Sticky footer (5 actions)
     this._renderFooter(c);
@@ -3096,10 +3101,13 @@ class DocumentDetailView extends obsidian.ItemView {
     return '';
   }
 
-  // Build a scoped tab group inside one column. specs: [{id,label,count?,fill(paneEl)}]
-  _tabGroup(colEl, specs) {
+  // Build a scoped tab group inside one column. specs: [{id,label,count?,fill(paneEl)}].
+  // colKey persists the active tab across re-renders (so an inline edit + save keeps the tab).
+  _tabGroup(colEl, specs, colKey) {
+    if (!this._activeTab) this._activeTab = {};
     const bar = colEl.createDiv('doc-detail-tabs');
     const panes = colEl.createDiv('doc-detail-panes');
+    const hasActive = specs.some(s => s.id === this._activeTab[colKey]);
     specs.forEach((spec, i) => {
       const tab = bar.createDiv('doc-detail-tabb');
       tab.createSpan({ text: spec.label });
@@ -3107,12 +3115,13 @@ class DocumentDetailView extends obsidian.ItemView {
       const pane = panes.createDiv('doc-detail-tabpane');
       spec.fill(pane);
       const activate = () => {
+        this._activeTab[colKey] = spec.id;
         bar.querySelectorAll('.doc-detail-tabb').forEach(t => t.removeClass('is-active'));
         panes.querySelectorAll('.doc-detail-tabpane').forEach(p => p.removeClass('is-active'));
         tab.addClass('is-active'); pane.addClass('is-active');
       };
       tab.onclick = activate;
-      if (i === 0) activate();
+      if (hasActive ? spec.id === this._activeTab[colKey] : i === 0) activate();
     });
   }
 
@@ -3251,6 +3260,7 @@ class DocumentDetailView extends obsidian.ItemView {
     ];
   }
   _renderStakeholdersPane(p, fm) {
+    if (this._stakeEdit) return this._renderStakeholdersEdit(p, fm);
     const table = p.createEl('table', { cls: 'doc-detail-tbl' });
     const head = table.createEl('tr');
     ['Name', 'Title', 'Role', 'Dept'].forEach(h => head.createEl('th', { text: h }));
@@ -3262,21 +3272,19 @@ class DocumentDetailView extends obsidian.ItemView {
       td(s.dept);
     }
     const foot = p.createDiv('doc-detail-paneacts');
-    const edit = foot.createSpan({ text: '✎ Edit stakeholders', cls: 'doc-detail-hbtn' });
-    edit.onclick = () => this._editStakeholders(fm);
+    const edit = foot.createSpan({ text: '✎ Edit', cls: 'doc-detail-hbtn' });
+    edit.onclick = () => { this._stakeEdit = true; this.render(); };
     p.createDiv({ cls: 'doc-detail-stub', text: 'Title is role-based so the record stays meaningful when the person changes. Reviewer / Final Approver populate in the workflow phase.' });
   }
-  _editStakeholders(fm) {
-    // Seed from REAL stakeholders only — never persist the synthetic placeholder rows
-    // (Reviewer / Final Approver) the display pane shows when none exist yet.
+  // Inline edit (no modal) — seeds from REAL stakeholders only (never the synthetic placeholder rows)
+  _renderStakeholdersEdit(p, fm) {
     const base = (Array.isArray(fm.stakeholders) && fm.stakeholders.length) ? fm.stakeholders : [];
     const rows = base.map(s => ({
       name: s.name === '—' ? '' : (s.name || ''), title: s.title === '—' ? '' : (s.title || ''),
       role: s.role || '', dept: s.dept === '—' ? '' : (s.dept || ''),
     }));
     if (!rows.length) rows.push({ name: '', title: '', role: 'Originator', dept: '' });
-    const m = new obsidian.Modal(this.app); m.titleEl.setText('Edit stakeholders');
-    const list = m.contentEl.createDiv('doc-detail-sh-edit');
+    const list = p.createDiv('doc-detail-sh-edit');
     const draw = () => {
       list.empty();
       rows.forEach((r, i) => {
@@ -3287,57 +3295,57 @@ class DocumentDetailView extends obsidian.ItemView {
       });
     };
     draw();
-    const bar = m.contentEl.createDiv('doc-detail-sh-bar');
+    const bar = p.createDiv('doc-detail-sh-bar');
     const add = bar.createEl('button', { text: '＋ Add row' }); add.onclick = () => { rows.push({ name: '', title: '', role: '', dept: '' }); draw(); };
     const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
     save.onclick = async () => {
-      const clean = rows.filter(r => r.name || r.title || r.role || r.dept)
-        .map(r => ({ name: r.name || '', title: r.title || '', role: r.role || '', dept: r.dept || '' }));
+      const clean = rows.filter(r => r.name || r.title || r.role || r.dept).map(r => ({ name: r.name || '', title: r.title || '', role: r.role || '', dept: r.dept || '' }));
+      this._stakeEdit = false;   // set before write so the listener re-render shows view mode
       await this._saveSidecar('stakeholders', clean, { action: 'Stakeholders edited', type: 'meta' });
-      m.close();
     };
-    m.open();
+    const cancel = bar.createEl('button', { text: 'Cancel' }); cancel.onclick = () => { this._stakeEdit = false; this.render(); };
   }
 
-  // ── T24: Related Documents (vault links + drag-drop reference copies) ───────
+  // ── T24: Related Documents — inline view/edit (no modal) ───────────────────
   _renderRelatedPane(p, fm) {
     const rel = Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.slice() : [];
-    const dz = p.createDiv('doc-detail-dropzone');
-    dz.createSpan({ text: 'Drag a file here to attach as a reference, or ' });
-    const addLink = dz.createSpan({ text: '＋ Add link to a vault file', cls: 'doc-detail-dzlink' });
-    addLink.onclick = (e) => { e.stopPropagation(); this._addRelatedLink(fm, rel); };
-    dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
-    dz.ondragleave = () => dz.removeClass('drag');
-    dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
+    const editing = this._relEdit;
+    const foot = p.createDiv('doc-detail-paneacts');
+    const toggle = foot.createSpan({ text: editing ? 'Done' : '✎ Edit', cls: 'doc-detail-hbtn' });
+    toggle.onclick = () => { this._relEdit = !this._relEdit; this.render(); };
+
+    if (editing) {
+      const dz = p.createDiv('doc-detail-dropzone');
+      dz.createSpan({ text: 'Drag a file here to attach as a reference, or use Add link below' });
+      dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
+      dz.ondragleave = () => dz.removeClass('drag');
+      dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
+      const addWrap = p.createDiv('doc-detail-addlink');
+      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: '＋ Add link — type to search vault files…' } });
+      const sug = addWrap.createDiv('doc-detail-linksug');
+      input.oninput = () => {
+        const q = input.value.toLowerCase(); sug.empty();
+        if (!q) return;
+        const files = this.app.vault.getFiles().filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path)).slice(0, 12);
+        for (const f of files) {
+          const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' });
+          it.onclick = async () => { rel.push({ kind: 'link', target: f.path, label: f.basename }); await this._saveSidecar('relatedDocuments', rel, { action: 'Related link added: ' + f.basename, type: 'link' }); };
+        }
+      };
+    }
+
     const listEl = p.createDiv();
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
       row.createDiv('doc-detail-fl').createSpan({ text: (r.kind === 'link' ? '🔗 ' : '📎 ') + (r.label || r.target) });
       const right = row.createDiv('doc-detail-relright');
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
-      const rm = right.createSpan({ text: '✕', cls: 'doc-detail-remove' });
-      rm.onclick = async () => { rel.splice(i, 1); await this._saveSidecar('relatedDocuments', rel); };
+      if (editing) {
+        const rm = right.createSpan({ text: '✕', cls: 'doc-detail-remove' });
+        rm.onclick = async () => { rel.splice(i, 1); await this._saveSidecar('relatedDocuments', rel, { action: 'Related document removed', type: 'meta' }); };
+      }
     });
-    if (!rel.length) p.createDiv({ cls: 'doc-detail-stub', text: 'No related documents yet.' });
-  }
-  _addRelatedLink(fm, rel) {
-    const m = new obsidian.Modal(this.app); m.titleEl.setText('Add link to a vault file');
-    const input = m.contentEl.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Type to search files…' } });
-    const sug = m.contentEl.createDiv('doc-detail-linksug');
-    const pick = async (file) => {
-      rel.push({ kind: 'link', target: file.path, label: file.basename });
-      await this._saveSidecar('relatedDocuments', rel, { action: 'Related link added: ' + file.basename, type: 'link' });
-      m.close();
-    };
-    input.oninput = () => {
-      const q = input.value.toLowerCase(); sug.empty();
-      if (!q) return;
-      const files = this.app.vault.getFiles()
-        .filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path))
-        .slice(0, 15);
-      for (const f of files) { const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' }); it.onclick = () => pick(f); }
-    };
-    m.open(); window.setTimeout(() => input.focus(), 0);
+    if (!rel.length) p.createDiv({ cls: 'doc-detail-stub', text: editing ? 'No related documents yet — drag a file or add a link above.' : 'No related documents yet.' });
   }
   async _dropRelatedRefs(fm, rel, e) {
     const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
