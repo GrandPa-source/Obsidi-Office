@@ -406,7 +406,7 @@ const DOC_CONTAINER_CSS = `
 .doc-container-badge.st-in-review, .doc-container-badge.st-pending-approval { color:#5b8def; }
 .doc-container-badge.st-archived, .doc-container-badge.st-obsolete { color: var(--text-faint); }
 .doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
-.doc-detail-wrap { max-width:1100px; padding:14px 18px; }
+.doc-detail-wrap { max-width:1100px; padding:14px 18px 28px; }
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 .doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
 .doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
@@ -482,7 +482,7 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-tabb:hover { color: var(--text-normal); }
 .doc-detail-tabb.is-active { color: var(--text-normal); background: var(--background-secondary); border-color: var(--background-modifier-border); }
 .doc-detail-tabcnt { font-size:9px; opacity:.7; }
-.doc-detail-tabpane { display:none; background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 9px 9px; padding:10px; }
+.doc-detail-tabpane { display:none; background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 9px 9px; padding:10px; min-height:200px; }
 .doc-detail-tabpane.is-active { display:block; }
 .doc-detail-paneacts { display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px; }
 .doc-detail-hbtn { font-size:11px; color: var(--interactive-accent); cursor:pointer; border:1px solid var(--background-modifier-border); border-radius:5px; padding:3px 9px; }
@@ -3017,6 +3017,7 @@ class DocumentDetailView extends obsidian.ItemView {
       this.node = this.findDoc(tree, state.docPath);
       this._editMode = false; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode
       this._activeTab = {};     // new document → default tabs (Files & Versions / Recent Notes)
+      this._wantScrollTop = true;   // scroll to top for a different document (preserved otherwise)
       this.render();
     }
     return super.setState(state, result);
@@ -3043,6 +3044,9 @@ class DocumentDetailView extends obsidian.ItemView {
   // ── v0.2 (T22): tabbed shell — scroll body + 2 tab columns + sticky footer ──
   render() {
     const c = this.containerEl.children[1];
+    const prevScrollEl = c.querySelector('.doc-detail-scroll');
+    const prevScroll = this._wantScrollTop ? 0 : (prevScrollEl ? prevScrollEl.scrollTop : 0);
+    this._wantScrollTop = false;
     c.empty(); c.addClass('doc-detail');
     this._composerDirty = false;   // a fresh render means the composer is empty again
     if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
@@ -3090,6 +3094,7 @@ class DocumentDetailView extends obsidian.ItemView {
 
     // Sticky footer (5 actions)
     this._renderFooter(c);
+    scroll.scrollTop = prevScroll;   // preserve scroll across re-render (edit toggles, saves) instead of jumping to top
   }
 
   _chipCls(status) {
@@ -3572,7 +3577,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     }));
   }
   async setState(s, r) {
-    if (s && s.path) { if (s.path !== this.path) { this._projActiveTab = null; this._projEditMode = false; } this.path = s.path; this.render(); }
+    if (s && s.path) { if (s.path !== this.path) { this._projActiveTab = null; this._projEditMode = false; this._wantScrollTop = true; } this.path = s.path; this.render(); }
     return super.setState(s, r);
   }
   getState() { return { path: this.path }; }
@@ -3600,29 +3605,32 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
 
   render() {
-    const c = this.containerEl.children[1]; c.empty(); c.addClass('doc-ov');
+    const c = this.containerEl.children[1];
+    const prevScroll = this._wantScrollTop ? 0 : c.scrollTop;   // preserve scroll across re-render (edit toggle, save) — no jump to top
+    this._wantScrollTop = false;
+    c.empty(); c.addClass('doc-ov');
     this._projComposerDirty = false;   // a fresh render means the project composer is empty again
     const node = this.node();
     if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
     // T31: project-type collections get the Project view; everything else is grouping
     if (node.kind === 'collection' && this.plugin.resolveContainerType(node) === 'project') {
-      return this.renderProjectView(c, node);
+      this.renderProjectView(c, node);
+    } else {
+      const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      const docs = this.docsUnder(node);
+      c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › ') || '', cls: 'doc-ov-crumb' });
+      const head = c.createDiv('doc-ov-head');
+      head.createSpan({ text: node.name, cls: 'doc-ov-title' });
+      const roll = c.createDiv('doc-ov-rollup');
+      roll.createSpan({ text: `${docs.length} documents`, cls: 'doc-ov-pill' });
+      const by = docContainer.rollupByStatus(docs);
+      Object.keys(by).forEach(k => roll.createSpan({ text: `${by[k]} ${k}`, cls: 'doc-ov-pill st-' + k.toLowerCase().replace(/\s+/g, '-') }));
+      const over = docContainer.countOverdue(docs, today);
+      if (over) roll.createSpan({ text: `${over} review overdue`, cls: 'doc-ov-pill over' });
+      if (node.kind === 'collection' || node.kind === 'document') this.renderDocs(c, node, docs, today);
+      else this.renderContainers(c, node);   // root or category
     }
-    const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0,10);
-    const docs = this.docsUnder(node);
-
-    c.createDiv({ text: node.path.split('/').slice(0,-1).join(' › ') || '', cls: 'doc-ov-crumb' });
-    const head = c.createDiv('doc-ov-head');
-    head.createSpan({ text: node.name, cls: 'doc-ov-title' });
-    const roll = c.createDiv('doc-ov-rollup');
-    roll.createSpan({ text: `${docs.length} documents`, cls: 'doc-ov-pill' });
-    const by = docContainer.rollupByStatus(docs);
-    Object.keys(by).forEach(k => roll.createSpan({ text: `${by[k]} ${k}`, cls: 'doc-ov-pill st-' + k.toLowerCase().replace(/\s+/g,'-') }));
-    const over = docContainer.countOverdue(docs, today);
-    if (over) roll.createSpan({ text: `${over} review overdue`, cls: 'doc-ov-pill over' });
-
-    if (node.kind === 'collection' || node.kind === 'document') return this.renderDocs(c, node, docs, today);
-    return this.renderContainers(c, node);   // root or category
+    c.scrollTop = prevScroll;
   }
 
   // ── T32: Project view — progress, compact identification, description, tabs ─
