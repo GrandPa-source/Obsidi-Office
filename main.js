@@ -468,7 +468,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-chip.c-active { background: rgba(72,184,132,.18); color:#48b884; }
 .doc-detail-chip.c-review { background: rgba(91,141,239,.18); color:#5b8def; }
 .doc-detail-chip.c-arch { color: var(--text-faint); }
-.doc-detail-editbtn { margin-left:auto; font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
+.doc-detail-h1actions { margin-left:auto; display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+.doc-detail-editbtn { font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
 .doc-detail-editbtn:hover { background: var(--interactive-accent-hover); }
 .doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px 16px 16px; margin-top:6px; }
 .doc-detail-grp { font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; color: var(--text-muted); font-weight:600; margin:14px 0 9px; }
@@ -3060,13 +3061,14 @@ class DocumentDetailView extends obsidian.ItemView {
     const h1 = wrap.createDiv('doc-detail-h1row');
     h1.createSpan({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
     if (fm.status) h1.createSpan({ text: fm.status, cls: 'doc-detail-chip ' + this._chipCls(fm.status) });
+    const acts = h1.createDiv('doc-detail-h1actions');
     if (this._editMode) {
-      const save = h1.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' });
+      const save = acts.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' });
       save.onclick = () => this._saveMetaEdits();
-      const cancel = h1.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' });
+      const cancel = acts.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' });
       cancel.onclick = () => { this._editMode = false; this.render(); };
     } else {
-      const editBtn = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
+      const editBtn = acts.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
       editBtn.onclick = () => { this._editMode = true; this.render(); };
     }
     wrap.createDiv({ text: this._editMode ? 'Editing metadata — Save or Cancel' : 'Document Status', cls: 'doc-detail-sub' });
@@ -3651,11 +3653,12 @@ class ContainerOverviewView extends obsidian.ItemView {
     h1.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
     if (pn.status) h1.createSpan({ text: pn.status, cls: 'doc-detail-chip ' + this._projChipCls(pn.status) });
     h1.createSpan({ text: 'Project', cls: 'doc-ov-typetag' });
+    const acts = h1.createDiv('doc-detail-h1actions');
     if (editing) {
-      const save = h1.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' }); save.onclick = () => this._saveProjEdits(node);
-      const cancel = h1.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' }); cancel.onclick = () => { this._projEditMode = false; this.render(); };
+      const save = acts.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' }); save.onclick = () => this._saveProjEdits(node);
+      const cancel = acts.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' }); cancel.onclick = () => { this._projEditMode = false; this.render(); };
     } else {
-      const edit = h1.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' }); edit.onclick = () => { this._projEditMode = true; this.render(); };
+      const edit = acts.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' }); edit.onclick = () => { this._projEditMode = true; this.render(); };
     }
     c.createDiv({ text: editing ? 'Editing project — Save or Cancel' : 'Stored in project note · _project.md', cls: 'doc-pv-sub' });
 
