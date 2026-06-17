@@ -203,6 +203,26 @@ function nextVersionName(current, bump) {
   return `${v.base}_V${major}.${minor}${extPart}`;
 }
 
+// ── B1 (create-side): new-document naming ─────────────────────────────────────
+
+// Human title → PascalCase file base. Strips every non-alphanumeric character;
+// each whitespace-delimited word keeps its remaining characters and gets its
+// first character upper-cased (so an all-caps acronym like "SOP" survives).
+// Punctuation-only or empty input falls back to "Document".
+//   "Fan-Out Policy" → "FanOutPolicy"   "Code of Conduct" → "CodeOfConduct"
+//   "Incident Reporting SOP" → "IncidentReportingSOP"   "!!!" → "Document"
+function documentBaseName(title) {
+  const cleaned = String(title || '').replace(/[^A-Za-z0-9\s]/g, ' ');
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  const base = words.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('');
+  return base || 'Document';
+}
+
+// First-version filename for a freshly created document: "<base>_V1.0.<ext>".
+function firstVersionName(base, ext) {
+  return `${base}_V1.0.${ext}`;
+}
+
 // ── Task 21 (v0.2): inline note-tag extraction ───────────────────────────────
 
 // Pull completed "#tag " tokens out of free text. `flush=true` (on Add) also
@@ -253,6 +273,8 @@ module.exports = {
   rollupByStatus,
   countOverdue,
   nextVersionName,
+  documentBaseName,
+  firstVersionName,
   extractInlineTags,
   aggregateStakeholders,
 };
@@ -605,6 +627,17 @@ textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px;
 .doc-detail-editbtn.ghost:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .doc-pv-ta-view { white-space:pre-wrap; min-height:auto; }
 .doc-detail-addlink { margin:6px 0 8px; }
+/* ── B1 New Document modal ── */
+.docx-new-doc-modal .doc-newdoc-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color: var(--text-faint); }
+.docx-new-doc-modal .doc-newdoc-formats button { font-size:12px; border-radius:6px; border:1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); cursor:pointer; }
+.docx-new-doc-modal .doc-newdoc-formats button:hover { background: var(--background-modifier-hover); }
+.docx-new-doc-modal .doc-newdoc-formats button.mod-cta { background: var(--interactive-accent); color: var(--text-on-accent); border-color:transparent; }
+.docx-new-doc-modal .template-grid { display:flex; flex-wrap:wrap; gap:8px; }
+.docx-new-doc-modal .template-card { width:96px; padding:10px 6px; border:1px solid var(--background-modifier-border); border-radius:8px; text-align:center; cursor:pointer; background: var(--background-primary); transition:.12s; }
+.docx-new-doc-modal .template-card:hover { background: var(--background-modifier-hover); }
+.docx-new-doc-modal .template-card.is-selected { border-color: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--interactive-accent); }
+.docx-new-doc-modal .template-card .icon { font-size:22px; }
+.docx-new-doc-modal .template-card .label { font-size:11px; margin-top:4px; color: var(--text-normal); word-break:break-word; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -3832,7 +3865,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   _projDocsPane(p, node, docs) {
     const acts = p.createDiv('doc-detail-paneacts');
     const nd = acts.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' }); nd.style.marginBottom = '0';
-    nd.onclick = () => new obsidian.Notice('New Document flow — deferred to a follow-up (needs UX mock)');
+    nd.onclick = () => this.plugin.openNewDocumentModal(node);
     if (!docs.length) { p.createDiv({ text: 'No documents in this project yet.', cls: 'doc-detail-stub' }); return; }
     const table = p.createEl('table', { cls: 'doc-ov-table' });
     const head = table.createEl('tr'); ['Title', 'Doc #', 'Class', 'Status', 'Modified'].forEach(h => head.createEl('th', { text: h }));
@@ -4011,7 +4044,7 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   renderDocs(c, node, docs, today) {
     const btn = c.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' });
-    btn.onclick = () => new obsidian.Notice('New Document flow — deferred to a follow-up (needs UX mock)');
+    btn.onclick = () => this.plugin.openNewDocumentModal(node);
     const filter = c.createEl('input', { cls: 'doc-ov-filter', attr: { placeholder: 'Search by title or #tag…' } });
     const table = c.createEl('table', { cls: 'doc-ov-table' });
     const head = table.createEl('tr');
@@ -6343,6 +6376,89 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return path;
   }
 
+  // ── B1 (create-side): New Document flow ──────────────────────────────────────
+  // Open the create modal scoped to a container node (Collection / Project).
+  // node.path is the folder the new document-folder is created under.
+  openNewDocumentModal(node) {
+    if (!node || !node.path) { new obsidian.Notice('No container selected'); return; }
+    new NewDocumentModal(this.app, this, node.path, node.name || node.path).open();
+  }
+
+  // Create a managed document inside a container: a title-named sub-folder holding
+  // a first version file (from the chosen template, or the embedded blank) plus a
+  // seeded sidecar. Lands on the detail page (NOT the editor). Returns the
+  // document-folder path, or undefined on failure.
+  async createDocumentInContainer({ containerPath, title, ext, templatePath }) {
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) { new obsidian.Notice('Enter a document title'); return; }
+    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
+    const docFolder = containerPath + '/' + cleanTitle;
+    if (this.app.vault.getAbstractFileByPath(docFolder)) {
+      new obsidian.Notice('A document named "' + cleanTitle + '" already exists here.'); return;
+    }
+    const base = docContainer.documentBaseName(cleanTitle);
+    const filePath = docFolder + '/' + docContainer.firstVersionName(base, ext);
+    try {
+      await this.app.vault.createFolder(docFolder);
+      // Template bytes when a real template was chosen and exists; else embedded blank.
+      let buffer;
+      if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
+        buffer = await this.app.vault.adapter.readBinary(templatePath);
+      } else {
+        const blankB64 = ({ docx: BLANK_DOCX_BASE64, pptx: BLANK_PPTX_BASE64, xlsx: BLANK_XLSX_BASE64 })[ext] || BLANK_DOCX_BASE64;
+        buffer = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0)).buffer;
+      }
+      const tfile = await this.app.vault.createBinary(filePath, buffer);
+      // Seed the sidecar: shared helper writes docx-link + created/modified; then
+      // add the doc-container schema fields (only when absent).
+      await this._autoCreateSidecar(tfile);
+      const scPath = filePath + '.md';
+      const sc = this.app.vault.getAbstractFileByPath(scPath);
+      if (sc) {
+        const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        await this.app.fileManager.processFrontMatter(sc, (front) => {
+          if (!front.title) front.title = cleanTitle;
+          if (!front.status) front.status = 'Draft';
+          if (!front.originationDate) front.originationDate = today;
+        });
+      } else {
+        elog('createDocumentInContainer: sidecar missing after _autoCreateSidecar for', filePath);
+      }
+      // Refresh tree + any open container overview.
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER).forEach(l => l.view.render && l.view.render());
+      // Wait for the sidecar to be parsed into metadataCache before opening the
+      // detail page — otherwise it renders with empty frontmatter (no title/status)
+      // and only self-corrects on a later 'changed' event (visible flash, longer
+      // on iPad). Resolves immediately if already cached; capped at 1.5 s.
+      await this._awaitSidecarCache(scPath);
+      await this.openDocDetail({ path: docFolder });
+      new obsidian.Notice('Created "' + cleanTitle + '"');
+      return docFolder;
+    } catch (e) {
+      new obsidian.Notice('Could not create document: ' + (e && e.message ? e.message : e));
+      return;
+    }
+  }
+
+  // Resolve once the sidecar at scPath is parsed into metadataCache (frontmatter
+  // available), or after a 1.5 s safety cap. Used so the detail page opens with
+  // seeded metadata already visible rather than flashing blank.
+  _awaitSidecarCache(scPath) {
+    return new Promise((resolve) => {
+      const isCached = () => {
+        const f = this.app.vault.getAbstractFileByPath(scPath);
+        const c = f && this.app.metadataCache.getFileCache(f);
+        return !!(c && c.frontmatter);
+      };
+      if (isCached()) return resolve();
+      const ref = this.app.metadataCache.on('changed', (f) => {
+        if (f && f.path === scPath) { this.app.metadataCache.offref(ref); resolve(); }
+      });
+      setTimeout(() => { this.app.metadataCache.offref(ref); resolve(); }, 1500);
+    });
+  }
+
   // ── Task 9: Detail action handlers ───────────────────────────────────────────
   async openFileInEditor(path) {
     const file = this.app.vault.getAbstractFileByPath(path);
@@ -6791,6 +6907,118 @@ class FileNameModal extends obsidian.Modal {
       if (e.key === "Escape") this.close();
     });
   }
+  onClose() { this.contentEl.empty(); }
+}
+
+// ===========================================================================
+// NewDocumentModal — B1 create-side: title + format + template → new document
+// ===========================================================================
+
+class NewDocumentModal extends obsidian.Modal {
+  constructor(app, plugin, containerPath, containerLabel) {
+    super(app);
+    this.plugin = plugin;
+    this.containerPath = containerPath;
+    this.containerLabel = containerLabel || containerPath;
+    this.ext = 'docx';
+    this.templatePath = '';   // '' = Blank (embedded fallback)
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass('docx-new-doc-modal');
+    contentEl.createEl('h3', { text: 'New Document in “' + this.containerLabel + '”' });
+
+    // Title
+    const titleWrap = contentEl.createDiv();
+    titleWrap.createEl('label', { text: 'Title', cls: 'doc-newdoc-label' });
+    this.titleInput = titleWrap.createEl('input', { type: 'text' });
+    this.titleInput.style.cssText = 'width:100%;padding:8px;margin:4px 0 12px;';
+    this.titleInput.placeholder = 'Document title';
+    this.titleInput.addEventListener('input', () => this._syncCreateState());
+    this.titleInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') this._submit();
+      if (e.key === 'Escape') this.close();
+    });
+
+    // Format selector
+    const fmtWrap = contentEl.createDiv();
+    fmtWrap.createEl('label', { text: 'Format', cls: 'doc-newdoc-label' });
+    const seg = fmtWrap.createDiv('doc-newdoc-formats');
+    seg.style.cssText = 'display:flex;gap:6px;margin:4px 0 12px;';
+    this._fmtBtns = {};
+    [['docx', 'Document'], ['pptx', 'Presentation'], ['xlsx', 'Spreadsheet']].forEach(([ext, label]) => {
+      const b = seg.createEl('button', { text: label });
+      b.style.cssText = 'flex:1;padding:6px;';
+      b.addEventListener('click', () => {
+        this.ext = ext; this.templatePath = '';
+        this._renderFormats(); this._renderTemplates();
+      });
+      this._fmtBtns[ext] = b;
+    });
+
+    // Template grid
+    const tmplWrap = contentEl.createDiv();
+    tmplWrap.createEl('label', { text: 'Template', cls: 'doc-newdoc-label' });
+    this._tmplGrid = tmplWrap.createDiv('template-grid');
+    this._tmplGrid.style.margin = '4px 0 12px';
+
+    // Buttons
+    const btnRow = contentEl.createEl('div', { attr: { style: 'display:flex;gap:8px;justify-content:flex-end;' } });
+    btnRow.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    this._createBtn = btnRow.createEl('button', { text: 'Create', cls: 'mod-cta' });
+    this._createBtn.addEventListener('click', () => this._submit());
+
+    this._renderFormats();
+    this._renderTemplates();
+    this._syncCreateState();
+    this.titleInput.focus();
+  }
+
+  _renderFormats() {
+    Object.entries(this._fmtBtns).forEach(([ext, b]) => b.toggleClass('mod-cta', ext === this.ext));
+  }
+
+  _renderTemplates() {
+    const grid = this._tmplGrid;
+    grid.empty();
+    const root = this.plugin.settings.templatesRoot || '_obsidi-office-templates';
+    const dir = root + '/' + this.ext;
+    const blankName = ({ docx: 'Blank Document', pptx: 'Blank Presentation', xlsx: 'Blank Spreadsheet' })[this.ext] || 'Blank Document';
+    const blankIcon = ({ docx: '\u{1F4C4}', pptx: '\u{1F4FD}', xlsx: '\u{1F4CA}' })[this.ext] || '\u{1F4C4}';
+    const tmplIcon  = ({ docx: '\u{1F4DD}', pptx: '\u{1F39E}', xlsx: '\u{1F9EE}' })[this.ext] || '\u{1F4DD}';
+    const extras = [];
+    for (const f of this.app.vault.getFiles()) {
+      if (f.path.startsWith(dir + '/') && f.extension === this.ext) extras.push({ name: f.basename, path: f.path, icon: tmplIcon });
+    }
+    extras.sort((a, b) => a.name.localeCompare(b.name));
+    const cards = [{ name: blankName, path: '', icon: blankIcon }, ...extras];   // Blank first
+    for (const c of cards) {
+      const card = grid.createEl('div', { cls: 'template-card' });
+      card.createEl('div', { cls: 'icon', text: c.icon });
+      card.createEl('div', { cls: 'label', text: c.name });
+      card.toggleClass('is-selected', c.path === this.templatePath);
+      card.addEventListener('click', () => { this.templatePath = c.path; this._renderTemplates(); this._syncCreateState(); });
+    }
+  }
+
+  _syncCreateState() {
+    const ok = !!this.titleInput.value.trim();
+    this._createBtn.disabled = !ok;
+    this._createBtn.style.opacity = ok ? '' : '0.5';
+  }
+
+  async _submit() {
+    const title = this.titleInput.value.trim();
+    if (!title) { this.titleInput.focus(); return; }
+    this._createBtn.disabled = true;
+    const folder = await this.plugin.createDocumentInContainer({
+      containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath,
+    });
+    if (folder) this.close();        // created → close; on failure keep modal open
+    else this._syncCreateState();
+  }
+
   onClose() { this.contentEl.empty(); }
 }
 
