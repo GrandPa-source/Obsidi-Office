@@ -6416,10 +6416,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const sc = this.app.vault.getAbstractFileByPath(scPath);
       if (sc) {
         const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
         await this.app.fileManager.processFrontMatter(sc, (front) => {
           if (!front.title) front.title = cleanTitle;
           if (!front.status) front.status = 'Draft';
           if (!front.originationDate) front.originationDate = today;
+          if (!Array.isArray(front.activityLog)) front.activityLog = [];
+          front.activityLog.push({ datetime, actor: getUsername(), action: 'Document created', type: 'create' });
         });
       } else {
         elog('createDocumentInContainer: sidecar missing after _autoCreateSidecar for', filePath);
