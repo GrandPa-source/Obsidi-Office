@@ -6433,6 +6433,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // on iPad). Resolves immediately if already cached; capped at 1.5 s.
       await this._awaitSidecarCache(scPath);
       await this.openDocDetail({ path: docFolder }, { edit: true });   // land in edit mode to fill metadata
+      // Collapse the left sidebar (Document Browser) to give the status page room.
+      const leftSplit = this.app.workspace.leftSplit;
+      if (leftSplit && !leftSplit.collapsed) leftSplit.collapse();
       new obsidian.Notice('Created "' + cleanTitle + '"');
       return docFolder;
     } catch (e) {
