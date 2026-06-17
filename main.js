@@ -3049,7 +3049,7 @@ class DocumentDetailView extends obsidian.ItemView {
       const paths = this.app.vault.getFiles().map(f => f.path);
       const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
       this.node = this.findDoc(tree, state.docPath);
-      this._editMode = false; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode
+      this._editMode = !!state.edit; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode (unless edit requested, e.g. a just-created doc)
       this._activeTab = {};     // new document → default tabs (Files & Versions / Recent Notes)
       this._wantScrollTop = true;   // scroll to top for a different document (preserved otherwise)
       this.render();
@@ -6349,10 +6349,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   // ── Task 8: Real openDocDetail — reuse existing leaf if open ─────────────────
-  async openDocDetail(node) {
+  async openDocDetail(node, opts) {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
     if (!leaf) leaf = this.app.workspace.getLeaf('tab');
-    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path } });
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit) } });
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -6432,7 +6432,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // and only self-corrects on a later 'changed' event (visible flash, longer
       // on iPad). Resolves immediately if already cached; capped at 1.5 s.
       await this._awaitSidecarCache(scPath);
-      await this.openDocDetail({ path: docFolder });
+      await this.openDocDetail({ path: docFolder }, { edit: true });   // land in edit mode to fill metadata
       new obsidian.Notice('Created "' + cleanTitle + '"');
       return docFolder;
     } catch (e) {
