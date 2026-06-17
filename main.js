@@ -2225,6 +2225,14 @@ class OfficeEditorView extends obsidian.FileView {
 
   async onLoadFile(file) {
     dlog(this.constructor.name + " onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
+    // New editing session for this file — allow one fresh "Document edited" log.
+    // Skipped on a settings-triggered reload of the SAME open file (flagged by
+    // _reloadOpenEditors), else the next autosave would log a duplicate edit.
+    if (this._suppressEditLogReset) {
+      this._suppressEditLogReset = false;
+    } else if (file && this.plugin && this.plugin._editLoggedPaths) {
+      this.plugin._editLoggedPaths.delete(file.path);
+    }
     try {
       await this._onLoadFileInner(file);
     } catch (err) {
@@ -3567,7 +3575,7 @@ class DocumentDetailView extends obsidian.ItemView {
     const list = p.createDiv('doc-detail-loglist');
     const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
     if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    const ICON = { create: '➕', version: '⎘', status: '🔄', note: '📝', edit: '✎', delete: '🗑', attach: '📎', link: '🔗', meta: '✱' };
+    const ICON = { create: '➕', version: '⎘', status: '🔄', note: '📝', edit: '✎', delete: '🗑', attach: '📎', link: '🔗', meta: '✱', open: '👁' };
     for (const l of sorted) {
       const row = list.createDiv('doc-detail-logrow');
       row.createSpan({ text: ICON[l.type] || '•', cls: 'doc-detail-logico' });
@@ -4978,6 +4986,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       fontsRel: this.x2tFontsRel,
       fontsAbs: this.fontsDir,   // C:\Windows\Fonts on desktop
     });
+    // Tracks office files already logged as "Document edited" this editing
+    // session (reset on file open) so 10s autosaves don't spam the Log.
+    this._editLoggedPaths = new Set();
     this.bridge = new TransportBridge({
       plugin:    this,
       converter: this.converter,
@@ -4995,6 +5006,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
           await this.app.vault.modifyBinary(f, docxBytes);
         } else {
           await adapter.writeBinary(filePath, docxBytes);
+        }
+        // Log one "Document edited" entry per editing session for managed docs
+        // (deduped via _editLoggedPaths, reset on open — avoids autosave spam).
+        if (filePath.startsWith(this.settings.docRoot + '/') && !this._editLoggedPaths.has(filePath)) {
+          this._editLoggedPaths.add(filePath);
+          this._appendActivity(filePath, 'Document edited', 'edit');
         }
       }
     });
@@ -6130,6 +6147,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       try {
         // Trigger re-render. _onLoadFileInner clears the container and
         // rebuilds the editor with fresh params from current settings.
+        // Flag so onLoadFile doesn't reset the edit-log dedupe (same file).
+        view._suppressEditLogReset = true;
         view.onLoadFile(view.file).catch((err) => elog("editor reload failed:", err));
       } catch (e) {
         elog("editor reload threw:", e && e.message ? e.message : e);
@@ -6470,6 +6489,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!file) { new obsidian.Notice('File not found: ' + path); return; }
     await this._openInView(file);   // existing P21 office-editor router; takes a TFile (uses file.extension)
+    this._appendActivity(path, 'Opened in editor', 'open');
   }
 
   openInSystemApp(path) {
@@ -6478,6 +6498,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const full = (this.app.vault.adapter.getFullPath) ? this.app.vault.adapter.getFullPath(path) : path;
     try { const { shell } = require('electron'); shell.openPath(full); }
     catch (e) { new obsidian.Notice('System app unavailable on this platform'); }   // mobile/iPad: graceful
+    this._appendActivity(path, 'Opened in system app', 'open');
   }
 
   openMetadataModal(path) {
@@ -6496,6 +6517,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } else {
       new obsidian.Notice('File explorer is not available');
     }
+    this._appendActivity(path, 'Revealed in file explorer', 'open');
   }
 
   // ── T27: append a plugin-originated entry to the current sidecar's activityLog
@@ -6511,6 +6533,22 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (!Array.isArray(front.activityLog)) front.activityLog = [];
       front.activityLog.push({ datetime, actor, action, type });
     });
+  }
+
+  // Append a one-off activityLog entry to an office file's EXISTING sidecar.
+  // Unlike logActivity it does NOT create a sidecar — open/reveal/edit events
+  // only log where a doc-container sidecar already exists. Fire-and-forget safe.
+  async _appendActivity(officePath, action, type) {
+    const sc = this.app.vault.getAbstractFileByPath(officePath + '.md');
+    if (!sc || !(sc instanceof obsidian.TFile)) return;
+    const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
+    const actor = getUsername();
+    try {
+      await this.app.fileManager.processFrontMatter(sc, (front) => {
+        if (!Array.isArray(front.activityLog)) front.activityLog = [];
+        front.activityLog.push({ datetime, actor, action, type });
+      });
+    } catch (e) { elog('activity log failed:', e && e.message); }
   }
 
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
@@ -6826,25 +6864,32 @@ class MetadataModal extends obsidian.Modal {
     // (set on first save only); modified is always current.
     const nowIso = new Date().toISOString();
     if (!this.created) this.created = nowIso;
-    let yaml = "---\n";
-    yaml += 'docx: "[[' + docxName + ']]"\n';
-    yaml += 'created: "' + this.created + '"\n';
-    yaml += 'modified: "' + nowIso + '"\n';
-    if (hasTags) {
-      yaml += "tags:\n";
-      for (const t of this.tags) yaml += "  - " + t + "\n";
+    const datetime = window.moment ? window.moment().format("YYYY-MM-DD HH:mm") : nowIso.slice(0, 16).replace("T", " ");
+    // Update only the keys this modal owns via processFrontMatter so any
+    // doc-container schema fields (title/status/originationDate/activityLog/
+    // stakeholders/…) on the same sidecar are PRESERVED. (Previously this
+    // re-emitted the whole YAML from scratch, clobbering those fields.)
+    const apply = (front) => {
+      front.docx = "[[" + docxName + "]]";
+      if (!front.created) front.created = this.created;
+      front.modified = nowIso;
+      if (hasTags) front.tags = this.tags.slice(); else delete front.tags;
+      if (hasLinks) front.links = this.links.slice(); else delete front.links;
+      // Only record a Log entry on doc-container-managed sidecars (those that
+      // already carry schema metadata) — leave plain tag-only sidecars unlogged.
+      const isManagedDoc = front.title != null || front.status != null || Array.isArray(front.activityLog);
+      if (isManagedDoc) {
+        if (!Array.isArray(front.activityLog)) front.activityLog = [];
+        front.activityLog.push({ datetime, actor: getUsername(), action: "Tags & links edited", type: "meta" });
+      }
+    };
+    let existing = this.app.vault.getAbstractFileByPath(this.sidecarPath);
+    if (!(existing && existing instanceof obsidian.TFile)) {
+      await this.app.vault.create(this.sidecarPath, "---\n---\n");
+      existing = this.app.vault.getAbstractFileByPath(this.sidecarPath);
     }
-    if (hasLinks) {
-      yaml += "links:\n";
-      for (const l of this.links) yaml += '  - "' + l + '"\n';
-    }
-    yaml += "---\n";
-
-    const existing = this.app.vault.getAbstractFileByPath(this.sidecarPath);
     if (existing && existing instanceof obsidian.TFile) {
-      await this.app.vault.modify(existing, yaml);
-    } else {
-      await this.app.vault.create(this.sidecarPath, yaml);
+      await this.app.fileManager.processFrontMatter(existing, apply);
     }
     dlog("sidecar saved:", this.sidecarPath, "tags:", this.tags.length, "links:", this.links.length);
     new obsidian.Notice("Metadata saved for " + docxName);
