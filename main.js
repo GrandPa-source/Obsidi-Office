@@ -2948,10 +2948,24 @@ class OfficeEditorView extends obsidian.FileView {
     }
   }
 
+  // Check-out gate: is this open office file checked out by someone other than me?
+  // Reads the lock from _document.md (else the file's sidecar) via metadataCache (sync).
+  _isLockedByOther(file) {
+    const slash = file.path.lastIndexOf('/');
+    const folder = slash >= 0 ? file.path.slice(0, slash) : '';
+    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + DOCUMENT_MD_NAME);
+    const sc = this.app.vault.getAbstractFileByPath(file.path + '.md');
+    const lf = (dm instanceof obsidian.TFile) ? dm : (sc instanceof obsidian.TFile ? sc : null);
+    if (!lf) return false;
+    const fm = (this.app.metadataCache.getFileCache(lf) || {}).frontmatter || {};
+    const st = docContainer.lockStateFromFront(fm, new Date().toISOString(), this.plugin.settings.checkoutTimeoutHours || 0);
+    return !!st.by && st.by !== resolveAuthorId();
+  }
   _buildEditorConfig() {
     const filename = this.file.basename + "." + this.file.extension;
     const editorKey = makeEditorKey(this.file.path);
     const username = getUsername();
+    const lockedOut = this.plugin.settings.docBrowserEnabled && this._isLockedByOther(this.file);
 
     return {
       document: {
@@ -2966,13 +2980,13 @@ class OfficeEditorView extends obsidian.FileView {
         url: "/document?docKey=" + encodeURIComponent(this.docKey),
         permissions: {
           print: false, download: false,
-          edit: true, copy: true, comment: true, review: false
+          edit: !lockedOut, copy: true, comment: !lockedOut, review: false
         }
       },
       documentType: this.documentType,
       frameEditorId: this.docKey,
       editorConfig: {
-        mode: this.plugin.settings.defaultMode,
+        mode: lockedOut ? "view" : this.plugin.settings.defaultMode,
         lang: "en",
         // PDF PoC: client-side binary save is NOT enabled here. api.js
         // (line ~408) recomputes editorConfig.canSaveDocumentToBinary from
