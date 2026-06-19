@@ -6708,6 +6708,36 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     if (!pnote) return {};
     return (this.app.metadataCache.getFileCache(pnote) || {}).frontmatter || {};
   }
+
+  // ── Check-out lock (advisory, Sync-arbitrated). The lock lives in _document.md
+  // when present, else the current-version sidecar (read-fallback until the
+  // _document.md migration apply exists).
+  lockTargetFile(node) {
+    if (!node || !node.path) return null;
+    const dm = this.app.vault.getAbstractFileByPath(node.path + '/' + DOCUMENT_MD_NAME);
+    if (dm instanceof obsidian.TFile) return dm;
+    if (!node.current) return null;
+    const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
+    return sc instanceof obsidian.TFile ? sc : null;
+  }
+  readLock(node) {
+    const f = this.lockTargetFile(node);
+    const fm = f ? (this.app.metadataCache.getFileCache(f) || {}).frontmatter || {} : {};
+    return docContainer.lockStateFromFront(fm, new Date().toISOString(), this.settings.checkoutTimeoutHours || 0);
+  }
+  async setCheckout(node) {
+    const f = this.lockTargetFile(node);
+    if (!(f instanceof obsidian.TFile)) return;
+    const at = new Date().toISOString();
+    await this.app.fileManager.processFrontMatter(f, (fm) => { fm.checkedOutBy = resolveAuthorId(); fm.checkedOutAt = at; });
+    this.appendLog(node.path, 'checked out');
+  }
+  async clearCheckout(node, action) {
+    const f = this.lockTargetFile(node);
+    if (!(f instanceof obsidian.TFile)) return;
+    await this.app.fileManager.processFrontMatter(f, (fm) => { delete fm.checkedOutBy; delete fm.checkedOutAt; });
+    this.appendLog(node.path, action || 'checked in');
+  }
   async writeProjectNote(node, keyOrMutator, value) {
     if (!node || !node.path) return;
     const path = node.path + '/_project.md';
