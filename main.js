@@ -3581,7 +3581,7 @@ class DocumentDetailView extends obsidian.ItemView {
       left.createSpan({ text: name });
       left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
       const openBtn = r.createSpan({ text: isCurrent ? 'Open in editor' : 'Open', cls: 'doc-detail-fbtn' });
-      openBtn.onclick = () => this.plugin.openFileInEditor(this.node.path + '/' + name);
+      openBtn.onclick = (e) => this.plugin.openDocInEditor(this.node.path + '/' + name, this.node.path, !!(e && (e.metaKey || e.ctrlKey)), this.leaf);
     };
     (this.node.files || []).forEach((f) => {
       const isCur = f === this.node.current;
@@ -7192,9 +7192,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async openDocInEditor(filePath, returnDocPath, newPane, sameLeaf) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('File not found: ' + filePath); return; }
+    // Route by extension and force OUR editor view via setViewState (same mechanism
+    // as _openInView). Target the detail's own leaf for a same-tab swap (newPane =
+    // Ctrl/Cmd-click opens a fresh tab instead).
+    let viewType = VIEW_TYPE;
+    if (file.extension === 'pptx') viewType = VIEW_TYPE_PPTX;
+    else if (file.extension === 'xlsx') viewType = VIEW_TYPE_XLSX;
+    else if (file.extension === 'pdf') viewType = VIEW_TYPE_PDF;
     const leaf = newPane ? this.app.workspace.getLeaf('tab') : (sameLeaf || this.app.workspace.getLeaf('tab'));
     this._returnContext = { path: filePath, docPath: returnDocPath };   // consumed by OfficeEditorView.onLoadFile
-    await leaf.openFile(file);
+    await leaf.setViewState({ type: viewType, active: true, state: { file: filePath } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
