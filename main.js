@@ -71,8 +71,8 @@ const LOG_MD_NAME      = 'log.md';         // per-document append-only activity 
 // action-only — no type field). Shared by the document and project Log panes.
 function docLogIcon(action) {
   const a = String(action || '').toLowerCase();
+  if (a.includes('version')) return 'file-plus';   // before 'creat' — "Version 1.0 created" contains both
   if (a.includes('creat')) return 'plus';
-  if (a.includes('version')) return 'file-plus';
   if (a.startsWith('status')) return 'refresh-cw';
   if (a.includes('fork')) return 'git-branch';
   if (a.includes('reconcil')) return 'check';
