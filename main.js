@@ -66,6 +66,7 @@ const DOC_FIELDS = {
 const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document's record
 const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
 const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
+const LOG_MD_NAME      = 'log.md';         // per-document append-only activity log (markdown body)
 
 // Keys owned by _document.md (the logical-document system of record).
 const DOC_LEVEL_KEYS = [
@@ -437,6 +438,7 @@ module.exports = {
   DOCUMENT_MD_NAME,
   PROJECT_MD_NAME,
   DOC_MARKER,
+  LOG_MD_NAME,
   DOC_LEVEL_KEYS,
   VERSION_KEYS,
   partitionFrontmatter,
@@ -2970,7 +2972,7 @@ class OfficeEditorView extends obsidian.FileView {
   _isLockedByOther(file) {
     const slash = file.path.lastIndexOf('/');
     const folder = slash >= 0 ? file.path.slice(0, slash) : '';
-    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + DOCUMENT_MD_NAME);
+    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + docContainer.DOCUMENT_MD_NAME);
     const sc = this.app.vault.getAbstractFileByPath(file.path + '.md');
     const lf = (dm instanceof obsidian.TFile) ? dm : (sc instanceof obsidian.TFile ? sc : null);
     if (!lf) return false;
@@ -3843,7 +3845,7 @@ class DocumentDetailView extends obsidian.ItemView {
     p.createDiv({ cls: 'doc-detail-noteshint', text: 'System activity — read-only. Notes are your commentary; the Log records actions on the document.' });
     const list = p.createDiv('doc-detail-loglist');
     let entries = [];
-    const lf = this.app.vault.getAbstractFileByPath(this.node.path + '/' + LOG_MD_NAME);
+    const lf = this.app.vault.getAbstractFileByPath(this.node.path + '/' + docContainer.LOG_MD_NAME);
     if (lf instanceof obsidian.TFile) {
       const body = await this.app.vault.cachedRead(lf);
       entries = docContainer.parseLogBody(body);   // oldest-first
@@ -4334,7 +4336,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     p.createDiv({ cls: 'doc-detail-noteshint', text: 'Project activity — read-only. Notes are commentary; the Log records actions.' });
     const list = p.createDiv('doc-detail-loglist');
     let entries = [];
-    const lf = node && this.app.vault.getAbstractFileByPath(node.path + '/' + LOG_MD_NAME);
+    const lf = node && this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.LOG_MD_NAME);
     if (lf instanceof obsidian.TFile) {
       const body = await this.app.vault.cachedRead(lf);
       entries = docContainer.parseLogBody(body); entries.reverse();   // newest-first
@@ -6808,7 +6810,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // _document.md migration apply exists).
   lockTargetFile(node) {
     if (!node || !node.path) return null;
-    const dm = this.app.vault.getAbstractFileByPath(node.path + '/' + DOCUMENT_MD_NAME);
+    const dm = this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.DOCUMENT_MD_NAME);
     if (dm instanceof obsidian.TFile) return dm;
     if (!node.current) return null;
     const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
@@ -6906,7 +6908,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (e) { new obsidian.Notice('Could not save fork copy: ' + (e && e.message)); }
   }
   _docIdForFolder(folder) {
-    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + DOCUMENT_MD_NAME);
+    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + docContainer.DOCUMENT_MD_NAME);
     if (!(dm instanceof obsidian.TFile)) return null;
     return ((this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {}).docId || null;
   }
@@ -7096,7 +7098,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // document folder (sibling of the version files).
   async appendLog(folderPath, action, detail) {
     try {
-      const path = folderPath.replace(/\/+$/, '') + '/' + LOG_MD_NAME;
+      const path = folderPath.replace(/\/+$/, '') + '/' + docContainer.LOG_MD_NAME;
       const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm')
                                      : new Date().toISOString().slice(0, 16).replace('T', ' ');
       const line = docContainer.formatLogEntry({ datetime, actor: getUsername(), action, detail });
