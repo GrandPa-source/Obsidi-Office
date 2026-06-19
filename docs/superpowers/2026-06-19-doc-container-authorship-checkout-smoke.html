@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phase 5 Smoke — doc-container authorship + check-out</title>
+<style>
+  :root {
+    --bg:#1b1d22; --panel:#23262d; --panel2:#2a2e36; --border:#3a3f4a;
+    --text:#e6e8ec; --muted:#9aa1ad; --faint:#6b7280;
+    --accent:#5b8def; --ok:#48b884; --fail:#e5614c; --na:#caa24a;
+    --radius:10px;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+  .wrap { max-width:920px; margin:0 auto; padding:22px 18px 80px; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:15px; letter-spacing:.04em; text-transform:uppercase; color:var(--muted);
+    margin:26px 0 10px; border-bottom:1px solid var(--border); padding-bottom:6px; }
+  .sub { color:var(--muted); font-size:13px; margin-bottom:14px; }
+  .meta { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:14px 16px; display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px 16px; }
+  .meta label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--faint); margin-bottom:3px; }
+  .meta input { width:100%; }
+  input[type=text], textarea {
+    background:var(--panel2); border:1px solid var(--border); border-radius:6px;
+    color:var(--text); padding:7px 9px; font:inherit; }
+  textarea { width:100%; resize:vertical; }
+  .banner { background:var(--panel); border:1px solid var(--border); border-left:3px solid var(--accent);
+    border-radius:var(--radius); padding:10px 14px; font-size:13px; color:var(--muted); margin:14px 0; }
+  .note-sim { border-left-color:var(--na); }
+  .step { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius);
+    padding:12px 14px; margin:10px 0; }
+  .step-hd { display:flex; align-items:flex-start; gap:10px; }
+  .step-id { flex:0 0 auto; font-weight:700; color:var(--accent); min-width:26px; }
+  .step-body { flex:1; min-width:0; }
+  .step-action { font-weight:600; }
+  .step-expect { color:var(--muted); font-size:13.5px; margin-top:3px; }
+  .step-expect b { color:var(--ok); font-weight:600; }
+  .btns { display:flex; gap:6px; margin:10px 0 0; flex-wrap:wrap; }
+  .btns button { background:var(--panel2); border:1px solid var(--border); color:var(--muted);
+    padding:7px 16px; border-radius:6px; cursor:pointer; font:inherit; min-height:36px; }
+  .btns button:hover { color:var(--text); }
+  .btns button[aria-pressed="true"][data-v="pass"] { background:var(--ok); color:#06210f; border-color:var(--ok); }
+  .btns button[aria-pressed="true"][data-v="fail"] { background:var(--fail); color:#2a0a05; border-color:var(--fail); }
+  .btns button[aria-pressed="true"][data-v="na"]   { background:var(--na); color:#241a02; border-color:var(--na); }
+  .field { margin-top:9px; }
+  .field label { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--faint); margin-bottom:3px; }
+  .console { margin-top:9px; }
+  .console label { color:var(--fail); }
+  .bar { position:sticky; bottom:0; background:rgba(27,29,34,.96); border-top:1px solid var(--border);
+    padding:12px 18px; margin:0 -18px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .bar .grow { flex:1; }
+  .bar button { background:var(--accent); color:#04122e; border:none; padding:9px 18px; border-radius:6px;
+    cursor:pointer; font:inherit; font-weight:600; min-height:38px; }
+  .bar button.ghost { background:var(--panel2); color:var(--text); border:1px solid var(--border); }
+  .tally { font-size:13px; color:var(--muted); }
+  .tally b.ok{color:var(--ok)} .tally b.fail{color:var(--fail)} .tally b.na{color:var(--na)}
+  details { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius); padding:10px 14px; margin:14px 0; }
+  summary { cursor:pointer; color:var(--muted); }
+  #exportArea { width:100%; min-height:160px; margin-top:10px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12px; }
+  .saved { color:var(--ok); font-size:12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Phase 5 Smoke — doc-container authorship + check-out</h1>
+  <div class="sub">Obsidi-Office · branch <code>doc-container</code> · HEAD <code>3a9f07a</code> · feature behind <code>docBrowserEnabled</code> (default off). Progress autosaves in this browser. Use <b>Export</b> when done.</div>
+
+  <h2>Environment</h2>
+  <div class="meta">
+    <div><label>Tester</label><input type="text" data-meta="tester"></div>
+    <div><label>Date</label><input type="text" data-meta="date" placeholder="2026-06-19"></div>
+    <div><label>Platform</label><input type="text" data-meta="platform" placeholder="Win11 desktop / iPad"></div>
+    <div><label>Obsidian version</label><input type="text" data-meta="obsidian"></div>
+    <div><label>Author label (mobile)</label><input type="text" data-meta="authorLabel"></div>
+    <div><label>main.js deployed?</label><input type="text" data-meta="deployed" placeholder="byte-identical 3a9f07a"></div>
+  </div>
+
+  <div class="banner">Single machine = you are the only author. The "locked by someone else" paths are triggered by <b>hand-editing the lock value</b> in the doc's current-version sidecar (reach hidden sidecars via Quick Switcher <b>Ctrl/Cmd+O</b>). Steps that need this are marked.</div>
+
+  <div id="sections"></div>
+
+  <details>
+    <summary>Export — Markdown report (download + copy)</summary>
+    <p class="sub" style="margin-top:10px">Click <b>Export</b> below. It downloads <code>phase5-smoke-results.md</code> and copies the same text to your clipboard. Save it next to this file (<code>docs/superpowers/</code>) or paste it back to Claude.</p>
+    <textarea id="exportArea" readonly placeholder="Export output appears here…"></textarea>
+  </details>
+</div>
+
+<div class="bar">
+  <span class="tally" id="tally"></span>
+  <span class="saved" id="saved"></span>
+  <span class="grow"></span>
+  <button class="ghost" id="resetBtn">Reset</button>
+  <button id="exportBtn">Export results</button>
+</div>
+
+<script>
+const STORE = 'p21-doccontainer-phase5-smoke-v1';
+const SECTIONS = [
+  { id:'Prep', title:'Prep — enable the feature', steps:[
+    { n:1, action:'Settings → Obsidi-Office → turn Document Browser ON (docBrowserEnabled).', expect:'Notice prompts to reload.' },
+    { n:2, action:'Reload Obsidian (Ctrl/Cmd+R, or disable/enable the plugin).', expect:'Ribbon icon + "Open Document Browser" command appear.' },
+    { n:3, action:'Optionally set Author label (mobile) in settings.', expect:'Saved (only used on iPad).' },
+    { n:4, action:'Open the Document Browser (folder-tree ribbon, or the command).', expect:'Tree of Documents/ renders.' },
+  ]},
+  { id:'A', title:'A. Logging → log.md (happy path)', steps:[
+    { n:5, action:'In a Collection, ＋ New Document → "Smoke Test", Blank docx.', expect:'Lands on the <b>detail page in edit mode</b>; a <b>log.md</b> appears in the doc folder with a <b>created</b> line.' },
+    { n:6, action:'Open the doc in the editor, type, Ctrl/Cmd+S (or wait ~10s autosave).', expect:'Log tab gains one <b>edited</b> entry per session (not per keystroke).' },
+    { n:7, action:'Back on the detail page → New version (footer).', expect:'Log gains <b>Version 1.1/2.0 created</b>; version sidecars do NOT grow an activityLog array.' },
+    { n:8, action:'Open the Log tab on the detail page.', expect:'Entries newest-first with icons (create ＋, version, edit pencil). <b>No count badge</b> on the Log tab (reads log.md).' },
+  ]},
+  { id:'B', title:'B. Check-out / check-in (as yourself)', steps:[
+    { n:9, action:'Detail page top → Check out.', expect:'Banner: "<b>You have this checked out.</b>" + Check in button; Log gains <b>checked out</b>.' },
+    { n:10, action:'Reload Obsidian, reopen the doc detail.', expect:'Still shows checked-out-by-you (persisted in frontmatter).' },
+    { n:11, action:'Click Check in.', expect:'Banner returns to a Check out button; Log gains <b>checked in</b>.' },
+  ]},
+  { id:'C', title:'C. Locked-by-another → gating · kick · fork · reconcile (hand-edit sim)', steps:[
+    { n:12, action:'Check out as yourself (lock fields now exist). Open the current-version sidecar via Ctrl/Cmd+O (it is hidden in the explorer) and set checkedOutBy: tester.', expect:'Sidecar saved with checkedOutBy: tester.', sim:true },
+    { n:13, action:'Reopen the doc detail.', expect:'Banner: "<b>Checked out by tester</b>" + Force check-in button.', sim:true },
+    { n:14, action:'Open the doc in the editor.', expect:'Opens <b>read-only</b> (no editing).', sim:true, console:true },
+    { n:15, action:'KICK: set checkedOutBy back to your slug, reopen editor (editable). With it open, edit the sidecar checkedOutBy → tester again.', expect:'A "<b>Released from edit</b>" modal appears; editor drops to read-only. Click <b>Save a copy</b> → a _forks/ copy + sidecar (reconciled:false, forkBaseVersion, forkAuthor); Log gains <b>fork saved (base …)</b>.', sim:true, console:true },
+    { n:16, action:'Back on detail → a Reconcile tab appears (count 1). Open it → Mark reconciled.', expect:'Row "you · diverged from <ver>" with Open fork / Open current / Mark reconciled. After Mark reconciled: row clears, tab disappears, Log gains <b>reconciled</b>.', sim:true },
+    { n:17, action:'Force check-in (from a locked-by-tester state): click once (arms "Confirm force check-in"), click again.', expect:'Banner returns to Check out; Log gains <b>force check-in</b>.', sim:true },
+  ]},
+  { id:'D', title:'D. Explorer hiding', steps:[
+    { n:18, action:'Look at the file explorer for a doc folder.', expect:'<b>log.md</b>, <b>_document.md</b> (if any), the <b>_forks/</b> folder, and <b>*.docx.md</b> sidecars are all hidden.' },
+  ]},
+  { id:'E', title:'E. iPad (after Sync propagates main.js)', steps:[
+    { n:19, action:'On iPad: reload Obsidian, enable Document Browser, set an Author label.', expect:'Ribbon/command appear.', console:true },
+    { n:20, action:'Create/edit a doc.', expect:'log.md entries show your <b>Author label</b> as actor (not "Mobile User").', console:true },
+    { n:21, action:'Check out / check in; trigger a fork save.', expect:'Works, no errors (uses vault.createBinary, no fs).', console:true },
+  ]},
+];
+
+let state = {};
+try { state = JSON.parse(localStorage.getItem(STORE) || '{}'); } catch(e) { state = {}; }
+state.meta = state.meta || {}; state.steps = state.steps || {};
+
+function save() {
+  localStorage.setItem(STORE, JSON.stringify(state));
+  const s = document.getElementById('saved'); s.textContent = 'saved'; setTimeout(()=>s.textContent='', 1200);
+  tally();
+}
+function tally() {
+  let ok=0, fail=0, na=0, total=0;
+  SECTIONS.forEach(sec=>sec.steps.forEach(st=>{ total++; const v=(state.steps[st.n]||{}).status; if(v==='pass')ok++; else if(v==='fail')fail++; else if(v==='na')na++; }));
+  document.getElementById('tally').innerHTML =
+    `<b class="ok">${ok}</b> pass · <b class="fail">${fail}</b> fail · <b class="na">${na}</b> n/a · ${total-ok-fail-na} unrun / ${total}`;
+}
+
+const root = document.getElementById('sections');
+SECTIONS.forEach(sec=>{
+  const h = document.createElement('h2'); h.textContent = sec.title; root.appendChild(h);
+  sec.steps.forEach(st=>{
+    const cur = state.steps[st.n] || {};
+    const el = document.createElement('div'); el.className='step';
+    el.innerHTML = `
+      <div class="step-hd">
+        <div class="step-id">${st.n}</div>
+        <div class="step-body">
+          <div class="step-action">${st.action}${st.sim?' <span style="color:var(--na)">[sim: hand-edit]</span>':''}</div>
+          <div class="step-expect">${st.expect}</div>
+          <div class="btns" data-n="${st.n}">
+            <button data-v="pass" aria-pressed="${cur.status==='pass'}">Pass</button>
+            <button data-v="fail" aria-pressed="${cur.status==='fail'}">Fail</button>
+            <button data-v="na" aria-pressed="${cur.status==='na'}">N/A</button>
+          </div>
+          <div class="field"><label>Notes</label><textarea rows="2" data-note="${st.n}">${(cur.note||'').replace(/</g,'&lt;')}</textarea></div>
+          ${st.console?`<div class="console"><label>Console / errors (paste)</label><textarea rows="3" data-console="${st.n}">${(cur.console||'').replace(/</g,'&lt;')}</textarea></div>`:''}
+        </div>
+      </div>`;
+    root.appendChild(el);
+  });
+});
+
+root.addEventListener('click', e=>{
+  const b = e.target.closest('button[data-v]'); if(!b) return;
+  const n = b.parentElement.getAttribute('data-n'); const v = b.getAttribute('data-v');
+  state.steps[n] = state.steps[n] || {};
+  state.steps[n].status = (state.steps[n].status===v) ? '' : v;  // toggle off if same
+  b.parentElement.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed', x.getAttribute('data-v')===state.steps[n].status));
+  save();
+});
+root.addEventListener('input', e=>{
+  const t = e.target;
+  if (t.dataset.note!=null){ const n=t.dataset.note; state.steps[n]=state.steps[n]||{}; state.steps[n].note=t.value; save(); }
+  if (t.dataset.console!=null){ const n=t.dataset.console; state.steps[n]=state.steps[n]||{}; state.steps[n].console=t.value; save(); }
+});
+document.querySelectorAll('[data-meta]').forEach(inp=>{
+  inp.value = state.meta[inp.dataset.meta]||'';
+  inp.addEventListener('input', ()=>{ state.meta[inp.dataset.meta]=inp.value; save(); });
+});
+
+function buildMarkdown(){
+  const m = state.meta;
+  let out = `# Phase 5 Smoke — doc-container authorship + check-out\n\n`;
+  out += `- HEAD: 3a9f07a (branch doc-container)\n- Tester: ${m.tester||''}\n- Date: ${m.date||''}\n- Platform: ${m.platform||''}\n- Obsidian: ${m.obsidian||''}\n- Author label: ${m.authorLabel||''}\n- Deployed: ${m.deployed||''}\n\n`;
+  let ok=0,fail=0,na=0,total=0;
+  SECTIONS.forEach(sec=>sec.steps.forEach(st=>{ total++; const v=(state.steps[st.n]||{}).status; if(v==='pass')ok++;else if(v==='fail')fail++;else if(v==='na')na++; }));
+  out += `**Result: ${ok}/${total} pass · ${fail} fail · ${na} n/a · ${total-ok-fail-na} unrun**\n\n`;
+  SECTIONS.forEach(sec=>{
+    out += `## ${sec.title}\n\n`;
+    sec.steps.forEach(st=>{
+      const c = state.steps[st.n]||{};
+      const mark = c.status==='pass'?'PASS':c.status==='fail'?'FAIL':c.status==='na'?'N/A':'—';
+      out += `- [${mark}] **${st.n}.** ${st.action.replace(/<[^>]+>/g,'')}\n`;
+      if (c.note) out += `    - notes: ${c.note.replace(/\n/g,' ')}\n`;
+      if (c.console) out += `    - console:\n\`\`\`\n${c.console}\n\`\`\`\n`;
+    });
+    out += `\n`;
+  });
+  return out;
+}
+document.getElementById('exportBtn').addEventListener('click', ()=>{
+  const md = buildMarkdown();
+  document.getElementById('exportArea').value = md;
+  // download
+  const blob = new Blob([md], {type:'text/markdown'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = 'phase5-smoke-results.md'; document.body.appendChild(a); a.click(); a.remove();
+  // copy
+  if (navigator.clipboard) navigator.clipboard.writeText(md).catch(()=>{});
+  document.querySelector('details').open = true;
+});
+document.getElementById('resetBtn').addEventListener('click', ()=>{
+  if (!confirm('Clear all smoke-test progress in this browser?')) return;
+  state = { meta:{}, steps:{} }; localStorage.removeItem(STORE); location.reload();
+});
+tally();
+</script>
+</body>
+</html>
