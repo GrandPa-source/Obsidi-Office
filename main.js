@@ -359,6 +359,15 @@ function planReconcile(input) {
   };
 }
 
+// ── Authorship + check-out (2026-06-19 plan) ───────────────────────────────────
+
+function slugifyAuthor(name) {
+  return String(name == null ? '' : name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'unknown';
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -389,6 +398,7 @@ module.exports = {
   partitionFrontmatter,
   buildFilesManifest,
   planReconcile,
+  slugifyAuthor,
 };
 
 return module.exports; })();
