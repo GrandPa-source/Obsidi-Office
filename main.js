@@ -3461,12 +3461,8 @@ class DocumentDetailView extends obsidian.ItemView {
     if (!sc) return;
     await this.app.fileManager.processFrontMatter(sc, (front) => {
       applyFn(front);
-      if (log) {
-        if (!Array.isArray(front.activityLog)) front.activityLog = [];
-        const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
-        front.activityLog.push({ datetime, actor: getUsername(), action: log.action, type: log.type });
-      }
     });
+    if (log && log.action) this.plugin.appendLog(this.node.path, log.action, log.detail);
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
   }
   async _saveSidecar(key, value, log) { return this._mutateSidecar((front) => { front[key] = value; }, log); }
@@ -5224,7 +5220,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         // (deduped via _editLoggedPaths, reset on open — avoids autosave spam).
         if (filePath.startsWith(this.settings.docRoot + '/') && !this._editLoggedPaths.has(filePath)) {
           this._editLoggedPaths.add(filePath);
-          this._appendActivity(filePath, 'Document edited', 'edit');
+          this._appendActivity(filePath, 'edited');
         }
       }
     });
@@ -6778,14 +6774,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const sc = this.app.vault.getAbstractFileByPath(scPath);
       if (sc) {
         const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
-        const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
         await this.app.fileManager.processFrontMatter(sc, (front) => {
           if (!front.title) front.title = cleanTitle;
           if (!front.status) front.status = 'Draft';
           if (!front.originationDate) front.originationDate = today;
-          if (!Array.isArray(front.activityLog)) front.activityLog = [];
-          front.activityLog.push({ datetime, actor: getUsername(), action: 'Document created', type: 'create' });
         });
+        this.appendLog(docFolder, 'created');
       } else {
         elog('createDocumentInContainer: sidecar missing after _autoCreateSidecar for', filePath);
       }
@@ -6883,35 +6877,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (e) { /* fire-and-forget */ }
   }
 
-  // ── T27: append a plugin-originated entry to the current sidecar's activityLog
+  // Append a plugin-originated entry to the document's log.md (type kept for
+  // call-site compatibility; ignored — the log line is action-only).
   async logActivity(node, action, type) {
-    if (!node || !node.current) return;
-    const scPath = node.path + '/' + node.current + '.md';
-    let sc = this.app.vault.getAbstractFileByPath(scPath);
-    if (!sc) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
-    if (!sc) return;
-    const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const actor = getUsername();
-    await this.app.fileManager.processFrontMatter(sc, (front) => {
-      if (!Array.isArray(front.activityLog)) front.activityLog = [];
-      front.activityLog.push({ datetime, actor, action, type });
-    });
+    if (!node || !node.path) return;
+    return this.appendLog(node.path, action);
   }
 
-  // Append a one-off activityLog entry to an office file's EXISTING sidecar.
-  // Unlike logActivity it does NOT create a sidecar — open/reveal/edit events
-  // only log where a doc-container sidecar already exists. Fire-and-forget safe.
+  // Append an open/reveal/edit entry to the document's log.md. Scoped to docRoot so
+  // opening unmanaged office files elsewhere does not create stray logs. type kept for
+  // call-site compatibility; ignored. Fire-and-forget (appendLog swallows its errors).
   async _appendActivity(officePath, action, type) {
-    const sc = this.app.vault.getAbstractFileByPath(officePath + '.md');
-    if (!sc || !(sc instanceof obsidian.TFile)) return;
-    const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm') : new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const actor = getUsername();
-    try {
-      await this.app.fileManager.processFrontMatter(sc, (front) => {
-        if (!Array.isArray(front.activityLog)) front.activityLog = [];
-        front.activityLog.push({ datetime, actor, action, type });
-      });
-    } catch (e) { elog('activity log failed:', e && e.message); }
+    if (!officePath || !officePath.startsWith(this.settings.docRoot + '/')) return;
+    const folder = officePath.slice(0, officePath.lastIndexOf('/'));
+    return this.appendLog(folder, action);
   }
 
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
