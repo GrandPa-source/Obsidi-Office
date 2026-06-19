@@ -623,6 +623,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-fbtn:hover, .doc-detail-btn:hover { background: var(--background-modifier-hover); }
 .doc-detail-btn.accent { background: var(--interactive-accent); color: var(--text-on-accent); border-color:transparent; }
 .doc-detail-btn.accent:hover { background: var(--interactive-accent-hover); }
+.doc-detail-btn.danger { color: var(--text-error); border-color: var(--text-error); }
+.doc-detail-btn.danger:hover { background: var(--background-modifier-error); color: var(--text-on-accent); }
 .doc-ov { padding:14px 18px; }
 .doc-ov-crumb { font-size:12px; color: var(--text-faint); }
 .doc-ov-head { display:flex; align-items:baseline; gap:10px; margin:2px 0 10px; }
@@ -3928,6 +3930,15 @@ class DocumentDetailView extends obsidian.ItemView {
     mk('Edit tags & links', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
     footer.createSpan({ cls: 'doc-detail-fspace' });
     mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
+    if (this._editMode) {
+      const title = this.frontmatter().title || this.node.name;
+      mk('Delete document', 'danger', () => {
+        new DeleteConfirmModal(this.app, 'document', title, async () => {
+          await this.plugin.deleteContainerFolder(this.node.path, title);
+          this.node = null; this._editMode = false; this.render();
+        }).open();
+      });
+    }
   }
 }
 
@@ -6962,6 +6973,21 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.revealLeaf(leaf);
   }
 
+  // Move a document/container folder (and everything inside it — versions, hidden
+  // sidecars, log.md, _forks) to system trash (recoverable), then refresh the
+  // doc-container views. Documents and containers are both folders.
+  async deleteContainerFolder(path, name) {
+    const folder = this.app.vault.getAbstractFileByPath(path);
+    if (!(folder instanceof obsidian.TFolder)) { new obsidian.Notice('Nothing to delete at ' + path); return; }
+    try {
+      await this.app.vault.trash(folder, true);   // true = system trash (recoverable)
+    } catch (e) { new obsidian.Notice('Could not delete: ' + (e && e.message ? e.message : e)); return; }
+    if (typeof this.buildDocIndex === 'function') this.buildDocIndex();
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER).forEach(l => l.view.render && l.view.render());
+    new obsidian.Notice('Moved "' + (name || path) + '" to trash.');
+  }
+
   // ── Task 8: Real openDocDetail — reuse existing leaf if open ─────────────────
   async openDocDetail(node, opts) {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
@@ -7184,6 +7210,28 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 // ===========================================================================
 // MetadataModal â€” Obsidian tags + wikilinks for .docx sidecar
 // ===========================================================================
+
+// Type-the-name-to-confirm delete. The Delete button stays disabled until the
+// typed text exactly matches the name. Used for documents (and containers).
+class DeleteConfirmModal extends obsidian.Modal {
+  constructor(app, kind, name, onConfirm) { super(app); this.kind = kind; this.name = name; this.onConfirm = onConfirm; }
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText('Delete ' + this.kind);
+    contentEl.createEl('p', { text: 'This moves "' + this.name + '" and everything inside it (all versions, sidecars, log, forks) to your system trash. Recoverable from there.' });
+    contentEl.createEl('p', { text: 'Type the ' + this.kind + ' name to confirm:' });
+    const input = contentEl.createEl('input', { type: 'text', attr: { placeholder: this.name, style: 'width:100%;' } });
+    const row = contentEl.createDiv({ attr: { style: 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px;' } });
+    row.createEl('button', { text: 'Cancel' }).onclick = () => this.close();
+    const del = row.createEl('button', { text: 'Delete', cls: 'mod-warning' });
+    del.disabled = true;
+    input.addEventListener('input', () => { del.disabled = input.value.trim() !== this.name; });
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !del.disabled) { e.preventDefault(); del.click(); } });
+    del.onclick = async () => { this.close(); await this.onConfirm(); };
+    setTimeout(() => input.focus(), 0);
+  }
+  onClose() { this.contentEl.empty(); }
+}
 
 class MetadataModal extends obsidian.Modal {
   constructor(app, docxPath) {
