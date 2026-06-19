@@ -6826,8 +6826,52 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     view._suppressEditLogReset = true;
     view.onLoadFile(file);
   }
-  // Replaced in Task 14 — saves the kicked editor's bytes as a tracked outlier fork.
-  async saveForkCopy(view) { new obsidian.Notice('Fork save not yet implemented'); }
+  // Save the kicked editor's bytes as a tracked outlier fork in <folder>/_forks/,
+  // anchored to the common-ancestor version for later manual reconciliation.
+  async saveForkCopy(view) {
+    try {
+      const file = view.file;
+      const slash = file.path.lastIndexOf('/');
+      const folder = slash >= 0 ? file.path.slice(0, slash) : '';
+      const currentName = slash >= 0 ? file.path.slice(slash + 1) : file.path;
+      const author = resolveAuthor();
+      const dateStr = window.moment ? window.moment().format('YYYYMMDD') : new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const forkName = docContainer.forkFileName(currentName, author.id, dateStr);
+      const forksDir = folder + '/_forks';
+      if (!(this.app.vault.getAbstractFileByPath(forksDir) instanceof obsidian.TFolder)) {
+        try { await this.app.vault.createFolder(forksDir); } catch (e) { /* exists race */ }
+      }
+      const forkPath = forksDir + '/' + forkName;
+      // After the kick reloads the editor read-only, in-window unsaved edits are gone;
+      // we save the on-disk bytes (the 10s autosave usually holds the latest). Capturing
+      // live unsaved bytes is a future refinement (view.captureCurrentBytes if it exists).
+      const bytes = (typeof view.captureCurrentBytes === 'function')
+        ? await view.captureCurrentBytes()
+        : await this.app.vault.readBinary(file);
+      await this.app.vault.createBinary(forkPath, bytes);
+      const scPath = forkPath + '.md';
+      let sc = this.app.vault.getAbstractFileByPath(scPath);
+      if (!(sc instanceof obsidian.TFile)) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
+      if (sc instanceof obsidian.TFile) {
+        await this.app.fileManager.processFrontMatter(sc, (fm) => {
+          fm.docx = '[[' + forkName + ']]';
+          fm.forkOf = this._docIdForFolder(folder) || '';
+          fm.forkBaseVersion = currentName;
+          fm.forkAuthor = author.id;
+          fm.forkAt = new Date().toISOString();
+          fm.forkReason = 'checkout-conflict';
+          fm.reconciled = false;
+        });
+      }
+      this.appendLog(folder, 'fork saved', 'base ' + currentName);
+      new obsidian.Notice('Saved your changes as a fork copy for later reconciliation.');
+    } catch (e) { new obsidian.Notice('Could not save fork copy: ' + (e && e.message)); }
+  }
+  _docIdForFolder(folder) {
+    const dm = this.app.vault.getAbstractFileByPath(folder + '/' + DOCUMENT_MD_NAME);
+    if (!(dm instanceof obsidian.TFile)) return null;
+    return ((this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {}).docId || null;
+  }
 
   async writeProjectNote(node, keyOrMutator, value) {
     if (!node || !node.path) return;
