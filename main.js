@@ -3404,7 +3404,7 @@ class DocumentDetailView extends obsidian.ItemView {
     this._tabGroup(rightCol, [
       { id: 'recent', label: 'Recent Notes', count: arr(fm.noteLog).length,     fill: (p) => this._renderRecentNotesPane(p, fm) },
       { id: 'search', label: 'Search Notes',                                     fill: (p) => this._renderSearchNotesPane(p, fm) },
-      { id: 'log',    label: 'Log',          count: arr(fm.activityLog).length,  fill: (p) => this._renderLogPane(p, fm) },
+      { id: 'log',    label: 'Log',          fill: (p) => this._renderLogPane(p, fm) },   // no count: entries live in log.md (read async), not fm.activityLog
     ], 'right');
 
     // Sticky footer (5 actions)
@@ -4122,7 +4122,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       { id: 'pmiles', label: 'Milestones', count: arr(pn.milestones).length, fill: (p) => this._projMilesPane(p, node, arr(pn.milestones)) },
       { id: 'pteam', label: 'Team', count: arr(pn.team).length, fill: (p) => this._projTeamPane(p, node, arr(pn.team), docs) },
       { id: 'pnotes', label: 'Notes', count: arr(pn.noteLog).length, fill: (p) => this._projNotesPane(p, node, arr(pn.noteLog)) },
-      { id: 'plog', label: 'Log', count: arr(pn.activityLog).length, right: true, fill: (p) => this._projLogPane(p, node, arr(pn.activityLog)) },
+      { id: 'plog', label: 'Log', right: true, fill: (p) => this._projLogPane(p, node, arr(pn.activityLog)) },   // no count: entries live in log.md (read async)
     ];
     const hasActive = specs.some(s => s.id === this._projActiveTab);
     specs.forEach((spec, i) => {
