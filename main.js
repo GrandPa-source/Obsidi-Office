@@ -2458,20 +2458,22 @@ class OfficeEditorView extends obsidian.FileView {
     return found;
   }
 
-  // Show/hide a "Return to document" header action based on _returnToDocPath
-  // (set when the doc-container detail page launched this editor).
+  // Floating "Return to document" button (TEMP red for visibility), shown only when
+  // this editor was launched from a doc-container detail page. Re-created on every
+  // load so a re-render of the editor can't leave a stale/detached element.
   _syncReturnAction() {
-    if (this._returnToDocPath && !this._returnActionEl) {
-      this._returnActionEl = this.addAction('arrow-left', 'Return to document', () => {
-        if (!this._returnToDocPath) return;
-        const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
-        const leaf = existing || this.leaf;   // reuse an open detail tab (Ctrl-click case), else swap THIS editor tab back
-        leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false } });
-        this.app.workspace.revealLeaf(leaf);
-      });
-    } else if (!this._returnToDocPath && this._returnActionEl) {
-      this._returnActionEl.remove(); this._returnActionEl = null;
-    }
+    if (this._returnBtnEl) { this._returnBtnEl.remove(); this._returnBtnEl = null; }
+    if (!this._returnToDocPath) return;
+    const b = this.containerEl.createEl('button', { text: '← Return to document' });
+    b.setAttr('style', 'position:absolute; bottom:18px; left:18px; z-index:1000; background:#e5614c; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.35);');
+    b.onclick = () => {
+      if (!this._returnToDocPath) return;
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
+      const leaf = existing || this.leaf;   // reuse an open detail tab (Ctrl-click case), else swap THIS editor tab back
+      leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false } });
+      this.app.workspace.revealLeaf(leaf);
+    };
+    this._returnBtnEl = b;
   }
   async onLoadFile(file) {
     dlog(this.constructor.name + " onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
@@ -2488,9 +2490,9 @@ class OfficeEditorView extends obsidian.FileView {
     const rc = this.plugin && this.plugin._returnContext;
     if (rc && file && rc.path === file.path) { this._returnToDocPath = rc.docPath; this._returnForPath = file.path; this.plugin._returnContext = null; }
     else if (this._returnForPath && file && this._returnForPath !== file.path) { this._returnToDocPath = null; this._returnForPath = null; }
-    this._syncReturnAction();
     try {
       await this._onLoadFileInner(file);
+      this._syncReturnAction();   // add the floating Return button AFTER the editor renders (else _renderEditor wipes it)
     } catch (err) {
       elog(this.constructor.name + " onLoadFile top-level threw:", err && err.stack || err);
       try {
