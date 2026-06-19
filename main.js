@@ -2065,6 +2065,27 @@ function getUsername() {
 }
 function resolveAuthor() { const display = getUsername(); return { id: docContainer.slugifyAuthor(display), display: display }; }
 function resolveAuthorId() { return docContainer.slugifyAuthor(getUsername()); }
+// Pick a Lucide icon for a log.md entry from its action verb (log lines are
+// action-only — no type field). Shared by the document + project Log panes.
+// Module scope (NOT inside the inlined doc-container block, which gets regenerated).
+function docLogIcon(action) {
+  const a = String(action || '').toLowerCase();
+  if (a.includes('version')) return 'file-plus';   // before 'creat' — "Version 1.0 created" contains both
+  if (a.includes('creat')) return 'plus';
+  if (a.startsWith('status')) return 'refresh-cw';
+  if (a.includes('fork')) return 'git-branch';
+  if (a.includes('reconcil')) return 'check';
+  if (a.includes('force check')) return 'unlock';
+  if (a.includes('check out') || a.includes('checked out')) return 'lock';
+  if (a.includes('check in') || a.includes('checked in')) return 'unlock';
+  if (a.includes('open')) return 'eye';
+  if (a.includes('edit')) return 'pencil';
+  if (a.includes('tag') || a.includes('link')) return 'link';
+  if (a.includes('milestone')) return 'flag';
+  if (a.includes('team') || a.includes('member')) return 'user';
+  if (a.includes('note')) return 'sticky-note';
+  return 'circle';
+}
 
 // pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
 // supports printable ASCII (0x20-0x7E) + most Latin-1 supplement (0xA0-0xFF) +
@@ -7109,7 +7130,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       } else {
         await this.app.vault.append(existing, line + '\n');
       }
-    } catch (e) { /* fire-and-forget */ }
+    } catch (e) { elog('appendLog failed for ' + folderPath + ': ' + (e && e.message ? e.message : e)); }
   }
 
   // Append a plugin-originated entry to the document's log.md (type kept for
