@@ -3932,10 +3932,13 @@ class DocumentDetailView extends obsidian.ItemView {
     mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
     if (this._editMode) {
       const title = this.frontmatter().title || this.node.name;
+      const docPath = this.node.path;
       mk('Delete document', 'danger', () => {
         new DeleteConfirmModal(this.app, 'document', title, async () => {
-          await this.plugin.deleteContainerFolder(this.node.path, title);
-          this.node = null; this._editMode = false; this.render();
+          const parent = docPath.slice(0, docPath.lastIndexOf('/'));
+          await this.plugin.deleteContainerFolder(docPath, title);
+          this.node = null; this._editMode = false;
+          this.plugin.openContainerOverview({ path: parent || this.plugin.settings.docRoot });   // return to parent container
         }).open();
       });
     }
@@ -3964,7 +3967,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     }));
   }
   async setState(s, r) {
-    if (s && s.path) { if (s.path !== this.path) { this._projActiveTab = null; this._projEditMode = false; this._wantScrollTop = true; } this.path = s.path; this.render(); }
+    if (s && s.path) { if (s.path !== this.path) { this._projActiveTab = null; this._projEditMode = false; this._ovEditMode = false; this._wantScrollTop = true; } this.path = s.path; this.render(); }
     return super.setState(s, r);
   }
   getState() { return { path: this.path }; }
@@ -4008,6 +4011,23 @@ class ContainerOverviewView extends obsidian.ItemView {
       c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › ') || '', cls: 'doc-ov-crumb' });
       const head = c.createDiv('doc-ov-head');
       head.createSpan({ text: node.name, cls: 'doc-ov-title' });
+      if (node.kind === 'collection' || node.kind === 'category') {
+        const kindWord = node.kind === 'category' ? 'Category' : 'Collection';
+        const ovActs = head.createDiv('doc-detail-h1actions');
+        if (this._ovEditMode) {
+          ovActs.createSpan({ text: 'Done', cls: 'doc-detail-editbtn ghost' }).onclick = () => { this._ovEditMode = false; this.render(); };
+          ovActs.createSpan({ text: 'Delete ' + kindWord, cls: 'doc-detail-btn danger' }).onclick = () => {
+            new DeleteConfirmModal(this.app, kindWord.toLowerCase(), node.name, async () => {
+              const parent = node.path.slice(0, node.path.lastIndexOf('/'));
+              await this.plugin.deleteContainerFolder(node.path, node.name);
+              this._ovEditMode = false;
+              this.plugin.openContainerOverview({ path: parent || this.plugin.settings.docRoot });   // return to parent container
+            }).open();
+          };
+        } else {
+          ovActs.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' }).onclick = () => { this._ovEditMode = true; this.render(); };
+        }
+      }
       const roll = c.createDiv('doc-ov-rollup');
       roll.createSpan({ text: `${docs.length} documents`, cls: 'doc-ov-pill' });
       const by = docContainer.rollupByStatus(docs);
@@ -4042,6 +4062,15 @@ class ContainerOverviewView extends obsidian.ItemView {
     if (editing) {
       const save = acts.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' }); save.onclick = () => this._saveProjEdits(node);
       const cancel = acts.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' }); cancel.onclick = () => { this._projEditMode = false; this.render(); };
+      acts.createSpan({ text: 'Delete project', cls: 'doc-detail-btn danger' }).onclick = () => {
+        const pname = pn.projectName || node.name;
+        new DeleteConfirmModal(this.app, 'project', pname, async () => {
+          const parent = node.path.slice(0, node.path.lastIndexOf('/'));
+          await this.plugin.deleteContainerFolder(node.path, pname);
+          this._projEditMode = false;
+          this.plugin.openContainerOverview({ path: parent || this.plugin.settings.docRoot });   // return to parent container
+        }).open();
+      };
     } else {
       const edit = acts.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' }); edit.onclick = () => { this._projEditMode = true; this.render(); };
     }
