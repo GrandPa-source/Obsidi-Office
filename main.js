@@ -5597,6 +5597,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         // Keep the doc index warm when a _document.md changes.
         if (file.name === docContainer.DOCUMENT_MD_NAME) this.buildDocIndex();
         this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+        this._enforceCheckoutOnOpenEditors();   // kick editors now locked by another author
       };
       this.registerEvent(this.app.vault.on('create', refreshIfManaged));
       this.registerEvent(this.app.vault.on('delete', refreshIfManaged));
@@ -6779,6 +6780,41 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await this.app.fileManager.processFrontMatter(f, (fm) => { delete fm.checkedOutBy; delete fm.checkedOutAt; });
     this.appendLog(node.path, action || 'checked in');
   }
+
+  // Race/kick: when the lock file changes (Sync delivered another author's
+  // check-out), drop any open editor now held by someone else to read-only and
+  // offer save-a-copy. Iterates by the OfficeEditorView base class (covers all
+  // four editor types). _kicked de-dupes; it resets when the lock no longer applies.
+  _enforceCheckoutOnOpenEditors() {
+    if (!this.settings.docBrowserEnabled) return;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const view = leaf.view;
+      if (!(view instanceof OfficeEditorView) || !view.file) return;
+      const lockedOut = view._isLockedByOther(view.file);
+      if (lockedOut && !view._kicked) { view._kicked = true; this._promptKick(view); }
+      else if (!lockedOut && view._kicked) { view._kicked = false; }
+    });
+  }
+  _promptKick(view) {
+    const file = view.file;
+    const modal = new obsidian.Modal(this.app);
+    modal.titleEl.setText('Released from edit');
+    modal.contentEl.createEl('p', { text: 'This document was checked out by another author. Your session is now read-only. Save your in-progress changes as a copy to reconcile later?' });
+    const row = modal.contentEl.createDiv({ attr: { style: 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px;' } });
+    const save = row.createEl('button', { text: 'Save a copy', cls: 'mod-cta' });
+    save.onclick = async () => { modal.close(); await this.saveForkCopy(view); };
+    const cancel = row.createEl('button', { text: 'Discard / keep read-only' });
+    cancel.onclick = () => modal.close();
+    modal.open();
+    // Drop the live editor to read-only by reloading it — _buildEditorConfig now
+    // computes view mode (lock held by another). _suppressEditLogReset preserves
+    // the edit-log dedup across this programmatic reload.
+    view._suppressEditLogReset = true;
+    view.onLoadFile(file);
+  }
+  // Replaced in Task 14 — saves the kicked editor's bytes as a tracked outlier fork.
+  async saveForkCopy(view) { new obsidian.Notice('Fork save not yet implemented'); }
+
   async writeProjectNote(node, keyOrMutator, value) {
     if (!node || !node.path) return;
     const path = node.path + '/_project.md';
