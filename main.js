@@ -668,6 +668,9 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-lockbtn.ghost { background: var(--background-modifier-border); color: var(--text-normal); }
 .doc-detail-lockmine { color: var(--text-success); }
 .doc-detail-lockother { color: var(--text-error); }
+.doc-detail-pendrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 4px; border-bottom:1px solid var(--background-modifier-border); font-size:12px; }
+.doc-detail-pendtitle { color: var(--text-normal); }
+.doc-detail-pendactions { display:flex; gap:6px; flex:0 0 auto; }
 .doc-detail-editbtn { font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
 .doc-detail-editbtn:hover { background: var(--interactive-accent-hover); }
 .doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px 16px 16px; margin-top:6px; }
@@ -3389,12 +3392,14 @@ class DocumentDetailView extends obsidian.ItemView {
     const leftCol = cols.createDiv('doc-detail-col');
     const rightCol = cols.createDiv('doc-detail-col');
     const arr = (v) => Array.isArray(v) ? v : [];
+    const pending = this._pendingForks();
 
     this._tabGroup(leftCol, [
       { id: 'files',   label: 'Files & Versions', count: (this.node.files || []).length, fill: (p) => this._renderFilesPane(p) },
       { id: 'stake',   label: 'Stakeholders',                                            fill: (p) => this._renderStakeholdersPane(p, fm) },
       { id: 'reldocs', label: 'Related Documents', count: arr(fm.relatedDocuments).length, fill: (p) => this._renderRelatedPane(p, fm) },
       { id: 'defs',    label: 'Definitions',       count: arr(fm.definitions).length,      fill: (p) => this._renderDefinitionsPane(p, fm) },
+      ...(pending.length ? [{ id: 'reconcile', label: 'Reconcile', count: pending.length, fill: (p) => this._renderPendingPane(p, pending) }] : []),
     ], 'left');
     this._tabGroup(rightCol, [
       { id: 'recent', label: 'Recent Notes', count: arr(fm.noteLog).length,     fill: (p) => this._renderRecentNotesPane(p, fm) },
@@ -3853,6 +3858,39 @@ class DocumentDetailView extends obsidian.ItemView {
       const main = row.createDiv();
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
+    }
+  }
+
+  // Outlier forks awaiting reconciliation, derived by scanning the doc's _forks/
+  // sidecars (no frontmatter list to keep in sync — can't go stale).
+  _pendingForks() {
+    const out = [];
+    const folder = this.app.vault.getAbstractFileByPath(this.node.path + '/_forks');
+    if (!(folder instanceof obsidian.TFolder)) return out;
+    for (const child of folder.children) {
+      if (!child.path.endsWith('.md')) continue;
+      const fm = (this.app.metadataCache.getFileCache(child) || {}).frontmatter || {};
+      if (docContainer.isPendingFork(fm)) out.push({ scPath: child.path, fork: child.path.replace(/\.md$/, ''), fm: fm });
+    }
+    return out;
+  }
+  _renderPendingPane(p, pending) {
+    p.createDiv({ cls: 'doc-detail-noteshint', text: 'Outlier copies saved from a check-out conflict. Reconcile by hand, then mark resolved.' });
+    for (const item of pending) {
+      const row = p.createDiv('doc-detail-pendrow');
+      row.createDiv({ cls: 'doc-detail-pendtitle', text: (item.fm.forkAuthor || '?') + ' · diverged from ' + (item.fm.forkBaseVersion || '?') });
+      const actions = row.createDiv('doc-detail-pendactions');
+      const openFork = actions.createEl('button', { text: 'Open fork' });
+      openFork.onclick = () => { const f = this.app.vault.getAbstractFileByPath(item.fork); if (f) this.app.workspace.getLeaf('tab').openFile(f); };
+      const openCur = actions.createEl('button', { text: 'Open current' });
+      openCur.onclick = () => { const f = this.node.current && this.app.vault.getAbstractFileByPath(this.node.path + '/' + this.node.current); if (f) this.app.workspace.getLeaf('tab').openFile(f); };
+      const done = actions.createEl('button', { text: 'Mark reconciled', cls: 'mod-cta' });
+      done.onclick = async () => {
+        const sc = this.app.vault.getAbstractFileByPath(item.scPath);
+        if (sc instanceof obsidian.TFile) await this.app.fileManager.processFrontMatter(sc, (fm) => { fm.reconciled = true; });
+        this.plugin.appendLog(this.node.path, 'reconciled', item.fm.forkBaseVersion ? 'base ' + item.fm.forkBaseVersion : undefined);
+        this.render();
+      };
     }
   }
 
