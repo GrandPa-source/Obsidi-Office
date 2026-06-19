@@ -400,6 +400,18 @@ function lockStateFromFront(front, nowISO, timeoutHours) {
   return { by: by, at: at, stale: stale };
 }
 
+// Name for an outlier fork copy saved from a check-out conflict: strips the
+// version off the current filename and tags it with the author slug + date.
+function forkFileName(currentVersionName, authorSlug, dateStr) {
+  const v = parseVersion(currentVersionName);
+  return v.base + '_fork_' + authorSlug + '_' + dateStr + '.' + v.ext;
+}
+// A fork sidecar is pending reconciliation when it has forkOf and is not reconciled
+// (missing reconciled counts as pending).
+function isPendingFork(front) {
+  return !!(front && front.forkOf) && front.reconciled !== true;
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -434,6 +446,8 @@ module.exports = {
   formatLogEntry,
   parseLogBody,
   lockStateFromFront,
+  forkFileName,
+  isPendingFork,
 };
 
 return module.exports; })();
