@@ -67,6 +67,26 @@ const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document'
 const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
 const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
 const LOG_MD_NAME      = 'log.md';         // per-document append-only activity log (markdown body)
+// Pick a Lucide icon for a log.md entry from its action verb (log lines are
+// action-only — no type field). Shared by the document and project Log panes.
+function docLogIcon(action) {
+  const a = String(action || '').toLowerCase();
+  if (a.includes('creat')) return 'plus';
+  if (a.includes('version')) return 'file-plus';
+  if (a.startsWith('status')) return 'refresh-cw';
+  if (a.includes('fork')) return 'git-branch';
+  if (a.includes('reconcil')) return 'check';
+  if (a.includes('force check')) return 'unlock';
+  if (a.includes('check out') || a.includes('checked out')) return 'lock';
+  if (a.includes('check in') || a.includes('checked in')) return 'unlock';
+  if (a.includes('open')) return 'eye';
+  if (a.includes('edit')) return 'pencil';
+  if (a.includes('tag') || a.includes('link')) return 'link';
+  if (a.includes('milestone')) return 'flag';
+  if (a.includes('team') || a.includes('member')) return 'user';
+  if (a.includes('note')) return 'sticky-note';
+  return 'circle';
+}
 
 // Keys owned by _document.md (the logical-document system of record).
 const DOC_LEVEL_KEYS = [
@@ -3462,7 +3482,7 @@ class DocumentDetailView extends obsidian.ItemView {
     await this.app.fileManager.processFrontMatter(sc, (front) => {
       applyFn(front);
     });
-    if (log && log.action) this.plugin.appendLog(this.node.path, log.action, log.detail);
+    if (log && log.action) this.plugin.appendLog(this.node.path, log.action, log.detail);   // fire-and-forget (not awaited by design)
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
   }
   async _saveSidecar(key, value, log) { return this._mutateSidecar((front) => { front[key] = value; }, log); }
@@ -3765,16 +3785,22 @@ class DocumentDetailView extends obsidian.ItemView {
   }
 
   // ── T27: Log (read-only activity feed) ─────────────────────────────────────
-  _renderLogPane(p, fm) {
-    const log = Array.isArray(fm.activityLog) ? fm.activityLog : [];
+  async _renderLogPane(p, fm) {
     p.createDiv({ cls: 'doc-detail-noteshint', text: 'System activity — read-only. Notes are your commentary; the Log records actions on the document.' });
     const list = p.createDiv('doc-detail-loglist');
-    const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
-    if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    const ICON = { create: 'plus', version: 'file-plus', status: 'refresh-cw', note: 'sticky-note', edit: 'pencil', delete: 'trash-2', attach: 'paperclip', link: 'link', meta: 'asterisk', open: 'eye' };
-    for (const l of sorted) {
+    let entries = [];
+    const lf = this.app.vault.getAbstractFileByPath(this.node.path + '/' + LOG_MD_NAME);
+    if (lf instanceof obsidian.TFile) {
+      const body = await this.app.vault.cachedRead(lf);
+      entries = docContainer.parseLogBody(body);   // oldest-first
+      entries.reverse();                            // newest-first for display
+    } else if (Array.isArray(fm.activityLog)) {     // legacy fallback (pre-log.md docs)
+      entries = fm.activityLog.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
+    }
+    if (!entries.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
+    for (const l of entries) {
       const row = list.createDiv('doc-detail-logrow');
-      docIcon(row, ICON[l.type] || 'circle', 'doc-detail-logico');
+      docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
       const main = row.createDiv();
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
@@ -4009,7 +4035,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       { id: 'pmiles', label: 'Milestones', count: arr(pn.milestones).length, fill: (p) => this._projMilesPane(p, node, arr(pn.milestones)) },
       { id: 'pteam', label: 'Team', count: arr(pn.team).length, fill: (p) => this._projTeamPane(p, node, arr(pn.team), docs) },
       { id: 'pnotes', label: 'Notes', count: arr(pn.noteLog).length, fill: (p) => this._projNotesPane(p, node, arr(pn.noteLog)) },
-      { id: 'plog', label: 'Log', count: arr(pn.activityLog).length, right: true, fill: (p) => this._projLogPane(p, arr(pn.activityLog)) },
+      { id: 'plog', label: 'Log', count: arr(pn.activityLog).length, right: true, fill: (p) => this._projLogPane(p, node, arr(pn.activityLog)) },
     ];
     const hasActive = specs.some(s => s.id === this._projActiveTab);
     specs.forEach((spec, i) => {
@@ -4217,15 +4243,21 @@ class ContainerOverviewView extends obsidian.ItemView {
     this._renderNoteListInto(p.createDiv('doc-detail-notelist'), notes, 'No notes yet.');
     renderStaged(); updateDropState();
   }
-  _projLogPane(p, log) {
+  async _projLogPane(p, node, log) {
     p.createDiv({ cls: 'doc-detail-noteshint', text: 'Project activity — read-only. Notes are commentary; the Log records actions.' });
     const list = p.createDiv('doc-detail-loglist');
-    const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
-    if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    const ICON = { create: 'plus', status: 'refresh-cw', doc: 'file-text', milestone: 'flag', member: 'user', note: 'sticky-note', meta: 'asterisk' };
-    for (const l of sorted) {
+    let entries = [];
+    const lf = node && this.app.vault.getAbstractFileByPath(node.path + '/' + LOG_MD_NAME);
+    if (lf instanceof obsidian.TFile) {
+      const body = await this.app.vault.cachedRead(lf);
+      entries = docContainer.parseLogBody(body); entries.reverse();   // newest-first
+    } else if (Array.isArray(log)) {                                  // legacy fallback (_project.md activityLog)
+      entries = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
+    }
+    if (!entries.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
+    for (const l of entries) {
       const row = list.createDiv('doc-detail-logrow');
-      docIcon(row, ICON[l.type] || 'circle', 'doc-detail-logico');
+      docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
       const main = row.createDiv();
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
@@ -7206,24 +7238,20 @@ class MetadataModal extends obsidian.Modal {
     // (set on first save only); modified is always current.
     const nowIso = new Date().toISOString();
     if (!this.created) this.created = nowIso;
-    const datetime = window.moment ? window.moment().format("YYYY-MM-DD HH:mm") : nowIso.slice(0, 16).replace("T", " ");
     // Update only the keys this modal owns via processFrontMatter so any
     // doc-container schema fields (title/status/originationDate/activityLog/
     // stakeholders/…) on the same sidecar are PRESERVED. (Previously this
     // re-emitted the whole YAML from scratch, clobbering those fields.)
+    let wasManagedDoc = false;
     const apply = (front) => {
       front.docx = "[[" + docxName + "]]";
       if (!front.created) front.created = this.created;
       front.modified = nowIso;
       if (hasTags) front.tags = this.tags.slice(); else delete front.tags;
       if (hasLinks) front.links = this.links.slice(); else delete front.links;
-      // Only record a Log entry on doc-container-managed sidecars (those that
-      // already carry schema metadata) — leave plain tag-only sidecars unlogged.
-      const isManagedDoc = front.title != null || front.status != null || Array.isArray(front.activityLog);
-      if (isManagedDoc) {
-        if (!Array.isArray(front.activityLog)) front.activityLog = [];
-        front.activityLog.push({ datetime, actor: getUsername(), action: "Tags & links edited", type: "meta" });
-      }
+      // doc-container-managed sidecars (schema-bearing) get a log.md entry after the
+      // write; plain tag-only sidecars stay unlogged.
+      if (front.title != null || front.status != null || Array.isArray(front.activityLog)) wasManagedDoc = true;
     };
     let existing = this.app.vault.getAbstractFileByPath(this.sidecarPath);
     if (!(existing && existing instanceof obsidian.TFile)) {
@@ -7232,6 +7260,11 @@ class MetadataModal extends obsidian.Modal {
     }
     if (existing && existing instanceof obsidian.TFile) {
       await this.app.fileManager.processFrontMatter(existing, apply);
+      if (wasManagedDoc) {
+        const folder = this.sidecarPath.slice(0, this.sidecarPath.lastIndexOf('/'));
+        const plugin = this.app.plugins.getPlugin('obsidi-office');
+        if (plugin && plugin.appendLog) plugin.appendLog(folder, 'tags & links edited');   // fire-and-forget
+      }
     }
     dlog("sidecar saved:", this.sidecarPath, "tags:", this.tags.length, "links:", this.links.length);
     new obsidian.Notice("Metadata saved for " + docxName);
