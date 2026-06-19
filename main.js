@@ -2458,6 +2458,21 @@ class OfficeEditorView extends obsidian.FileView {
     return found;
   }
 
+  // Show/hide a "Return to document" header action based on _returnToDocPath
+  // (set when the doc-container detail page launched this editor).
+  _syncReturnAction() {
+    if (this._returnToDocPath && !this._returnActionEl) {
+      this._returnActionEl = this.addAction('arrow-left', 'Return to document', () => {
+        if (!this._returnToDocPath) return;
+        const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
+        const leaf = existing || this.leaf;   // reuse an open detail tab (Ctrl-click case), else swap THIS editor tab back
+        leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false } });
+        this.app.workspace.revealLeaf(leaf);
+      });
+    } else if (!this._returnToDocPath && this._returnActionEl) {
+      this._returnActionEl.remove(); this._returnActionEl = null;
+    }
+  }
   async onLoadFile(file) {
     dlog(this.constructor.name + " onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
     // New editing session for this file — allow one fresh "Document edited" log.
@@ -2468,6 +2483,12 @@ class OfficeEditorView extends obsidian.FileView {
     } else if (file && this.plugin && this.plugin._editLoggedPaths) {
       this.plugin._editLoggedPaths.delete(file.path);
     }
+    // "Return to document": consume the context the detail page set when launching us. Survives a same-file
+    // reload (via _returnForPath); cleared when a DIFFERENT file loads into this (possibly reused) editor.
+    const rc = this.plugin && this.plugin._returnContext;
+    if (rc && file && rc.path === file.path) { this._returnToDocPath = rc.docPath; this._returnForPath = file.path; this.plugin._returnContext = null; }
+    else if (this._returnForPath && file && this._returnForPath !== file.path) { this._returnToDocPath = null; this._returnForPath = null; }
+    this._syncReturnAction();
     try {
       await this._onLoadFileInner(file);
     } catch (err) {
@@ -3324,6 +3345,13 @@ class DocumentDetailView extends obsidian.ItemView {
       if (this._composerDirty || this._editMode || this._stakeEdit) return;
       if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
     }));
+    // Refresh when returning to this tab (e.g. after editing in the Obsidi-Office editor) so the Log picks up
+    // log.md writes made while we were on another tab. Guarded against in-progress edits.
+    this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
+      if (leaf !== this.leaf) return;
+      if (this._composerDirty || this._editMode || this._stakeEdit) return;
+      if (this.node) this.render();
+    }));
   }
 
   async setState(state, result) {
@@ -3935,7 +3963,12 @@ class DocumentDetailView extends obsidian.ItemView {
   _renderFooter(c) {
     const footer = c.createDiv('doc-detail-footer');
     const mk = (label, cls, fn) => { const b = footer.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls || '') }); b.onclick = fn; return b; };
-    mk('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
+    mk('Open in editor', 'accent', (e) => {
+      if (!this.node.current) return;
+      const filePath = this.node.path + '/' + this.node.current;
+      const newPane = !!(e && (e.metaKey || e.ctrlKey));   // Ctrl/Cmd-click → new pane (escape hatch); plain click swaps this tab
+      this.plugin.openDocInEditor(filePath, this.node.path, newPane, this.leaf);
+    });
     const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
     nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
     mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
@@ -7152,6 +7185,18 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     if (!file) { new obsidian.Notice('File not found: ' + path); return; }
     await this._openInView(file);   // existing P21 office-editor router; takes a TFile (uses file.extension)
     this._appendActivity(path, 'Opened in editor', 'open');
+  }
+  // Open an office file FROM the doc-container detail page. sameLeaf = swap into the
+  // detail's own tab; newPane (Ctrl/Cmd-click) = a new tab. Either way the editor gets
+  // a "Return to document" header action back to returnDocPath.
+  async openDocInEditor(filePath, returnDocPath, newPane, sameLeaf) {
+    const file = this.app.vault.getAbstractFileByPath(filePath);
+    if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('File not found: ' + filePath); return; }
+    const leaf = newPane ? this.app.workspace.getLeaf('tab') : (sameLeaf || this.app.workspace.getLeaf('tab'));
+    this._returnContext = { path: filePath, docPath: returnDocPath };   // consumed by OfficeEditorView.onLoadFile
+    await leaf.openFile(file);
+    this.app.workspace.revealLeaf(leaf);
+    this._appendActivity(filePath, 'Opened in editor', 'open');
   }
 
   openInSystemApp(path) {
