@@ -6874,7 +6874,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
                                      : new Date().toISOString().slice(0, 16).replace('T', ' ');
       const line = docContainer.formatLogEntry({ datetime, actor: getUsername(), action, detail });
       const existing = this.app.vault.getAbstractFileByPath(path);
-      if (!existing) {
+      if (!(existing instanceof obsidian.TFile)) {
         const header = '---\ndocContainer: log\n---\n# Activity log\n\n';
         await this.app.vault.create(path, header + line + '\n');
       } else {
