@@ -58,6 +58,31 @@ const DOC_FIELDS = {
   reserved: ['reviewers','finalApprover','statusHistory','relatedDocuments'],
 };
 
+// ── _document.md migration: ownership constants (2026-06-17 metadata migration) ──
+// Document-level metadata moves to a `_document.md` folder-note (system of record);
+// per-version sidecars keep only version-specific facts. See spec
+// docs/superpowers/specs/2026-06-17-doc-container-document-md-metadata-migration-design.md
+
+const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document's record
+const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
+const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
+
+// Keys owned by _document.md (the logical-document system of record).
+const DOC_LEVEL_KEYS = [
+  'docContainer', 'docId',
+  'title', 'docNumber', 'docClass', 'revision', 'status', 'department',
+  'originator', 'originatorTitle', 'originationDate', 'effectiveDate',
+  'reviewFrequencyDays', 'nextReviewDate', 'summary', 'tags',
+  'currentVersion', 'files',
+  'stakeholders', 'relatedDocuments', 'definitions',
+  'activityLog', 'noteLog',
+];
+
+// Keys owned by the per-version sidecar (`<file>.<ext>.md`).
+// `docId` is the one intentional cross-set key: it is the document's id on
+// _document.md and a move-resilient backref on each sidecar.
+const VERSION_KEYS = ['docx', 'docId', 'created', 'modified', 'versionNote', 'links'];
+
 // ── Task 1: Version parsing ───────────────────────────────────────────────────
 
 // "<base>_V<major>.<minor>.<ext>" → version; bare "<base>.<ext>" → rev 1.0
@@ -255,6 +280,85 @@ function aggregateStakeholders(docs) {
     .sort((a, b) => b.docs.length - a.docs.length || (a.title > b.title ? 1 : -1));
 }
 
+// ── _document.md migration: pure partition + reconcile planning ───────────────
+
+function _isScalar(v) {
+  return v === null || ['string', 'number', 'boolean'].includes(typeof v);
+}
+
+// Split a frontmatter object by key ownership. Unknown keys ride along on the
+// version side (least-destructive — reconcile never drops a key it doesn't own).
+function partitionFrontmatter(front) {
+  const docSet = new Set(DOC_LEVEL_KEYS);
+  const verSet = new Set(VERSION_KEYS);
+  const docLevel = {}, versionLevel = {};
+  for (const [k, v] of Object.entries(front || {})) {
+    if (docSet.has(k)) docLevel[k] = v;
+    else if (verSet.has(k)) versionLevel[k] = v;
+    else versionLevel[k] = v;          // unknown → keep on the sidecar
+  }
+  return { docLevel, versionLevel };
+}
+
+// Expected-files manifest for a Document folder: version files (chronological,
+// oldest→newest) + the pinned current version. Attachments are excluded (they
+// are stray files, not versions). Reuses groupDocumentFiles for the grouping.
+function buildFilesManifest(fileNames) {
+  const g = groupDocumentFiles(fileNames || []);
+  return { files: g.versions.slice().reverse(), currentVersion: g.current };
+}
+
+// Produce a pure, disk-free migration plan for ONE document folder. The same
+// plan drives both the dry-run report and the apply step, so they cannot drift.
+//   input: { folderFiles:[name…], sidecarFronts:{ '<file>.md': front }, hasDocumentMd:bool }
+//   → { skip } | { skip:false, needsDocId, createDocumentMd, sidecarRewrites, notes }
+// docId is NOT generated here (no randomness in the pure core); the runtime
+// stamps it when needsDocId is set.
+function planReconcile(input) {
+  const { folderFiles = [], sidecarFronts = {}, hasDocumentMd = false } = input || {};
+  if (hasDocumentMd) return { skip: true };
+
+  const manifest = buildFilesManifest(folderFiles);
+  const currentSidecarName = manifest.currentVersion ? manifest.currentVersion + '.md' : null;
+  const notes = [];
+
+  // Metadata source = the current version's sidecar; fall back to any sidecar
+  // that carries doc-level keys.
+  let sourceFront = currentSidecarName ? sidecarFronts[currentSidecarName] : null;
+  if (!sourceFront) {
+    const alt = Object.keys(sidecarFronts).find(
+      n => Object.keys(partitionFrontmatter(sidecarFronts[n]).docLevel).length > 0);
+    if (alt) { sourceFront = sidecarFronts[alt]; notes.push('No current-version sidecar; used ' + alt + ' as metadata source.'); }
+  }
+  const docLevel = partitionFrontmatter(sourceFront || {}).docLevel;
+  if (!sourceFront) notes.push('No sidecar metadata found; created _document.md with manifest + docId only.');
+
+  // Flag divergent scalar doc-level values on non-current sidecars (current wins).
+  for (const [name, front] of Object.entries(sidecarFronts)) {
+    if (name === currentSidecarName) continue;
+    const other = partitionFrontmatter(front).docLevel;
+    for (const k of Object.keys(other)) {
+      if (_isScalar(other[k]) && k in docLevel && _isScalar(docLevel[k]) && other[k] !== docLevel[k]) {
+        notes.push(`Divergent ${k}: '${name}' = ${JSON.stringify(other[k])}, using current's ${JSON.stringify(docLevel[k])}.`);
+      }
+    }
+  }
+
+  // Every sidecar drops its doc-level keys (never docId — that backref stays).
+  const sidecarRewrites = Object.keys(sidecarFronts).map(name => ({
+    name,
+    dropKeys: Object.keys(partitionFrontmatter(sidecarFronts[name]).docLevel).filter(k => k !== 'docId'),
+  })).filter(r => r.dropKeys.length > 0);
+
+  return {
+    skip: false,
+    needsDocId: true,
+    createDocumentMd: { docLevelKeys: docLevel, files: manifest.files, currentVersion: manifest.currentVersion },
+    sidecarRewrites,
+    notes,
+  };
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -277,6 +381,14 @@ module.exports = {
   firstVersionName,
   extractInlineTags,
   aggregateStakeholders,
+  DOCUMENT_MD_NAME,
+  PROJECT_MD_NAME,
+  DOC_MARKER,
+  DOC_LEVEL_KEYS,
+  VERSION_KEYS,
+  partitionFrontmatter,
+  buildFilesManifest,
+  planReconcile,
 };
 
 return module.exports; })();
@@ -638,6 +750,30 @@ textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px;
 .docx-new-doc-modal .template-card.is-selected { border-color: var(--interactive-accent); box-shadow: inset 0 0 0 1px var(--interactive-accent); }
 .docx-new-doc-modal .template-card .icon { font-size:22px; }
 .docx-new-doc-modal .template-card .label { font-size:11px; margin-top:4px; color: var(--text-normal); word-break:break-word; }
+/* ── emoji→SVG glyph swap: size + align Lucide icons (inherit currentColor → theme-aware) ── */
+.doc-container-act { display:inline-flex; align-items:center; justify-content:center; }
+.doc-container-act .svg-icon { width:15px; height:15px; }
+.doc-container-tw { width:auto; display:inline-flex; align-items:center; justify-content:center; }
+.doc-container-tw .svg-icon { width:14px; height:14px; }
+.doc-container-ico { display:inline-flex; align-items:center; color: var(--text-muted); }
+.doc-container-ico .svg-icon { width:15px; height:15px; }
+.doc-detail-logico { display:inline-flex; align-items:center; justify-content:center; }
+.doc-detail-logico .svg-icon { width:15px; height:15px; }
+.doc-detail-fico { display:inline-flex; align-items:center; color: var(--text-muted); }
+.doc-detail-fico .svg-icon { width:15px; height:15px; }
+.doc-ov-cardname { display:flex; align-items:center; gap:7px; }
+.doc-ov-cardico { display:inline-flex; align-items:center; color: var(--text-muted); flex:0 0 auto; }
+.doc-ov-cardico .svg-icon { width:16px; height:16px; }
+.doc-btn-ico { display:inline-flex; align-items:center; }
+.doc-btn-ico .svg-icon { width:13px; height:13px; }
+.doc-ov-primary, .doc-detail-hbtn, .doc-detail-btn { display:inline-flex; align-items:center; gap:5px; }
+.doc-detail-nfile { display:inline-flex; align-items:center; gap:3px; }
+.doc-chip-ico { display:inline-flex; align-items:center; }
+.doc-chip-ico .svg-icon { width:11px; height:11px; }
+.doc-detail-schipx { display:inline-flex; align-items:center; margin-left:3px; }
+.doc-detail-schipx .svg-icon { width:11px; height:11px; }
+.doc-detail-sh-rm, .doc-detail-remove { display:inline-flex; align-items:center; justify-content:center; }
+.doc-detail-sh-rm .svg-icon, .doc-detail-remove .svg-icon { width:14px; height:14px; }
 `;
 
 const SHIM_SENTINEL = "<!-- obsidi-office-shim-injected -->";
@@ -2930,6 +3066,29 @@ class PdfView extends OfficeEditorView {
 }
 
 // ===========================================================================
+// doc-container icon helpers — render minimalist Lucide SVGs (via setIcon)
+// in place of the former emoji/dingbat glyphs. Icons inherit currentColor,
+// so they stay theme-aware across light / dark / community themes.
+// ===========================================================================
+
+// Append a fresh span containing a Lucide SVG icon to `parent`; returns the span.
+function docIcon(parent, name, cls) {
+  const s = parent.createSpan({ cls: cls || 'doc-ico' });
+  obsidian.setIcon(s, name);
+  return s;
+}
+
+// Build an element with a leading Lucide icon + text label (e.g. a button or
+// pseudo-button span). opts: { tag = 'span', cls = '' }.
+function docIconLabel(parent, name, label, opts) {
+  opts = opts || {};
+  const el = parent.createEl(opts.tag || 'span', { cls: opts.cls || '' });
+  docIcon(el, name, 'doc-btn-ico');
+  el.createSpan({ text: label });
+  return el;
+}
+
+// ===========================================================================
 // DocumentBrowserView — sidebar tree for doc-container feature
 // ===========================================================================
 
@@ -2954,7 +3113,8 @@ class DocumentBrowserView extends obsidian.ItemView {
     c.addClass('doc-container-pane');
     const toolbar = c.createDiv('doc-container-toolbar');
     toolbar.createSpan({ text: 'DOCUMENT BROWSER', cls: 'doc-container-title' });
-    const refresh = toolbar.createSpan({ text: '↻', cls: 'doc-container-act' });
+    const refresh = docIcon(toolbar, 'refresh-cw', 'doc-container-act');
+    refresh.setAttr('aria-label', 'Refresh');
     refresh.onclick = () => this.render();
     const filter = c.createEl('input', { cls: 'doc-container-filter', attr: { placeholder: 'Filter title or #tag…' } });
     filter.value = this._q || '';
@@ -2980,7 +3140,7 @@ class DocumentBrowserView extends obsidian.ItemView {
       const row = parent.createDiv('doc-container-node');
       row.style.paddingLeft = (8 + depth * 16) + 'px';
       row.addClass('is-doc');
-      row.createSpan({ text: '📄 ', cls: 'doc-container-ico' });
+      docIcon(row, 'file-text', 'doc-container-ico');
       row.createSpan({ text: node.name });
       const status = this.readStatus(node);
       if (status) row.createSpan({ text: status, cls: 'doc-container-badge st-' + status.toLowerCase().replace(/\s+/g, '-') });
@@ -2991,9 +3151,10 @@ class DocumentBrowserView extends obsidian.ItemView {
     const row = parent.createDiv('doc-container-node');
     row.style.paddingLeft = (8 + depth * 16) + 'px';
     const isCollapsed = !filtering && this.collapsed.has(node.path);   // force-expand while filtering
-    const tw = row.createSpan({ text: isCollapsed ? '▸ ' : '▾ ', cls: 'doc-container-tw' });
+    const tw = row.createSpan({ cls: 'doc-container-tw' });
+    obsidian.setIcon(tw, isCollapsed ? 'chevron-right' : 'chevron-down');
     tw.onclick = (e) => { e.stopPropagation(); if (this.collapsed.has(node.path)) this.collapsed.delete(node.path); else this.collapsed.add(node.path); this.render(); };
-    row.createSpan({ text: (node.kind === 'category' ? '📁 ' : '📂 ') });
+    docIcon(row, node.kind === 'category' ? 'folder' : 'folder-open', 'doc-container-ico');
     row.createSpan({ text: node.name });
     row.onclick = () => { this.plugin.openContainerOverview(node); this.markSelected(row); };
     if (!isCollapsed) for (const ch of (node.children || [])) this.renderNode(parent, ch, depth + 1, terms);
@@ -3235,12 +3396,13 @@ class DocumentDetailView extends obsidian.ItemView {
   // ── Tab panes — Files & Versions is real; the rest are filled in T23–T28 ────
   _renderFilesPane(p) {
     const acts = p.createDiv('doc-detail-paneacts');
-    const nv = acts.createSpan({ text: '⎘ New version', cls: 'doc-detail-hbtn' });
+    const nv = docIconLabel(acts, 'file-plus', 'New version', { cls: 'doc-detail-hbtn' });
     nv.onclick = () => this.plugin.newDocumentVersion(this.node);
     const rowFor = (name, badge, badgeCls, isCurrent) => {
       const r = p.createDiv('doc-detail-frow' + (isCurrent ? ' cur' : ''));
       const left = r.createDiv('doc-detail-fl');
-      left.createSpan({ text: (badgeCls === 'v-att' ? '📎 ' : '📄 ') + name });
+      docIcon(left, badgeCls === 'v-att' ? 'paperclip' : 'file-text', 'doc-detail-fico');
+      left.createSpan({ text: name });
       left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
       const openBtn = r.createSpan({ text: isCurrent ? 'Open in editor' : 'Open', cls: 'doc-detail-fbtn' });
       openBtn.onclick = () => this.plugin.openFileInEditor(this.node.path + '/' + name);
@@ -3310,7 +3472,7 @@ class DocumentDetailView extends obsidian.ItemView {
   _renderStakeholdersPane(p, fm) {
     if (this._stakeEdit) return this._renderStakeholdersEdit(p, fm);
     const acts = p.createDiv('doc-detail-paneacts');
-    const edit = acts.createSpan({ text: '✎ Edit', cls: 'doc-detail-hbtn' });
+    const edit = docIconLabel(acts, 'pencil', 'Edit', { cls: 'doc-detail-hbtn' });
     edit.onclick = () => { this._stakeEdit = true; this.render(); };
     const table = p.createEl('table', { cls: 'doc-detail-tbl' });
     const head = table.createEl('tr');
@@ -3339,12 +3501,12 @@ class DocumentDetailView extends obsidian.ItemView {
         const rowEl = list.createDiv('doc-detail-sh-row');
         const mk = (key, ph) => { const inp = rowEl.createEl('input', { attr: { placeholder: ph } }); inp.value = r[key] || ''; inp.oninput = () => r[key] = inp.value; };
         mk('name', 'Name'); mk('title', 'Title'); mk('role', 'Role'); mk('dept', 'Dept');
-        const rm = rowEl.createSpan({ text: '✕', cls: 'doc-detail-sh-rm' }); rm.onclick = () => { rows.splice(i, 1); draw(); };
+        const rm = rowEl.createSpan({ cls: 'doc-detail-sh-rm' }); obsidian.setIcon(rm, 'x'); rm.onclick = () => { rows.splice(i, 1); draw(); };
       });
     };
     draw();
     const bar = p.createDiv('doc-detail-sh-bar');
-    const add = bar.createEl('button', { text: '＋ Add row' }); add.onclick = () => { rows.push({ name: '', title: '', role: '', dept: '' }); draw(); };
+    const add = docIconLabel(bar, 'plus', 'Add row', { tag: 'button' }); add.onclick = () => { rows.push({ name: '', title: '', role: '', dept: '' }); draw(); };
     const save = bar.createEl('button', { text: 'Save', cls: 'mod-cta' });
     save.onclick = async () => {
       const clean = rows.filter(r => r.name || r.title || r.role || r.dept).map(r => ({ name: r.name || '', title: r.title || '', role: r.role || '', dept: r.dept || '' }));
@@ -3359,7 +3521,8 @@ class DocumentDetailView extends obsidian.ItemView {
     const rel = Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.slice() : [];
     const editing = this._relEdit;
     const foot = p.createDiv('doc-detail-paneacts');
-    const toggle = foot.createSpan({ text: editing ? 'Done' : '✎ Edit', cls: 'doc-detail-hbtn' });
+    const toggle = foot.createSpan({ cls: 'doc-detail-hbtn' });
+    if (editing) { toggle.setText('Done'); } else { docIcon(toggle, 'pencil', 'doc-btn-ico'); toggle.createSpan({ text: 'Edit' }); }
     toggle.onclick = () => { this._relEdit = !this._relEdit; this.render(); };
 
     if (editing) {
@@ -3369,7 +3532,7 @@ class DocumentDetailView extends obsidian.ItemView {
       dz.ondragleave = () => dz.removeClass('drag');
       dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
       const addWrap = p.createDiv('doc-detail-addlink');
-      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: '＋ Add link — type to search vault files…' } });
+      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Add link — type to search vault files…' } });
       const sug = addWrap.createDiv('doc-detail-linksug');
       input.oninput = () => {
         const q = input.value.toLowerCase(); sug.empty();
@@ -3385,11 +3548,11 @@ class DocumentDetailView extends obsidian.ItemView {
     const listEl = p.createDiv();
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
-      row.createDiv('doc-detail-fl').createSpan({ text: (r.kind === 'link' ? '🔗 ' : '📎 ') + (r.label || r.target) });
+      { const fl = row.createDiv('doc-detail-fl'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target }); }
       const right = row.createDiv('doc-detail-relright');
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
-        const rm = right.createSpan({ text: '✕', cls: 'doc-detail-remove' });
+        const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
         rm.onclick = async () => { rel.splice(i, 1); await this._saveSidecar('relatedDocuments', rel, { action: 'Related document removed', type: 'meta' }); };
       }
     });
@@ -3463,9 +3626,9 @@ class DocumentDetailView extends obsidian.ItemView {
 
     const renderStaged = () => {
       stagedTagsEl.empty();
-      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
       stagedFilesEl.empty();
-      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); s.createSpan({ text: '📎 ' + f.name }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); docIcon(s, 'paperclip', 'doc-chip-ico'); s.createSpan({ text: f.name }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
     };
     const updateDropState = () => {
       const has = input.value.trim().length > 0;
@@ -3532,7 +3695,7 @@ class DocumentDetailView extends obsidian.ItemView {
       if (tags.length || files.length) {
         const foot = note.createDiv('doc-detail-nfoot');
         tags.forEach(t => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
-        files.forEach(f => foot.createSpan({ text: '📎 ' + f, cls: 'doc-detail-nfile' }));
+        files.forEach(f => { const ch = foot.createSpan({ cls: 'doc-detail-nfile' }); docIcon(ch, 'paperclip', 'doc-chip-ico'); ch.createSpan({ text: f }); });
       }
     }
   }
@@ -3575,10 +3738,10 @@ class DocumentDetailView extends obsidian.ItemView {
     const list = p.createDiv('doc-detail-loglist');
     const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
     if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    const ICON = { create: '➕', version: '⎘', status: '🔄', note: '📝', edit: '✎', delete: '🗑', attach: '📎', link: '🔗', meta: '✱', open: '👁' };
+    const ICON = { create: 'plus', version: 'file-plus', status: 'refresh-cw', note: 'sticky-note', edit: 'pencil', delete: 'trash-2', attach: 'paperclip', link: 'link', meta: 'asterisk', open: 'eye' };
     for (const l of sorted) {
       const row = list.createDiv('doc-detail-logrow');
-      row.createSpan({ text: ICON[l.type] || '•', cls: 'doc-detail-logico' });
+      docIcon(row, ICON[l.type] || 'circle', 'doc-detail-logico');
       const main = row.createDiv();
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
@@ -3589,7 +3752,8 @@ class DocumentDetailView extends obsidian.ItemView {
     const footer = c.createDiv('doc-detail-footer');
     const mk = (label, cls, fn) => { const b = footer.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls || '') }); b.onclick = fn; return b; };
     mk('Open in editor', 'accent', () => this.node.current && this.plugin.openFileInEditor(this.node.path + '/' + this.node.current));
-    mk('⎘ New version', '', () => this.plugin.newDocumentVersion(this.node));
+    const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
+    nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
     mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
     mk('Edit metadata', '', () => { this._editMode = true; this.render(); });
     mk('Edit tags & links', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
@@ -3850,7 +4014,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       if (tags.length || files.length) {
         const foot = note.createDiv('doc-detail-nfoot');
         tags.forEach(t => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
-        files.forEach(f => foot.createSpan({ text: '📎 ' + f, cls: 'doc-detail-nfile' }));
+        files.forEach(f => { const ch = foot.createSpan({ cls: 'doc-detail-nfile' }); docIcon(ch, 'paperclip', 'doc-chip-ico'); ch.createSpan({ text: f }); });
       }
     }
   }
@@ -3872,7 +4036,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   // ── T33: Documents + Milestones ────────────────────────────────────────────
   _projDocsPane(p, node, docs) {
     const acts = p.createDiv('doc-detail-paneacts');
-    const nd = acts.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' }); nd.style.marginBottom = '0';
+    const nd = docIconLabel(acts, 'plus', 'New Document', { tag: 'button', cls: 'doc-ov-primary' }); nd.style.marginBottom = '0';
     nd.onclick = () => this.plugin.openNewDocumentModal(node);
     if (!docs.length) { p.createDiv({ text: 'No documents in this project yet.', cls: 'doc-detail-stub' }); return; }
     const table = p.createEl('table', { cls: 'doc-ov-table' });
@@ -3887,7 +4051,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
   _projMilesPane(p, node, miles) {
     const acts = p.createDiv('doc-detail-paneacts');
-    const add = acts.createEl('button', { text: '＋ Add milestone', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
+    const add = docIconLabel(acts, 'plus', 'Add milestone', { tag: 'button', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
     add.onclick = () => this._addMilestone(node);
     if (!miles.length) { p.createDiv({ text: 'No milestones yet.', cls: 'doc-detail-stub' }); return; }
     const table = p.createEl('table', { cls: 'doc-ov-table' });
@@ -3920,7 +4084,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   // ── T34: Team roster + cross-document stakeholder rollup ────────────────────
   _projTeamPane(p, node, team, docs) {
     const acts = p.createDiv('doc-detail-paneacts');
-    const add = acts.createEl('button', { text: '＋ Add member', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
+    const add = docIconLabel(acts, 'plus', 'Add member', { tag: 'button', cls: 'doc-ov-primary' }); add.style.marginBottom = '0';
     add.onclick = () => this._addMember(node);
     p.createDiv({ text: 'Project team', cls: 'doc-detail-grp' });
     if (!team.length) p.createDiv({ text: 'No team members yet.', cls: 'doc-detail-stub' });
@@ -3981,9 +4145,9 @@ class ContainerOverviewView extends obsidian.ItemView {
     const stagedFilesEl = comp.createDiv('doc-detail-staged');
     const renderStaged = () => {
       stagedTagsEl.empty();
-      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
       stagedFilesEl.empty();
-      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); s.createSpan({ text: '📎 ' + f.name }); const x = s.createSpan({ text: ' ✕', cls: 'doc-detail-schipx' }); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); docIcon(s, 'paperclip', 'doc-chip-ico'); s.createSpan({ text: f.name }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
     };
     const updateDropState = () => {
       const has = input.value.trim().length > 0;
@@ -4025,10 +4189,10 @@ class ContainerOverviewView extends obsidian.ItemView {
     const list = p.createDiv('doc-detail-loglist');
     const sorted = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
     if (!sorted.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    const ICON = { create: '➕', status: '🔄', doc: '📄', milestone: '🏁', member: '👤', note: '📝', meta: '✱' };
+    const ICON = { create: 'plus', status: 'refresh-cw', doc: 'file-text', milestone: 'flag', member: 'user', note: 'sticky-note', meta: 'asterisk' };
     for (const l of sorted) {
       const row = list.createDiv('doc-detail-logrow');
-      row.createSpan({ text: ICON[l.type] || '•', cls: 'doc-detail-logico' });
+      docIcon(row, ICON[l.type] || 'circle', 'doc-detail-logico');
       const main = row.createDiv();
       main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
       main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
@@ -4037,13 +4201,15 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   renderContainers(c, node) {
     const kindLabel = node.kind === 'root' ? 'Category' : 'Collection';
-    const btn = c.createEl('button', { text: `＋ New ${kindLabel}`, cls: 'doc-ov-primary' });
+    const btn = docIconLabel(c, 'plus', `New ${kindLabel}`, { tag: 'button', cls: 'doc-ov-primary' });
     btn.onclick = () => this.promptNew(node.path, kindLabel);
     const grid = c.createDiv('doc-ov-cards');
     for (const child of (node.children||[])) {
       if (child.kind === 'document') continue;
       const card = grid.createDiv('doc-ov-card');
-      card.createDiv({ text: '📂 ' + child.name, cls: 'doc-ov-cardname' });
+      const nm = card.createDiv({ cls: 'doc-ov-cardname' });
+      docIcon(nm, 'folder-open', 'doc-ov-cardico');
+      nm.createSpan({ text: child.name });
       const sub = this.docsUnder(child);
       card.createDiv({ text: `${sub.length} docs`, cls: 'doc-ov-cardnum' });
       card.onclick = () => this.plugin.openContainerOverview(child);
@@ -4051,7 +4217,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
 
   renderDocs(c, node, docs, today) {
-    const btn = c.createEl('button', { text: '＋ New Document', cls: 'doc-ov-primary' });
+    const btn = docIconLabel(c, 'plus', 'New Document', { tag: 'button', cls: 'doc-ov-primary' });
     btn.onclick = () => this.plugin.openNewDocumentModal(node);
     const filter = c.createEl('input', { cls: 'doc-ov-filter', attr: { placeholder: 'Search by title or #tag…' } });
     const table = c.createEl('table', { cls: 'doc-ov-table' });
@@ -5031,6 +5197,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
       this.addCommand({ id: 'open-document-browser', name: 'Open Document Browser',
         callback: () => this.activateDocBrowser() });
+      // _document.md metadata migration — DRY RUN (Rung A). Reports what the
+      // migration would do; mutates no document data. See spec/plan 2026-06-17.
+      this.addCommand({ id: 'doc-container-migrate-dryrun',
+        name: 'Doc-Container: migrate metadata to _document.md (dry run)',
+        callback: () => this.dryRunMetadataMigration() });
     }
 
     this.addCommand({
@@ -5303,6 +5474,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     // existing notes are never rewritten.
     this.app.workspace.onLayoutReady(() => {
       this.ensureDocTaxonomy();
+      // In-memory doc index (the rebuildable cache; _document.md files are the
+      // durable truth). Built here — not in onload — so metadataCache is ready.
+      this.buildDocIndex();
       // Doc-container live refresh: re-render the sidebar tree (status badges,
       // added/removed files) when a managed-root file or sidecar changes.
       // Registered INSIDE onLayoutReady so the startup index burst doesn't
@@ -5310,6 +5484,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const refreshIfManaged = (file) => {
         if (!this.settings.docBrowserEnabled) return;
         if (!file || !file.path || !file.path.startsWith(this.settings.docRoot + '/')) return;
+        // Keep the doc index warm when a _document.md changes.
+        if (file.name === docContainer.DOCUMENT_MD_NAME) this.buildDocIndex();
         this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
       };
       this.registerEvent(this.app.vault.on('create', refreshIfManaged));
@@ -6331,6 +6507,125 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const map = this.settings.docCategoryTypeMap || {};
     if (map[topCat]) return map[topCat];
     return 'grouping';
+  }
+
+  // ═══ _document.md metadata migration (2026-06-17) — Rung A runtime ═══════════
+
+  // Task 4 — generate a stable short docId (8 hex chars), collision-checked
+  // against the in-memory index. crypto.randomUUID where available; a
+  // timestamp+counter fallback otherwise (older WebViews).
+  generateDocId() {
+    const rand = () => {
+      try {
+        if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 8);
+      } catch (e) { /* fall through */ }
+      this._docIdCounter = (this._docIdCounter || 0) + 1;
+      return (Date.now().toString(36) + this._docIdCounter.toString(36)).slice(-8);
+    };
+    let id = rand(), guard = 0;
+    while (this._docIndex && this._docIndex.has(id) && guard++ < 25) id = rand();
+    return id;
+  }
+
+  // Task 5 — build the in-memory doc index: Map<docId, {docId, path, front}>.
+  // Scans _document.md folder-notes under the managed root. Fully rebuildable
+  // from disk; never persisted. Empty until migration creates _document.md files.
+  buildDocIndex() {
+    const idx = new Map();
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const prefix = root + '/';
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(prefix) || f.name !== docContainer.DOCUMENT_MD_NAME) continue;
+      const fm = (this.app.metadataCache.getFileCache(f) || {}).frontmatter || {};
+      if (!fm.docId) continue;
+      const folder = f.path.slice(0, f.path.length - f.name.length - 1).replace(/\/+$/, '');
+      idx.set(fm.docId, { docId: fm.docId, path: folder, front: fm });
+    }
+    this._docIndex = idx;
+    return idx;
+  }
+
+  // Task 6 — read-fallback accessor: prefer the document's _document.md, else
+  // the current version's sidecar. Makes a partially-migrated vault render
+  // correctly. (Additive in Rung A; existing readers are switched to this in
+  // Rung B alongside the write-path change.)
+  readDocMeta(node) {
+    if (!node || !node.path) return {};
+    const dm = this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.DOCUMENT_MD_NAME);
+    if (dm) {
+      const fm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter;
+      if (fm) return fm;
+    }
+    if (node.current) {
+      const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
+      if (sc) return (this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+    }
+    return {};
+  }
+
+  // Task 7 — DRY RUN: report what the migration would do. Writes no document
+  // data; only emits a `<root>/_migration-report.md` summary and opens it.
+  async dryRunMetadataMigration() {
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const paths = this.app.vault.getFiles().map(f => f.path);
+    const tree = docContainer.buildTaxonomy(paths, root);
+    const docs = [];
+    const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
+    walk(tree);
+
+    let willCreate = 0, willSkip = 0, sidecarsSlimmed = 0;
+    const lines = []; const allNotes = [];
+    for (const node of docs) {
+      const folderFiles = [...(node.files || []), ...(node.attachments || [])];
+      const hasDocumentMd = !!this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.DOCUMENT_MD_NAME);
+      const sidecarFronts = {};
+      for (const vf of (node.files || [])) {
+        const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + vf + '.md');
+        if (sc) { const fm = (this.app.metadataCache.getFileCache(sc) || {}).frontmatter; if (fm) sidecarFronts[vf + '.md'] = fm; }
+      }
+      const plan = docContainer.planReconcile({ folderFiles, sidecarFronts, hasDocumentMd });
+      if (plan.skip) { willSkip++; lines.push(`- SKIP (already migrated): \`${node.path}\``); continue; }
+      willCreate++;
+      sidecarsSlimmed += plan.sidecarRewrites.length;
+      const keys = Object.keys(plan.createDocumentMd.docLevelKeys);
+      lines.push(`- CREATE \`_document.md\` — \`${node.path}\``);
+      lines.push(`    - docId: _(generated)_ · currentVersion: ${plan.createDocumentMd.currentVersion || '—'} · manifest: ${plan.createDocumentMd.files.length} file(s)`);
+      lines.push(`    - move ${keys.length} doc-level key(s): ${keys.join(', ') || '_(none — manifest+docId only)_'}`);
+      for (const rw of plan.sidecarRewrites) lines.push(`    - slim sidecar \`${rw.name}\` — drop: ${rw.dropKeys.join(', ')}`);
+      for (const n of plan.notes) { lines.push(`    - ⚠ ${n}`); allNotes.push(`${node.path}: ${n}`); }
+    }
+
+    const report = [
+      '# Doc-Container metadata migration — DRY RUN',
+      '',
+      `Generated: ${new Date().toISOString()}`,
+      `Managed root: \`${root}\``,
+      '',
+      '## Summary',
+      `- Documents found: **${docs.length}**`,
+      `- \`_document.md\` to CREATE: **${willCreate}**`,
+      `- Already migrated (skipped): **${willSkip}**`,
+      `- Sidecars to slim: **${sidecarsSlimmed}**`,
+      `- Notes / divergences: **${allNotes.length}**`,
+      '',
+      '> DRY RUN — no document data was changed. Review, then run the apply step (Rung B).',
+      '',
+      '## Per-document plan',
+      ...(lines.length ? lines : ['- _(no documents found under the managed root)_']),
+    ].join('\n');
+
+    const reportPath = `${root}/_migration-report.md`;
+    const existing = this.app.vault.getAbstractFileByPath(reportPath);
+    try {
+      if (existing) await this.app.vault.modify(existing, report);
+      else await this.app.vault.create(reportPath, report);
+    } catch (e) {
+      new obsidian.Notice('Dry run: could not write report — ' + (e && e.message));
+      return;
+    }
+    new obsidian.Notice(`Migration dry run: ${willCreate} to create, ${willSkip} skip, ${sidecarsSlimmed} sidecars to slim. See ${reportPath}`);
+    const rf = this.app.vault.getAbstractFileByPath(reportPath);
+    if (rf) this.app.workspace.getLeaf(true).openFile(rf);
   }
 
   // ── T31: _project.md adapter (read frontmatter / write a key or via mutator) ─
