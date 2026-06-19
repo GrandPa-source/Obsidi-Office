@@ -6480,7 +6480,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     style.textContent =
       '.nav-file-title[data-path$=".docx.md"], ' +
       '.nav-file-title[data-path$=".pptx.md"], ' +
-      '.nav-file-title[data-path$=".xlsx.md"] { display: none !important; }';
+      '.nav-file-title[data-path$=".xlsx.md"], ' +
+      '.nav-file-title[data-path$=".pdf.md"], ' +
+      '.nav-file-title[data-path$="/log.md"], ' +
+      '.nav-file-title[data-path$="/_document.md"], ' +
+      '.nav-folder-title[data-path$="/_forks"] { display: none !important; }';
   }
 
   _injectPrintLayoutCSS() {
