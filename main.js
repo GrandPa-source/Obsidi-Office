@@ -66,27 +66,6 @@ const DOC_FIELDS = {
 const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document's record
 const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
 const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
-const LOG_MD_NAME      = 'log.md';         // per-document append-only activity log (markdown body)
-// Pick a Lucide icon for a log.md entry from its action verb (log lines are
-// action-only — no type field). Shared by the document and project Log panes.
-function docLogIcon(action) {
-  const a = String(action || '').toLowerCase();
-  if (a.includes('version')) return 'file-plus';   // before 'creat' — "Version 1.0 created" contains both
-  if (a.includes('creat')) return 'plus';
-  if (a.startsWith('status')) return 'refresh-cw';
-  if (a.includes('fork')) return 'git-branch';
-  if (a.includes('reconcil')) return 'check';
-  if (a.includes('force check')) return 'unlock';
-  if (a.includes('check out') || a.includes('checked out')) return 'lock';
-  if (a.includes('check in') || a.includes('checked in')) return 'unlock';
-  if (a.includes('open')) return 'eye';
-  if (a.includes('edit')) return 'pencil';
-  if (a.includes('tag') || a.includes('link')) return 'link';
-  if (a.includes('milestone')) return 'flag';
-  if (a.includes('team') || a.includes('member')) return 'user';
-  if (a.includes('note')) return 'sticky-note';
-  return 'circle';
-}
 
 // Keys owned by _document.md (the logical-document system of record).
 const DOC_LEVEL_KEYS = [
@@ -407,6 +386,20 @@ function parseLogBody(text) {
   return out;
 }
 
+// Read the check-out lock from a frontmatter object. timeoutHours > 0 marks a
+// lock older than that window as stale (0 = never stale). nowISO is passed in so
+// this stays pure/testable.
+function lockStateFromFront(front, nowISO, timeoutHours) {
+  const by = front && front.checkedOutBy ? String(front.checkedOutBy) : null;
+  const at = front && front.checkedOutAt ? String(front.checkedOutAt) : null;
+  let stale = false;
+  if (by && at && timeoutHours > 0) {
+    const age = Date.parse(nowISO) - Date.parse(at);
+    stale = isFinite(age) && age > timeoutHours * 3600 * 1000;
+  }
+  return { by: by, at: at, stale: stale };
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -440,6 +433,7 @@ module.exports = {
   slugifyAuthor,
   formatLogEntry,
   parseLogBody,
+  lockStateFromFront,
 };
 
 return module.exports; })();
