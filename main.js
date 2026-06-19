@@ -66,6 +66,7 @@ const DOC_FIELDS = {
 const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document's record
 const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
 const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
+const LOG_MD_NAME      = 'log.md';         // per-document append-only activity log (markdown body)
 
 // Keys owned by _document.md (the logical-document system of record).
 const DOC_LEVEL_KEYS = [
@@ -6860,6 +6861,26 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       new obsidian.Notice('File explorer is not available');
     }
     this._appendActivity(path, 'Revealed in file explorer', 'open');
+  }
+
+  // Append one author-stamped entry to the per-document log.md (creating it on first
+  // use). Fire-and-forget: never throws, never blocks autosave. Replaces the old
+  // activityLog-array writes (see logActivity / _appendActivity). folderPath = the
+  // document folder (sibling of the version files).
+  async appendLog(folderPath, action, detail) {
+    try {
+      const path = folderPath.replace(/\/+$/, '') + '/' + LOG_MD_NAME;
+      const datetime = window.moment ? window.moment().format('YYYY-MM-DD HH:mm')
+                                     : new Date().toISOString().slice(0, 16).replace('T', ' ');
+      const line = docContainer.formatLogEntry({ datetime, actor: getUsername(), action, detail });
+      const existing = this.app.vault.getAbstractFileByPath(path);
+      if (!existing) {
+        const header = '---\ndocContainer: log\n---\n# Activity log\n\n';
+        await this.app.vault.create(path, header + line + '\n');
+      } else {
+        await this.app.vault.append(existing, line + '\n');
+      }
+    } catch (e) { /* fire-and-forget */ }
   }
 
   // ── T27: append a plugin-originated entry to the current sidecar's activityLog
