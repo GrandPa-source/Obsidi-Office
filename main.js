@@ -3332,6 +3332,7 @@ class DocumentDetailView extends obsidian.ItemView {
       const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
       this.node = this.findDoc(tree, state.docPath);
       this._editMode = !!state.edit; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode (unless edit requested, e.g. a just-created doc)
+      this._fresh = !!state.fresh;   // a just-created doc: Cancel discards it (see Cancel handler)
       this._activeTab = {};     // new document → default tabs (Files & Versions / Recent Notes)
       this._wantScrollTop = true;   // scroll to top for a different document (preserved otherwise)
       this.render();
@@ -3381,7 +3382,18 @@ class DocumentDetailView extends obsidian.ItemView {
       const save = acts.createSpan({ text: 'Save', cls: 'doc-detail-editbtn' });
       save.onclick = () => this._saveMetaEdits();
       const cancel = acts.createSpan({ text: 'Cancel', cls: 'doc-detail-editbtn ghost' });
-      cancel.onclick = () => { this._editMode = false; this.render(); };
+      cancel.onclick = async () => {
+        if (this._fresh && this.node) {   // Cancel on a just-created doc discards it — don't retain an unsaved new doc
+          const docPath = this.node.path;
+          const title = this.frontmatter().title || docPath.split('/').pop();
+          const parent = docPath.slice(0, docPath.lastIndexOf('/'));
+          this._fresh = false; this._editMode = false; this.node = null;
+          await this.plugin.deleteContainerFolder(docPath, title);
+          this.plugin.openContainerOverview({ path: parent || this.plugin.settings.docRoot });
+        } else {
+          this._editMode = false; this.render();
+        }
+      };
     } else {
       const editBtn = acts.createSpan({ text: 'Edit', cls: 'doc-detail-editbtn' });
       editBtn.onclick = () => { this._editMode = true; this.render(); };
@@ -3572,6 +3584,7 @@ class DocumentDetailView extends obsidian.ItemView {
   // Save the in-page metadata edits (the metadata grid renders inputs in edit mode;
   // _mdInputs holds {inp, orig, field} per key). Writes only changed fields.
   async _saveMetaEdits() {
+    this._fresh = false;   // saving keeps the doc; a later Cancel no longer discards it
     const inputs = this._mdInputs || {};
     let changed = false;
     for (const k in inputs) if (inputs[k].inp.value !== inputs[k].orig) { changed = true; break; }
@@ -7021,7 +7034,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async openDocDetail(node, opts) {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
     if (!leaf) leaf = this.app.workspace.getLeaf('tab');
-    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit) } });
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -7101,8 +7114,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // detail page — otherwise it renders with empty frontmatter (no title/status)
       // and only self-corrects on a later 'changed' event (visible flash, longer
       // on iPad). Resolves immediately if already cached; capped at 1.5 s.
-      await this._awaitSidecarCache(scPath);
-      await this.openDocDetail({ path: docFolder }, { edit: true });   // land in edit mode to fill metadata
+      await this._awaitSidecarCache(scPath, 'title');   // wait for the seeded title in the cache, not just the bare sidecar
+      await this.openDocDetail({ path: docFolder }, { edit: true, fresh: true });   // edit mode; Cancel discards the unsaved new doc
       // Collapse the left sidebar (Document Browser) to give the status page room.
       const leftSplit = this.app.workspace.leftSplit;
       if (leftSplit && !leftSplit.collapsed) leftSplit.collapse();
@@ -7117,16 +7130,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // Resolve once the sidecar at scPath is parsed into metadataCache (frontmatter
   // available), or after a 1.5 s safety cap. Used so the detail page opens with
   // seeded metadata already visible rather than flashing blank.
-  _awaitSidecarCache(scPath) {
+  _awaitSidecarCache(scPath, requireKey) {
     return new Promise((resolve) => {
       const isCached = () => {
         const f = this.app.vault.getAbstractFileByPath(scPath);
         const c = f && this.app.metadataCache.getFileCache(f);
-        return !!(c && c.frontmatter);
+        const fm = c && c.frontmatter;
+        return !!(fm && (!requireKey || fm[requireKey] != null));   // wait for the seeded key, not just any frontmatter
       };
       if (isCached()) return resolve();
       const ref = this.app.metadataCache.on('changed', (f) => {
-        if (f && f.path === scPath) { this.app.metadataCache.offref(ref); resolve(); }
+        if (f && f.path === scPath && isCached()) { this.app.metadataCache.offref(ref); resolve(); }
       });
       setTimeout(() => { this.app.metadataCache.offref(ref); resolve(); }, 1500);
     });
