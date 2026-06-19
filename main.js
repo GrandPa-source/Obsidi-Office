@@ -959,6 +959,8 @@ const DEFAULT_SETTINGS = {
   docCategories: ['Governance', 'Projects', 'SOPs'],
   docGlossaryEnabled: false,
   docGlossaryRoot: 'Definitions',
+  authorLabel: '',          // mobile author display name (no system user on mobile)
+  checkoutTimeoutHours: 0,  // 0 = no stale-lock timeout
   docCategoryTypeMap: { Projects: 'project' },   // category → container type (else 'grouping')
 };
 
@@ -1993,12 +1995,16 @@ function makeEditorKey(seed) {
 // Username for the OnlyOffice editor's user.id/name. Desktop reads OS user;
 // mobile gets a generic label. Either way OnlyOffice just shows it in the
 // presence indicator and uses it for the local editing session.
+let DC_SETTINGS = null;   // set in loadSettings so free fns can read authorLabel on mobile
 function getUsername() {
+  // P01_WhiteList seam (plugin not yet built): when present, prefer its identity here.
   if (!isMobile) {
     try { return require("os").userInfo().username; } catch (e) {}
   }
-  return "Mobile User";
+  return (DC_SETTINGS && DC_SETTINGS.authorLabel) || "Mobile User";
 }
+function resolveAuthor() { const display = getUsername(); return { id: docContainer.slugifyAuthor(display), display: display }; }
+function resolveAuthorId() { return docContainer.slugifyAuthor(getUsername()); }
 
 // pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
 // supports printable ASCII (0x20-0x7E) + most Latin-1 supplement (0xA0-0xFF) +
@@ -4427,6 +4433,16 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .addText(t => t.setValue(this.plugin.settings.docCategories.join(', '))
         .onChange(async v => { this.plugin.settings.docCategories = v.split(',').map(s => s.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
     new obsidian.Setting(containerEl)
+      .setName('Author label (mobile)')
+      .setDesc('Display name used for authorship on mobile, where there is no system user.')
+      .addText(t => t.setValue(this.plugin.settings.authorLabel || '')
+        .onChange(async v => { this.plugin.settings.authorLabel = v.trim(); await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
+      .setName('Check-out stale timeout (hours)')
+      .setDesc('Hours after which a check-out is treated as stale and can be force-checked-in. 0 disables the timeout.')
+      .addText(t => t.setValue(String(this.plugin.settings.checkoutTimeoutHours || 0))
+        .onChange(async v => { const n = Number(v); this.plugin.settings.checkoutTimeoutHours = isFinite(n) && n >= 0 ? n : 0; await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
       .setName('Glossary (Definitions tab)')
       .setDesc('Show a Definitions tab in the document detail, sourced from a vault folder of Definitions & Acronyms.')
       .addToggle(t => t.setValue(this.plugin.settings.docGlossaryEnabled)
@@ -5622,6 +5638,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    DC_SETTINGS = this.settings;   // expose settings to free fns (getUsername mobile authorLabel)
   }
 
   // Phase 13 reverse migration helper. Two jobs, both idempotent:
