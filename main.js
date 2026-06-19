@@ -648,6 +648,12 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-chip.c-review { background: rgba(91,141,239,.18); color:#5b8def; }
 .doc-detail-chip.c-arch { color: var(--text-faint); }
 .doc-detail-h1actions { margin-left:auto; display:flex; align-items:center; gap:8px; flex:0 0 auto; }
+.doc-detail-lockbar { display:flex; align-items:center; gap:10px; margin:2px 0 14px; font-size:12px; }
+.doc-detail-lockbtn { cursor:pointer; padding:5px 12px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); }
+.doc-detail-lockbtn:hover { background: var(--interactive-accent-hover); }
+.doc-detail-lockbtn.ghost { background: var(--background-modifier-border); color: var(--text-normal); }
+.doc-detail-lockmine { color: var(--text-success); }
+.doc-detail-lockother { color: var(--text-error); }
 .doc-detail-editbtn { font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
 .doc-detail-editbtn:hover { background: var(--interactive-accent-hover); }
 .doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px 16px 16px; margin-top:6px; }
@@ -3325,6 +3331,27 @@ class DocumentDetailView extends obsidian.ItemView {
       editBtn.onclick = () => { this._editMode = true; this.render(); };
     }
     wrap.createDiv({ text: this._editMode ? 'Editing metadata — Save or Cancel' : 'Document Status', cls: 'doc-detail-sub' });
+
+    // Check-out (advisory lock). Sync-arbitrated single field; read-fallback target.
+    const lock = this.plugin.readLock(this.node);
+    const me = resolveAuthorId();
+    const lockBar = wrap.createDiv('doc-detail-lockbar');
+    if (!lock.by) {
+      const b = lockBar.createSpan({ text: 'Check out', cls: 'doc-detail-lockbtn' });
+      b.onclick = async () => { await this.plugin.setCheckout(this.node); this.render(); };
+    } else if (lock.by === me) {
+      lockBar.createSpan({ cls: 'doc-detail-lockmine', text: 'You have this checked out.' });
+      const b = lockBar.createSpan({ text: 'Check in', cls: 'doc-detail-lockbtn' });
+      b.onclick = async () => { await this.plugin.clearCheckout(this.node, 'checked in'); this.render(); };
+    } else {
+      lockBar.createSpan({ cls: 'doc-detail-lockother', text: 'Checked out by ' + lock.by + (lock.stale ? ' (stale)' : '') });
+      const b = lockBar.createSpan({ text: 'Force check-in', cls: 'doc-detail-lockbtn ghost' });
+      let armed = false;   // two-click confirm (iPad-safe; avoids window.confirm)
+      b.onclick = async () => {
+        if (!armed) { armed = true; b.setText('Confirm force check-in'); return; }
+        await this.plugin.clearCheckout(this.node, 'force check-in'); this.render();
+      };
+    }
 
     // Metadata card (4 groups)
     this._renderMeta(wrap, fm);
