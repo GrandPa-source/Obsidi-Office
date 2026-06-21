@@ -7363,6 +7363,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
   async newDocumentVersion(node) {
     if (!node || !node.current) { new obsidian.Notice('No current file to version'); return; }
+    const lk = this.readLock(node);
+    if (lk.by && lk.by !== resolveAuthorId()) {
+      new obsidian.Notice('Checked out by ' + lk.by + ' — cannot create a new version.');
+      return;
+    }
     const bump = await new Promise(res => {
       const m = new obsidian.Modal(this.app); m.titleEl.setText('New version');
       m.contentEl.createEl('p', { text: 'Bump which part of the revision?' });
