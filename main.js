@@ -622,6 +622,10 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-fbtn, .doc-detail-btn { font-size:11px; padding:4px 11px; border-radius:6px; border:1px solid var(--background-modifier-border); cursor:pointer; margin-left:6px; background: var(--background-primary); color: var(--text-normal); }
 .doc-detail-fbtn:hover, .doc-detail-btn:hover { background: var(--background-modifier-hover); }
 .doc-detail-btn.accent { background: var(--interactive-accent); color: var(--text-on-accent); border-color:transparent; }
+.doc-return-btn { position:absolute; bottom:44px; left:8px; z-index:1000; display:flex; align-items:center; justify-content:flex-start; height:26px; width:26px; min-width:0; padding:0; overflow:hidden; white-space:nowrap; background-color:#e5614c !important; color:#fff !important; border:none; border-radius:4px; cursor:pointer; box-shadow:none !important; transition: width 180ms ease; }
+.doc-return-btn:hover { width:185px; }
+.doc-return-btn .doc-return-ico { flex:0 0 26px; display:flex; align-items:center; justify-content:center; font-size:14px; line-height:1; }
+.doc-return-btn .doc-return-txt { font-size:12px; font-weight:600; padding-right:12px; }
 .doc-detail-btn.accent:hover { background: var(--interactive-accent-hover); }
 .doc-detail-btn.danger { color: var(--text-error); border-color: var(--text-error); }
 .doc-detail-btn.danger:hover { background: var(--background-modifier-error); color: var(--text-on-accent); }
@@ -2458,14 +2462,17 @@ class OfficeEditorView extends obsidian.FileView {
     return found;
   }
 
-  // Floating "Return to document" button (TEMP red for visibility), shown only when
-  // this editor was launched from a doc-container detail page. Re-created on every
-  // load so a re-render of the editor can't leave a stale/detached element.
+  // "Return to Overview" button — anchored in the editor's left side-panel column,
+  // collapsed to a square (← only) and expanding rightward to reveal the label on hover.
+  // Shown only when this editor was launched from a doc-container detail page. Re-created
+  // on every load so a re-render of the editor can't leave a stale/detached element.
   _syncReturnAction() {
     if (this._returnBtnEl) { this._returnBtnEl.remove(); this._returnBtnEl = null; }
     if (!this._returnToDocPath) return;
-    const b = this.containerEl.createEl('button', { text: '← Return to document' });
-    b.setAttr('style', 'position:absolute; bottom:18px; left:18px; z-index:1000; background:#e5614c; color:#fff; border:none; border-radius:8px; padding:9px 16px; font-size:13px; font-weight:600; cursor:pointer; box-shadow:0 2px 10px rgba(0,0,0,.35);');
+    const b = this.containerEl.createEl('button', { cls: 'doc-return-btn' });
+    b.setAttr('aria-label', 'Return to Overview');
+    b.createEl('span', { cls: 'doc-return-ico', text: '←' });
+    b.createEl('span', { cls: 'doc-return-txt', text: 'Return to Overview' });
     b.onclick = () => {
       if (!this._returnToDocPath) return;
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
@@ -2474,6 +2481,22 @@ class OfficeEditorView extends obsidian.FileView {
       this.app.workspace.revealLeaf(leaf);
     };
     this._returnBtnEl = b;
+  }
+  // Persist the return target so the floating button survives an Obsidian restart
+  // (FileView only serializes {file}; _returnContext is transient and null on cold start).
+  getState() {
+    const s = super.getState();
+    if (this._returnToDocPath) s.returnDocPath = this._returnToDocPath;
+    return s;
+  }
+  async setState(state, result) {
+    // Set BEFORE super.setState → onLoadFile preserves it (file paths match, so the
+    // "different file" clear branch doesn't fire) and _syncReturnAction draws the button.
+    if (state && state.returnDocPath) {
+      this._returnToDocPath = state.returnDocPath;
+      this._returnForPath = state.file || null;
+    }
+    return super.setState(state, result);
   }
   async onLoadFile(file) {
     dlog(this.constructor.name + " onLoadFile entry, file:", file && file.path, "isMobile:", isMobile);
@@ -7203,7 +7226,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     else if (file.extension === 'pdf') viewType = VIEW_TYPE_PDF;
     const leaf = newPane ? this.app.workspace.getLeaf('tab') : (sameLeaf || this.app.workspace.getLeaf('tab'));
     this._returnContext = { path: filePath, docPath: returnDocPath };   // consumed by OfficeEditorView.onLoadFile
-    await leaf.setViewState({ type: viewType, active: true, state: { file: filePath } });
+    // returnDocPath also goes into the view state so setState sets _returnToDocPath
+    // synchronously (no race with async onLoadFile) → it persists via getState across restart.
+    await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
