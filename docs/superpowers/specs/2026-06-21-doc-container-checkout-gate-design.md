@@ -101,13 +101,14 @@ Banner copy by state (managed docs only; no banner for non-managed files):
 - **Read-only, unlocked:** "Read-only — check out from the Overview to edit."
 - **Read-only, held by other:** "Read-only — checked out by `{holder}`."
 - **Read-only, old version:** "Read-only — prior version (history)."
-- **Editable, held by me:** subtle confirmation "Checked out by you" (or no banner — see
-  open question O1).
+- **Editable, held by me:** a muted confirmation banner "Checked out by you" (always shown
+  in this state, low-emphasis styling so it never competes with the document).
 
-The banner is informational; it offers no check-out action (control is Overview-only,
-reachable via the Return-to-Overview button). Exact pixel seating in the status strip is a
-tuning detail handled the same way as the Return button (`bottom`/`left` nudge), styled via
-a `.doc-editgate-banner` CSS class in `DOC_CONTAINER_CSS` (`main.js:585`).
+The banner is **horizontally centered** in the status strip. It is informational; it offers
+no check-out action (control is Overview-only, reachable via the Return-to-Overview button).
+Exact vertical seating is a tuning detail handled the same way as the Return button
+(`bottom` nudge), styled via a `.doc-editgate-banner` CSS class in `DOC_CONTAINER_CSS`
+(`main.js:585`) using `left:50%; transform:translateX(-50%)` for centering.
 
 ### 3. Check-out control (detail page only)
 
@@ -199,10 +200,10 @@ Smoke (desktop + iPad), gated on real `docRoot`:
    you hold it → succeeds, new current stays editable by you.
 7. Regression: a plain `.docx` outside `docRoot` opens editable with no banner.
 
-## Open questions
+## Resolved decisions
 
-- **O1:** When you hold the lock (editable), show a subtle "Checked out by you" banner, or
-  no banner at all (banner reserved for read-only states)? Leaning: show it, muted, so the
-  editor always communicates lock state.
-- **O2:** Banner exact placement — centered in the status strip vs left-aligned after "Word
-  count". Resolve during smoke tuning (same as the Return button).
+- **O1 (resolved):** When you hold the lock, show a **muted "Checked out by you" banner** —
+  the editor always communicates lock state, low-emphasis so it doesn't compete with the doc.
+- **O2 (resolved):** Banner is **horizontally centered** in the status strip
+  (`left:50%; transform:translateX(-50%)`). Vertical seating tuned during smoke (as with the
+  Return button).
