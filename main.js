@@ -638,6 +638,8 @@ const DOC_CONTAINER_CSS = `
 .doc-return-btn:hover { width:185px; }
 .doc-return-btn .doc-return-ico { flex:0 0 26px; display:flex; align-items:center; justify-content:center; font-size:14px; line-height:1; }
 .doc-return-btn .doc-return-txt { font-size:12px; font-weight:600; padding-right:12px; }
+.doc-editgate-banner { position:absolute; bottom:6px; left:50%; transform:translateX(-50%); z-index:1000; max-width:60%; padding:3px 12px; font-size:12px; border-radius:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; background-color:#e5614c !important; color:#fff !important; }
+.doc-editgate-banner.mine { background-color:var(--background-modifier-border) !important; color:var(--text-muted) !important; }
 .doc-detail-btn.accent:hover { background: var(--interactive-accent-hover); }
 .doc-detail-btn.danger { color: var(--text-error); border-color: var(--text-error); }
 .doc-detail-btn.danger:hover { background: var(--background-modifier-error); color: var(--text-on-accent); }
@@ -2494,6 +2496,22 @@ class OfficeEditorView extends obsidian.FileView {
     };
     this._returnBtnEl = b;
   }
+  // State-aware banner centered in the editor's bottom status strip. Read-only states
+  // use the attention (red) style; "checked out by you" uses the muted .mine style.
+  // No banner for non-managed files. Re-created each load like _syncReturnAction.
+  _syncEditGateBanner() {
+    if (this._gateBannerEl) { this._gateBannerEl.remove(); this._gateBannerEl = null; }
+    const g = this._lastGate || (this.file ? this._editGate(this.file) : null);
+    if (!g || g.state === 'unmanaged') return;
+    let text = '';
+    if (g.state === 'old-version') text = 'Read-only — prior version (history).';
+    else if (g.state === 'held-by-other') text = 'Read-only — checked out by ' + (g.holder || 'another author') + '.';
+    else if (g.state === 'unlocked') text = 'Read-only — check out from the Overview to edit.';
+    else if (g.state === 'held-by-me') text = 'Checked out by you';
+    else return;
+    const cls = 'doc-editgate-banner' + (g.state === 'held-by-me' ? ' mine' : '');
+    this._gateBannerEl = this.containerEl.createEl('div', { cls: cls, text: text });
+  }
   // Persist the return target so the floating button survives an Obsidian restart
   // (FileView only serializes {file}; _returnContext is transient and null on cold start).
   getState() {
@@ -2528,6 +2546,7 @@ class OfficeEditorView extends obsidian.FileView {
     try {
       await this._onLoadFileInner(file);
       this._syncReturnAction();   // add the floating Return button AFTER the editor renders (else _renderEditor wipes it)
+      this._syncEditGateBanner(); // same: banner added post-render so re-render can't wipe it
     } catch (err) {
       elog(this.constructor.name + " onLoadFile top-level threw:", err && err.stack || err);
       try {
