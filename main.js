@@ -7039,9 +7039,18 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view;
       if (!(view instanceof OfficeEditorView) || !view.file) return;
-      const lockedOut = view._isLockedByOther(view.file);
-      if (lockedOut && !view._kicked) { view._kicked = true; this._promptKick(view); }
-      else if (!lockedOut && view._kicked) { view._kicked = false; }
+      const gate = view._editGate(view.file);
+      const lockedOut = gate.state === 'held-by-other';
+      // Kick modal (+ fork offer) only when another author grabbed a doc you could edit.
+      if (lockedOut && !view._kicked) { view._kicked = true; this._promptKick(view); return; }
+      if (!lockedOut && view._kicked) view._kicked = false;
+      // Reconcile read-only/editable + banner when YOUR gate flips (check out / check in
+      // from the Overview while the editor is open). _promptKick already reloads its case.
+      if (view._gateEditable !== gate.editable) {
+        view._gateEditable = gate.editable;
+        view._suppressEditLogReset = true;
+        view.onLoadFile(view.file);
+      }
     });
   }
   _promptKick(view) {
