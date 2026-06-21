@@ -3048,24 +3048,56 @@ class OfficeEditorView extends obsidian.FileView {
     }
   }
 
-  // Check-out gate: is this open office file checked out by someone other than me?
-  // Reads the lock from _document.md (else the file's sidecar) via metadataCache (sync).
-  _isLockedByOther(file) {
+  // Lock state for a file, read from its _document.md (if present) else its sidecar,
+  // via metadataCache (sync).
+  _lockStateForFile(file) {
     const slash = file.path.lastIndexOf('/');
     const folder = slash >= 0 ? file.path.slice(0, slash) : '';
     const dm = this.app.vault.getAbstractFileByPath(folder + '/' + docContainer.DOCUMENT_MD_NAME);
     const sc = this.app.vault.getAbstractFileByPath(file.path + '.md');
     const lf = (dm instanceof obsidian.TFile) ? dm : (sc instanceof obsidian.TFile ? sc : null);
-    if (!lf) return false;
-    const fm = (this.app.metadataCache.getFileCache(lf) || {}).frontmatter || {};
-    const st = docContainer.lockStateFromFront(fm, new Date().toISOString(), this.plugin.settings.checkoutTimeoutHours || 0);
+    const fm = lf ? (this.app.metadataCache.getFileCache(lf) || {}).frontmatter || {} : {};
+    return docContainer.lockStateFromFront(fm, new Date().toISOString(), this.plugin.settings.checkoutTimeoutHours || 0);
+  }
+  // Check-out gate: is this open office file checked out by someone other than me?
+  _isLockedByOther(file) {
+    const st = this._lockStateForFile(file);
     return !!st.by && st.by !== resolveAuthorId();
+  }
+  // True when `file` is the highest (current) version in its document folder.
+  _isCurrentVersion(file) {
+    const parent = file.parent;
+    if (!parent || !parent.children) return true;
+    const names = parent.children.filter(c => c instanceof obsidian.TFile).map(c => c.name);
+    return docContainer.groupDocumentFiles(names).current === file.name;
+  }
+  // Resolve the full edit-gate for a file (scope guard + current-version + lock holder).
+  // Managed = doc-browser on AND under docRoot AND a managed office ext; non-managed
+  // files are always editable (ordinary .docx etc. must not be gated).
+  _editGate(file) {
+    const s = this.plugin.settings;
+    const managed = !!s.docBrowserEnabled && !!file
+      && file.path.startsWith(s.docRoot + '/')
+      && docContainer.MANAGED_EXTS.includes((file.extension || '').toLowerCase());
+    if (!managed) return { editable: true, state: 'unmanaged', holder: null };
+    const current = this._isCurrentVersion(file);
+    const st = this._lockStateForFile(file);
+    const me = resolveAuthorId();
+    const dec = docContainer.editGateDecision({
+      managed: true, current,
+      heldByMe: !!st.by && st.by === me,
+      heldByOther: !!st.by && st.by !== me,
+    });
+    return { editable: dec.editable, state: dec.state, holder: st.by || null };
   }
   _buildEditorConfig() {
     const filename = this.file.basename + "." + this.file.extension;
     const editorKey = makeEditorKey(this.file.path);
     const username = getUsername();
-    const lockedOut = this.plugin.settings.docBrowserEnabled && this._isLockedByOther(this.file);
+    const gate = this._editGate(this.file);
+    const editable = gate.editable;
+    this._lastGate = gate;          // consumed by _syncEditGateBanner
+    this._gateEditable = editable;  // consumed by _enforceCheckoutOnOpenEditors
 
     return {
       document: {
@@ -3080,13 +3112,13 @@ class OfficeEditorView extends obsidian.FileView {
         url: "/document?docKey=" + encodeURIComponent(this.docKey),
         permissions: {
           print: false, download: false,
-          edit: !lockedOut, copy: true, comment: !lockedOut, review: false
+          edit: editable, copy: true, comment: editable, review: false
         }
       },
       documentType: this.documentType,
       frameEditorId: this.docKey,
       editorConfig: {
-        mode: lockedOut ? "view" : this.plugin.settings.defaultMode,
+        mode: editable ? this.plugin.settings.defaultMode : "view",
         lang: "en",
         // PDF PoC: client-side binary save is NOT enabled here. api.js
         // (line ~408) recomputes editorConfig.canSaveDocumentToBinary from
