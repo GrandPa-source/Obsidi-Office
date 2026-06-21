@@ -3669,6 +3669,7 @@ class DocumentDetailView extends obsidian.ItemView {
       left.createSpan({ text: name });
       left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
       const openBtn = r.createSpan({ text: isCurrent ? 'Open in editor' : 'Open', cls: 'doc-detail-fbtn' });
+      if (!isCurrent) openBtn.setAttr('title', 'Opens read-only — prior version (history)');
       openBtn.onclick = (e) => this.plugin.openDocInEditor(this.node.path + '/' + name, this.node.path, !!(e && (e.metaKey || e.ctrlKey)), this.leaf);
     };
     (this.node.files || []).forEach((f) => {
