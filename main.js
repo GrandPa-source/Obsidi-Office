@@ -3117,6 +3117,7 @@ class OfficeEditorView extends obsidian.FileView {
     const editable = gate.editable;
     this._lastGate = gate;          // consumed by _syncEditGateBanner
     this._gateEditable = editable;  // consumed by _enforceCheckoutOnOpenEditors
+    this._gateState = gate.state;   // reconcile reloads when state changes (e.g. holder name clears)
 
     return {
       document: {
@@ -7045,10 +7046,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // Kick modal (+ fork offer) only when another author grabbed a doc you could edit.
       if (lockedOut && !view._kicked) { view._kicked = true; this._promptKick(view); return; }
       if (!lockedOut && view._kicked) view._kicked = false;
-      // Reconcile read-only/editable + banner when YOUR gate flips (check out / check in
-      // from the Overview while the editor is open). _promptKick already reloads its case.
-      if (view._gateEditable !== gate.editable) {
+      // Reconcile read-only/editable + banner when YOUR gate flips OR the state changes
+      // (e.g. another author releases: held-by-other -> unlocked, still read-only but the
+      // banner must drop the holder name). _promptKick already reloads its case.
+      if (view._gateEditable !== gate.editable || view._gateState !== gate.state) {
         view._gateEditable = gate.editable;
+        view._gateState = gate.state;
         view._suppressEditLogReset = true;
         view.onLoadFile(view.file);
       }
