@@ -413,6 +413,17 @@ function isPendingFork(front) {
   return !!(front && front.forkOf) && front.reconciled !== true;
 }
 
+// Pure edit-gate decision for a doc-container document. Inputs are booleans the
+// caller resolves from Obsidian; output drives editor read-only state + banner copy.
+// Order matters: managed -> current -> held-by-me -> held-by-other -> unlocked.
+function editGateDecision(g) {
+  if (!g || !g.managed) return { editable: true, state: 'unmanaged' };
+  if (!g.current) return { editable: false, state: 'old-version' };
+  if (g.heldByMe) return { editable: true, state: 'held-by-me' };
+  if (g.heldByOther) return { editable: false, state: 'held-by-other' };
+  return { editable: false, state: 'unlocked' };
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -448,6 +459,7 @@ module.exports = {
   formatLogEntry,
   parseLogBody,
   lockStateFromFront,
+  editGateDecision,
   forkFileName,
   isPendingFork,
 };
