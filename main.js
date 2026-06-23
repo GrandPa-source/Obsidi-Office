@@ -613,7 +613,7 @@ const DOC_CONTAINER_CSS = `
 .doc-container-badge.st-in-review, .doc-container-badge.st-pending-approval { color:#5b8def; }
 .doc-container-badge.st-archived, .doc-container-badge.st-obsolete { color: var(--text-faint); }
 .doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
-.doc-detail-wrap { max-width:1100px; padding:14px 18px 28px; }
+.doc-detail-wrap { max-width:1100px; margin:0 auto; padding:14px 18px 28px; }
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 .doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
 .doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
@@ -634,6 +634,7 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-fbtn, .doc-detail-btn { font-size:11px; padding:4px 11px; border-radius:6px; border:1px solid var(--background-modifier-border); cursor:pointer; margin-left:6px; background: var(--background-primary); color: var(--text-normal); }
 .doc-detail-fbtn:hover, .doc-detail-btn:hover { background: var(--background-modifier-hover); }
 .doc-detail-btn.accent { background: var(--interactive-accent); color: var(--text-on-accent); border-color:transparent; }
+.doc-detail-btn.neutral { background: var(--background-modifier-border); color: var(--text-normal); border-color:transparent; }
 .doc-return-btn { position:absolute; bottom:44px; left:8px; z-index:1000; display:flex; align-items:center; justify-content:flex-start; height:26px; width:26px; min-width:0; padding:0; overflow:hidden; white-space:nowrap; background-color:#e5614c !important; color:#fff !important; border:none; border-radius:4px; cursor:pointer; box-shadow:none !important; transition: width 180ms ease; }
 .doc-return-btn:hover { width:185px; }
 .doc-return-btn .doc-return-ico { flex:0 0 26px; display:flex; align-items:center; justify-content:center; font-size:14px; line-height:1; }
@@ -713,8 +714,12 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-hbtn { font-size:11px; color: var(--interactive-accent); cursor:pointer; border:1px solid var(--background-modifier-border); border-radius:5px; padding:3px 9px; }
 .doc-detail-hbtn:hover { border-color: var(--interactive-accent); }
 .doc-detail-stub { font-size:11px; color: var(--text-faint); font-style:italic; padding:8px 4px; }
-.doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); display:flex; align-items:center; gap:8px; padding:10px 18px; box-shadow: 0 -4px 12px rgba(0,0,0,.12); flex-wrap:wrap; }
+.doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow: 0 -4px 12px rgba(0,0,0,.12); }
+.doc-detail-footer-inner { position:relative; max-width:1100px; margin:0 auto; display:flex; align-items:center; gap:8px; padding:10px 18px 26px; flex-wrap:wrap; }
 .doc-detail-footer .doc-detail-btn { margin-left:0; }
+/* Lock status text — absolutely placed in the reserved bottom strip so toggling
+   it never reflows the footer button row. */
+.doc-detail-lockfoot-txt { position:absolute; left:18px; bottom:6px; font-size:11px; line-height:1.2; white-space:nowrap; }
 .doc-detail-fspace { flex:1; }
 /* ── v0.2 left tabs: stakeholders / related / definitions ── */
 .doc-detail-tbl { width:100%; border-collapse:collapse; font-size:12px; }
@@ -3525,26 +3530,9 @@ class DocumentDetailView extends obsidian.ItemView {
     }
     wrap.createDiv({ text: this._editMode ? 'Editing metadata — Save or Cancel' : 'Document Status', cls: 'doc-detail-sub' });
 
-    // Check-out (advisory lock). Sync-arbitrated single field; read-fallback target.
-    const lock = this.plugin.readLock(this.node);
-    const me = resolveAuthorId();
-    const lockBar = wrap.createDiv('doc-detail-lockbar');
-    if (!lock.by) {
-      const b = lockBar.createSpan({ text: 'Check out', cls: 'doc-detail-lockbtn' });
-      b.onclick = async () => { await this.plugin.setCheckout(this.node); this.render(); };
-    } else if (lock.by === me) {
-      lockBar.createSpan({ cls: 'doc-detail-lockmine', text: 'You have this checked out.' });
-      const b = lockBar.createSpan({ text: 'Check in', cls: 'doc-detail-lockbtn' });
-      b.onclick = async () => { await this.plugin.clearCheckout(this.node, 'checked in'); this.render(); };
-    } else {
-      lockBar.createSpan({ cls: 'doc-detail-lockother', text: 'Checked out by ' + lock.by + (lock.stale ? ' (stale)' : '') });
-      const b = lockBar.createSpan({ text: 'Force check-in', cls: 'doc-detail-lockbtn ghost' });
-      let armed = false;   // two-click confirm (iPad-safe; avoids window.confirm)
-      b.onclick = async () => {
-        if (!armed) { armed = true; b.setText('Confirm force check-in'); return; }
-        await this.plugin.clearCheckout(this.node, 'force check-in'); this.render();
-      };
-    }
+    // Check-out lock (advisory). Both the action button and its status text
+    // ("You have this checked out." / "Checked out by X") live in the footer
+    // now — see _renderFooter.
 
     // Metadata card (4 groups)
     this._renderMeta(wrap, fm);
@@ -3671,13 +3659,16 @@ class DocumentDetailView extends obsidian.ItemView {
     const acts = p.createDiv('doc-detail-paneacts');
     const nv = docIconLabel(acts, 'file-plus', 'New version', { cls: 'doc-detail-hbtn' });
     nv.onclick = () => this.plugin.newDocumentVersion(this.node);
+    // Current-version button label mirrors the gate (lock-holder edits; others read-only).
+    const lock = this.plugin.readLock(this.node);
+    const heldByMe = !!lock.by && lock.by === resolveAuthorId();
     const rowFor = (name, badge, badgeCls, isCurrent) => {
       const r = p.createDiv('doc-detail-frow' + (isCurrent ? ' cur' : ''));
       const left = r.createDiv('doc-detail-fl');
       docIcon(left, badgeCls === 'v-att' ? 'paperclip' : 'file-text', 'doc-detail-fico');
       left.createSpan({ text: name });
       left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
-      const openBtn = r.createSpan({ text: isCurrent ? 'Open in editor' : 'Open', cls: 'doc-detail-fbtn' });
+      const openBtn = r.createSpan({ text: isCurrent ? (heldByMe ? 'Open in editor' : 'View Read-Only') : 'View', cls: 'doc-detail-fbtn' });
       if (!isCurrent) openBtn.setAttr('title', 'Opens read-only — prior version (history)');
       openBtn.onclick = (e) => this.plugin.openDocInEditor(this.node.path + '/' + name, this.node.path, !!(e && (e.metaKey || e.ctrlKey)), this.leaf);
     };
@@ -3811,7 +3802,18 @@ class DocumentDetailView extends obsidian.ItemView {
         const files = this.app.vault.getFiles().filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path)).slice(0, 12);
         for (const f of files) {
           const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' });
-          it.onclick = async () => { rel.push({ kind: 'link', target: f.path, label: f.basename }); await this._saveSidecar('relatedDocuments', rel, { action: 'Related link added: ' + f.basename, type: 'link' }); };
+          it.onclick = async () => {
+            const wl = this._relWikilink(f.path);
+            rel.push({ kind: 'link', target: f.path, label: f.basename, link: wl });
+            await this._mutateSidecar((front) => {
+              front.relatedDocuments = rel;
+              if (wl) {   // also add a real graph wikilink — unifies the old "Edit tags & links" modal
+                const links = Array.isArray(front.links) ? front.links.slice() : [];
+                if (!links.includes(wl)) links.push(wl);
+                front.links = links;
+              }
+            }, { action: 'Related link added: ' + f.basename, type: 'link' });
+          };
         }
       };
     }
@@ -3824,7 +3826,15 @@ class DocumentDetailView extends obsidian.ItemView {
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
         const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
-        rm.onclick = async () => { rel.splice(i, 1); await this._saveSidecar('relatedDocuments', rel, { action: 'Related document removed', type: 'meta' }); };
+        rm.onclick = async () => {
+          const removed = rel[i];
+          rel.splice(i, 1);
+          const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
+          await this._mutateSidecar((front) => {
+            front.relatedDocuments = rel;
+            if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
+          }, { action: 'Related document removed', type: 'meta' });
+        };
       }
     });
     if (!rel.length) p.createDiv({ cls: 'doc-detail-stub', text: editing ? 'No related documents yet — drag a file or add a link above.' : 'No related documents yet.' });
@@ -3842,6 +3852,15 @@ class DocumentDetailView extends obsidian.ItemView {
       } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
     }
     await this._saveSidecar('relatedDocuments', rel, { action: 'Reference attached', type: 'attach' });
+  }
+
+  // Canonical Obsidian wikilink for a related-doc target, so adding/removing a
+  // related "link" keeps the sidecar's `links` (graph edges) in sync. Falls back
+  // to the basename when the file isn't resolvable.
+  _relWikilink(targetPath) {
+    const f = this.app.vault.getAbstractFileByPath(targetPath);
+    const lt = f ? this.app.metadataCache.fileToLinktext(f, this.node.path, true) : (targetPath.split('/').pop() || targetPath);
+    return '[[' + lt + ']]';
   }
 
   // ── T28: Definitions (read-only glossary checkbox table) ───────────────────
@@ -4059,9 +4078,34 @@ class DocumentDetailView extends obsidian.ItemView {
   }
 
   _renderFooter(c) {
-    const footer = c.createDiv('doc-detail-footer');
+    // Full-width sticky bar; content centered to the same 1100px column as the body.
+    const footerBar = c.createDiv('doc-detail-footer');
+    const footer = footerBar.createDiv('doc-detail-footer-inner');
     const mk = (label, cls, fn) => { const b = footer.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls || '') }); b.onclick = fn; return b; };
-    mk('Open in editor', 'accent', (e) => {
+    // Check-out / check-in action — first in the bar, left of "Open in editor".
+    // The button is a normal inline footer item (stays put with the others);
+    // the lock status text is a SEPARATE, absolutely-positioned element in the
+    // reserved bottom strip, so its toggle never reflows the button row.
+    const lock = this.plugin.readLock(this.node);
+    const me = resolveAuthorId();
+    if (!lock.by) {
+      mk('Check out', 'accent', async () => { await this.plugin.setCheckout(this.node); this.render(); });
+    } else if (lock.by === me) {
+      mk('Check in', 'accent', async () => { await this.plugin.clearCheckout(this.node, 'checked in'); this.render(); });
+      footer.createSpan({ cls: 'doc-detail-lockmine doc-detail-lockfoot-txt', text: 'You have this checked out.' });
+    } else {
+      const fb = mk('Force check-in', 'neutral', () => {});
+      let armed = false;   // two-click confirm (iPad-safe; avoids window.confirm)
+      fb.onclick = async () => {
+        if (!armed) { armed = true; fb.setText('Confirm force check-in'); return; }
+        await this.plugin.clearCheckout(this.node, 'force check-in'); this.render();
+      };
+      footer.createSpan({ cls: 'doc-detail-lockother doc-detail-lockfoot-txt', text: 'Checked out by ' + lock.by + (lock.stale ? ' (stale)' : '') });
+    }
+    // Label reflects the gate: only the lock-holder can edit the current
+    // version. Everyone else (and the unlocked case) opens read-only.
+    const heldByMe = !!lock.by && lock.by === me;
+    mk(heldByMe ? 'Open in editor' : 'View Read-Only', 'accent', (e) => {
       if (!this.node.current) return;
       const filePath = this.node.path + '/' + this.node.current;
       const newPane = !!(e && (e.metaKey || e.ctrlKey));   // Ctrl/Cmd-click → new pane (escape hatch); plain click swaps this tab
@@ -4070,8 +4114,6 @@ class DocumentDetailView extends obsidian.ItemView {
     const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
     nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
     mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
-    mk('Edit metadata', '', () => { this._editMode = true; this.render(); });
-    mk('Edit tags & links', '', () => this.node.current && this.plugin.openMetadataModal(this.node.path + '/' + this.node.current));
     footer.createSpan({ cls: 'doc-detail-fspace' });
     mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
     if (this._editMode) {
