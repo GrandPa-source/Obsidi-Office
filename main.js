@@ -624,8 +624,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-val.over { color:#e05c5c; border-color: rgba(224,92,92,.4); }
 .doc-detail-sec { margin-top:22px; }
 .doc-detail-sec h4 { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color: var(--text-faint); border-bottom:1px solid var(--background-modifier-border); padding-bottom:6px; margin:0 0 8px; display:flex; align-items:center; justify-content:space-between; }
-.doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-radius:7px; background: var(--background-secondary); margin:5px 0; }
-.doc-detail-frow.cur { box-shadow: inset 0 0 0 1px rgba(72,184,132,.4); }
+.doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-top:1px solid var(--background-modifier-border); border-bottom:1px solid var(--background-modifier-border); }
+.doc-detail-frow.cur { box-shadow: inset 0 0 0 1px rgba(72,184,132,.4); border-radius:7px; }
 .doc-detail-fl { display:flex; align-items:center; gap:4px; font-size:13px; }
 .doc-detail-rellink { cursor:pointer; }
 .doc-detail-rellink:hover { color: var(--text-accent); text-decoration:underline; }
@@ -3824,10 +3824,14 @@ class DocumentDetailView extends obsidian.ItemView {
       const renderSug = () => {
         const q = input.value.toLowerCase(); sug.empty(); activeIdx = -1;
         if (!q) { hide(); return; }
-        matches = this.app.vault.getFiles().filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path)).slice(0, 12);
+        // Office documents only (docx/pptx/xlsx/pdf) — reuse MANAGED_EXTS, the
+        // canonical managed-document list. Auto-excludes sidecars (.md), .js, etc.
+        matches = this.app.vault.getFiles().filter(f => docContainer.MANAGED_EXTS.includes((f.extension || '').toLowerCase()) && f.basename.toLowerCase().includes(q)).slice(0, 12);
         if (!matches.length) { hide(); return; }
         matches.forEach((f) => {
-          const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' });
+          // Show just the document name (no folder directory), mirroring the
+          // Obsidi-Office search results.
+          const it = sug.createDiv({ text: f.basename, cls: 'doc-detail-sugitem' });
           it.onmousedown = (e) => { e.preventDefault(); chooseFile(f); };   // mousedown beats input blur
         });
         sug.addClass('visible');
