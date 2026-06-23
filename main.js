@@ -627,6 +627,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-radius:7px; background: var(--background-secondary); margin:5px 0; }
 .doc-detail-frow.cur { box-shadow: inset 0 0 0 1px rgba(72,184,132,.4); }
 .doc-detail-fl { display:flex; align-items:center; gap:4px; font-size:13px; }
+.doc-detail-rellink { cursor:pointer; }
+.doc-detail-rellink:hover { color: var(--text-accent); text-decoration:underline; }
 .doc-detail-vbadge { font-size:9px; padding:2px 8px; border-radius:9px; margin-left:8px; background: var(--background-modifier-border); }
 .doc-detail-vbadge.v-cur { color:#48b884; }
 .doc-detail-vbadge.v-att { color:#5b8def; }
@@ -736,10 +738,12 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-reltype.rt-ref { color:#b3a8f5; }
 .doc-detail-remove { color: var(--text-faint); cursor:pointer; font-size:13px; }
 .doc-detail-remove:hover { color:#e05c5c; }
-.doc-detail-linkinput { width:100%; padding:6px 9px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
-.doc-detail-linksug { max-height:220px; overflow:auto; margin-top:6px; }
-.doc-detail-sugitem { padding:5px 8px; font-size:12px; cursor:pointer; border-radius:5px; }
-.doc-detail-sugitem:hover { background: var(--background-modifier-hover); }
+.doc-detail-linkinput { width:100%; box-sizing:border-box; padding:6px 10px; font-size:13px; border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-detail-linkinput:focus { outline:none; border-color: var(--interactive-accent); }
+.doc-detail-linksug { position:absolute; top:100%; left:0; right:0; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 6px 6px; max-height:220px; overflow:auto; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.1); display:none; }
+.doc-detail-linksug.visible { display:block; }
+.doc-detail-sugitem { padding:6px 10px; font-size:13px; cursor:pointer; color: var(--text-normal); }
+.doc-detail-sugitem:hover, .doc-detail-sugitem.active { background: var(--background-modifier-hover); }
 .doc-detail-sh-edit { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
 .doc-detail-sh-row { display:flex; gap:6px; align-items:center; }
 .doc-detail-sh-row input { flex:1; min-width:0; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
@@ -833,7 +837,7 @@ textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px;
 .doc-detail-editbtn.ghost { background: transparent; color: var(--text-muted); border:1px solid var(--background-modifier-border); }
 .doc-detail-editbtn.ghost:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 .doc-pv-ta-view { white-space:pre-wrap; min-height:auto; }
-.doc-detail-addlink { margin:6px 0 8px; }
+.doc-detail-addlink { margin:6px 0 8px; position:relative; }
 /* ── B1 New Document modal ── */
 .docx-new-doc-modal .doc-newdoc-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color: var(--text-faint); }
 .docx-new-doc-modal .doc-newdoc-formats button { font-size:12px; border-radius:6px; border:1px solid var(--background-modifier-border); background: var(--background-primary); color: var(--text-normal); cursor:pointer; }
@@ -3796,32 +3800,58 @@ class DocumentDetailView extends obsidian.ItemView {
       const addWrap = p.createDiv('doc-detail-addlink');
       const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Add link — type to search vault files…' } });
       const sug = addWrap.createDiv('doc-detail-linksug');
-      input.oninput = () => {
-        const q = input.value.toLowerCase(); sug.empty();
-        if (!q) return;
-        const files = this.app.vault.getFiles().filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path)).slice(0, 12);
-        for (const f of files) {
+      // Mirrors the landing search bar: absolute dropdown, hover/active highlight,
+      // keyboard navigation (↑/↓/Enter/Esc), blur-safe selection.
+      let matches = [];
+      let activeIdx = -1;
+      const chooseFile = async (f) => {
+        const wl = this._relWikilink(f.path);
+        rel.push({ kind: 'link', target: f.path, label: f.basename });
+        await this._mutateSidecar((front) => {
+          // Strip any legacy `link` field off entries — a wikilink inside the
+          // relatedDocuments objects makes Obsidian render it as "[object Object]"
+          // in backlinks. The graph wikilink lives ONLY in the `links` array.
+          front.relatedDocuments = rel.map(({ link, ...r }) => r);
+          if (wl) {
+            const links = Array.isArray(front.links) ? front.links.slice() : [];
+            if (!links.includes(wl)) links.push(wl);
+            front.links = links;
+          }
+        }, { action: 'Related link added: ' + f.basename, type: 'link' });
+      };
+      const hide = () => { sug.removeClass('visible'); sug.empty(); matches = []; activeIdx = -1; };
+      const paint = () => Array.from(sug.children).forEach((el, i) => el.toggleClass('active', i === activeIdx));
+      const renderSug = () => {
+        const q = input.value.toLowerCase(); sug.empty(); activeIdx = -1;
+        if (!q) { hide(); return; }
+        matches = this.app.vault.getFiles().filter(f => f.basename.toLowerCase().includes(q) && !/\.(docx|pptx|xlsx)\.md$/i.test(f.path)).slice(0, 12);
+        if (!matches.length) { hide(); return; }
+        matches.forEach((f) => {
           const it = sug.createDiv({ text: f.path, cls: 'doc-detail-sugitem' });
-          it.onclick = async () => {
-            const wl = this._relWikilink(f.path);
-            rel.push({ kind: 'link', target: f.path, label: f.basename, link: wl });
-            await this._mutateSidecar((front) => {
-              front.relatedDocuments = rel;
-              if (wl) {   // also add a real graph wikilink — unifies the old "Edit tags & links" modal
-                const links = Array.isArray(front.links) ? front.links.slice() : [];
-                if (!links.includes(wl)) links.push(wl);
-                front.links = links;
-              }
-            }, { action: 'Related link added: ' + f.basename, type: 'link' });
-          };
-        }
+          it.onmousedown = (e) => { e.preventDefault(); chooseFile(f); };   // mousedown beats input blur
+        });
+        sug.addClass('visible');
+      };
+      input.oninput = renderSug;
+      input.onfocus = renderSug;
+      input.onblur = () => setTimeout(hide, 150);
+      input.onkeydown = (e) => {
+        if (!matches.length) return;
+        if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = (activeIdx + 1) % matches.length; paint(); }
+        else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = (activeIdx - 1 + matches.length) % matches.length; paint(); }
+        else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); chooseFile(matches[activeIdx]); }
+        else if (e.key === 'Escape') { hide(); }
       };
     }
 
     const listEl = p.createDiv();
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
-      { const fl = row.createDiv('doc-detail-fl'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target }); }
+      { const fl = row.createDiv('doc-detail-fl doc-detail-rellink'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target });
+        fl.setAttr('title', 'Open ' + (r.label || r.target));
+        // Click to open the linked file (Ctrl/Cmd-click → new tab). Office files
+        // route to their editor via the registered extension; notes open normally.
+        fl.onclick = (e) => this.app.workspace.openLinkText(r.target, this.node.path, !!(e && (e.metaKey || e.ctrlKey))); }
       const right = row.createDiv('doc-detail-relright');
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
@@ -3831,7 +3861,7 @@ class DocumentDetailView extends obsidian.ItemView {
           rel.splice(i, 1);
           const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
           await this._mutateSidecar((front) => {
-            front.relatedDocuments = rel;
+            front.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (see add handler)
             if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
           }, { action: 'Related document removed', type: 'meta' });
         };
