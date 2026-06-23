@@ -639,7 +639,7 @@ const DOC_CONTAINER_CSS = `
 .doc-return-btn .doc-return-ico { flex:0 0 26px; display:flex; align-items:center; justify-content:center; font-size:14px; line-height:1; }
 .doc-return-btn .doc-return-txt { font-size:12px; font-weight:600; padding-right:12px; }
 .doc-editgate-banner { position:absolute; bottom:6px; left:50%; transform:translateX(-50%); z-index:1000; max-width:60%; padding:3px 12px; font-size:12px; border-radius:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; pointer-events:none; background-color:#e5614c !important; color:#fff !important; }
-.doc-editgate-banner.mine { background-color:var(--background-modifier-border) !important; color:var(--text-muted) !important; }
+.doc-editgate-banner.mine { left:195px; bottom:5px; transform:none; max-width:none; padding:2px 6px; background-color:transparent !important; color:var(--text-muted) !important; }
 .doc-detail-btn.accent:hover { background: var(--interactive-accent-hover); }
 .doc-detail-btn.danger { color: var(--text-error); border-color: var(--text-error); }
 .doc-detail-btn.danger:hover { background: var(--background-modifier-error); color: var(--text-on-accent); }
@@ -2504,9 +2504,11 @@ class OfficeEditorView extends obsidian.FileView {
     const g = this._lastGate || (this.file ? this._editGate(this.file) : null);
     if (!g || g.state === 'unmanaged') return;
     let text = '';
-    if (g.state === 'old-version') text = 'Read-only — prior version (history).';
-    else if (g.state === 'held-by-other') text = 'Read-only — checked out by ' + (g.holder || 'another author') + '.';
-    else if (g.state === 'unlocked') text = 'Read-only — check out from the Overview to edit.';
+    // Read-only states append the same note so the muted toolbar reads as intentional, not broken.
+    const toolsNote = ' Editing tools are disabled.';
+    if (g.state === 'old-version') text = 'Read-only — prior version (history).' + toolsNote;
+    else if (g.state === 'held-by-other') text = 'Read-only — checked out by ' + (g.holder || 'another author') + '.' + toolsNote;
+    else if (g.state === 'unlocked') text = 'Read-only — check out from the Overview to edit.' + toolsNote;
     else if (g.state === 'held-by-me') text = 'Checked out by you';
     else return;
     const cls = 'doc-editgate-banner' + (g.state === 'held-by-me' ? ' mine' : '');
@@ -2806,6 +2808,12 @@ class OfficeEditorView extends obsidian.FileView {
           // false because Capacitor WKWebView doesn't implement
           // window.print() â€” see DEFAULT_SETTINGS comment).
           params.enablePrint = !isMobile || !!this.plugin.settings.enableMobilePrint;
+          // Doc-container check-out gate: in a read-only (gated) editor the
+          // toolbar save button is absent, so the in-iframe save-status
+          // indicator + floating print button mis-anchor to the top-left.
+          // Suppress both when the gate has the doc read-only. Undefined for
+          // ordinary (ungated) files → falsy → overlays behave normally.
+          params.gateReadOnly = (this._gateEditable === false);
 
           let html = htmlTemplate;
           const baseHref = baseUrl + "/" + engineRelNoSlash + "/";

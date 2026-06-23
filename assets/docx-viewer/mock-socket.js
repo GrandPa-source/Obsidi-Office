@@ -428,10 +428,16 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     "@keyframes docx-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }";
   document.head.appendChild(saveIndicatorStyle);
 
+  // Read-only check-out gate (doc-container): nothing saves, and in view
+  // mode the toolbar save button is absent so the indicator can't anchor.
+  // Hide it outright.
+  var GATE_READONLY = !!(window.__oo_params && window.__oo_params.gateReadOnly);
+
   var saveIndicator = document.createElement("div");
   saveIndicator.id = "docx-save-indicator";
   saveIndicator.innerHTML = checkSvg;
   saveIndicator.className = "idle";
+  if (GATE_READONLY) saveIndicator.style.display = "none";
   document.body.appendChild(saveIndicator);
 
   var _savingMinTimer = null;
@@ -545,7 +551,9 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   // on desktop and (mobile && settings.enableMobilePrint). When false,
   // skip the printBtn appendChild entirely. positionPrintBtn stays
   // defined regardless — it's a no-op when printBtn isn't appended.
-  var ENABLE_PRINT_BTN = !(window.__oo_params && window.__oo_params.enablePrint === false);
+  // GATE_READONLY also suppresses the floating print button (defined above
+  // for the save indicator) — a read-only gated doc offers no edit/print.
+  var ENABLE_PRINT_BTN = !GATE_READONLY && !(window.__oo_params && window.__oo_params.enablePrint === false);
 
   if (ENABLE_PRINT_BTN) {
   var printSvg =
