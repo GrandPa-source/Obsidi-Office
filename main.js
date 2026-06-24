@@ -113,16 +113,23 @@ function groupDocumentFiles(filenames) {
   const byBase = new Map();
   for (const f of filenames) {
     const v = parseVersion(f);
+    const stem = f.lastIndexOf('.') >= 0 ? f.slice(0, f.lastIndexOf('.')) : f;
+    const explicit = /_V\d+\.\d+$/.test(stem);   // true only for an explicit _V<major>.<minor> name
     if (!byBase.has(v.base)) byBase.set(v.base, []);
-    byBase.get(v.base).push({ name: f, ...v });
+    byBase.get(v.base).push({ name: f, explicit, ...v });
   }
-  let primaryBase = null, primaryCount = -1;
+  // Pick the primary base: most office versions wins; on a tie, an explicitly
+  // _V-versioned base beats a bare-named one (so a loose attachment file like
+  // "Agenda.docx" can never hijack current from a real "<Base>_V1.0.docx");
+  // remaining ties fall back to lexicographically-smallest base.
+  let primaryBase = null, primaryCount = -1, primaryExplicit = false;
   for (const [base, arr] of byBase) {
     const officeCount = arr.filter(x => MANAGED_EXTS.includes(x.ext)).length;
-    if (officeCount > primaryCount ||
-       (officeCount === primaryCount && primaryBase !== null && base < primaryBase)) {
-      primaryCount = officeCount; primaryBase = base;
-    }
+    const hasExplicit = arr.some(x => x.explicit && MANAGED_EXTS.includes(x.ext));
+    const better = officeCount > primaryCount
+      || (officeCount === primaryCount && primaryBase !== null && hasExplicit && !primaryExplicit)
+      || (officeCount === primaryCount && hasExplicit === primaryExplicit && primaryBase !== null && base < primaryBase);
+    if (better) { primaryCount = officeCount; primaryBase = base; primaryExplicit = hasExplicit; }
   }
   const primary = (byBase.get(primaryBase) || []).slice()
     .sort((a, b) => compareVersions(b, a)); // descending → current first
@@ -3987,22 +3994,29 @@ class DocumentDetailView extends obsidian.ItemView {
     const newFilePath = newFolder + '/' + docContainer.firstVersionName(docContainer.documentBaseName(title), ext);
     const parentCur = this.node.path + '/' + this.node.current;
     const parentTitle = this.frontmatter().title || this.node.name;
+    const oldWl = this._relWikilink(looseFilePath);   // compute BEFORE the move (file still at old path)
     try {
       const looseScPath = looseFilePath + '.md';
       const looseSc = this.app.vault.getAbstractFileByPath(looseScPath);
       await this.app.vault.createFolder(newFolder);
-      // Move the file (Obsidian rewrites [[wikilinks]] to it, incl. the parent's links[]).
       await this.app.fileManager.renameFile(looseFile, newFilePath);
       if (looseSc) {
         await this.app.fileManager.renameFile(looseSc, newFilePath + '.md');
         const newSc = this.app.vault.getAbstractFileByPath(newFilePath + '.md');
         if (newSc) await this.app.fileManager.processFrontMatter(newSc, (front) => { delete front.looseDoc; });
       }
-      // Re-point the parent's relatedDocuments entry target (JSON path is NOT auto-updated).
+      // Re-point the parent: relatedDocuments target (JSON path, never auto-updated) AND
+      // the graph wikilink. The links[] swap is idempotent, so it is correct whether or
+      // not Obsidian auto-rewrote the frontmatter wikilink for the moved .docx.
+      const newWl = this._relWikilink(newFilePath);   // file now at new path → resolves correctly
       const idx = rel.findIndex(r => r.target === looseFilePath);
       if (idx >= 0) rel[idx] = { kind: 'link', target: newFilePath, label: title };
       await this._mutateSidecar((front) => {
         front.relatedDocuments = rel.map(({ link, ...r }) => r);
+        let links = Array.isArray(front.links) ? front.links.slice() : [];
+        links = links.filter((x) => x !== oldWl);
+        if (newWl && !links.includes(newWl)) links.push(newWl);
+        front.links = links;
       }, { action: 'Broke away related document: ' + title, type: 'link' });
       // Reciprocal back-link on the new document → parent current version.
       const parentWl = this._relWikilink(parentCur);
