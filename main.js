@@ -7380,6 +7380,48 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  // Create a LOOSE related office file inside an existing document's folder (so the
+  // taxonomy treats it as an attachment, not a version). Seeds a sidecar with the
+  // looseDoc marker that gates "Break away". Returns the file path on success.
+  async createLooseRelatedDoc({ parentDocPath, title, ext, templatePath }) {
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) { new obsidian.Notice('Enter a document title'); return; }
+    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
+    const filePath = parentDocPath + '/' + cleanTitle + '.' + ext;
+    if (this.app.vault.getAbstractFileByPath(filePath)) {
+      new obsidian.Notice('A file named "' + cleanTitle + '.' + ext + '" already exists here.'); return;
+    }
+    try {
+      let buffer;
+      if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
+        buffer = await this.app.vault.adapter.readBinary(templatePath);
+      } else {
+        const blankB64 = ({ docx: BLANK_DOCX_BASE64, pptx: BLANK_PPTX_BASE64, xlsx: BLANK_XLSX_BASE64 })[ext] || BLANK_DOCX_BASE64;
+        buffer = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0)).buffer;
+      }
+      const tfile = await this.app.vault.createBinary(filePath, buffer);
+      await this._autoCreateSidecar(tfile);
+      const scPath = filePath + '.md';
+      const sc = this.app.vault.getAbstractFileByPath(scPath);
+      if (sc) {
+        const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        await this.app.fileManager.processFrontMatter(sc, (front) => {
+          if (!front.title) front.title = cleanTitle;
+          if (!front.status) front.status = 'Draft';
+          if (!front.originationDate) front.originationDate = today;
+          front.looseDoc = true;   // marker — gates Break away
+        });
+      } else {
+        elog('createLooseRelatedDoc: sidecar missing after _autoCreateSidecar for', filePath);
+      }
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      return filePath;
+    } catch (e) {
+      new obsidian.Notice('Could not create related document: ' + (e && e.message ? e.message : e));
+      return;
+    }
+  }
+
   // Resolve once the sidecar at scPath is parsed into metadataCache (frontmatter
   // available), or after a 1.5 s safety cap. Used so the detail page opens with
   // seeded metadata already visible rather than flashing blank.
