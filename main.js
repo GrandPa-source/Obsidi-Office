@@ -3928,6 +3928,14 @@ class DocumentDetailView extends obsidian.ItemView {
             if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
           }, { action: 'Related document removed', type: 'meta' });
         };
+        if (r.kind === 'link' && this._isLooseDoc(r.target)) {
+          const ba = right.createSpan({ text: 'Break away', cls: 'doc-detail-fbtn' });
+          let armedBA = false;   // two-click confirm (iPad-safe; no window.confirm)
+          ba.onclick = async () => {
+            if (!armedBA) { armedBA = true; ba.setText('Confirm break away'); return; }
+            await this._breakAway(r.target, rel);
+          };
+        }
       }
     });
     if (!rel.length) p.createDiv({ cls: 'doc-detail-stub', text: editing ? 'No related documents yet — drag a file or add a link above.' : 'No related documents yet.' });
@@ -3954,6 +3962,14 @@ class DocumentDetailView extends obsidian.ItemView {
     const f = this.app.vault.getAbstractFileByPath(targetPath);
     const lt = f ? this.app.metadataCache.fileToLinktext(f, this.node.path, true) : (targetPath.split('/').pop() || targetPath);
     return '[[' + lt + ']]';
+  }
+
+  // True when a related target is a plugin-created loose document (eligible for Break away).
+  _isLooseDoc(targetPath) {
+    const sc = this.app.vault.getAbstractFileByPath(targetPath + '.md');
+    if (!sc) return false;
+    const cache = this.app.metadataCache.getFileCache(sc);
+    return !!(cache && cache.frontmatter && cache.frontmatter.looseDoc === true);
   }
 
   // ── T28: Definitions (read-only glossary checkbox table) ───────────────────
