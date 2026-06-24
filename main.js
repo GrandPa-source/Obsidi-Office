@@ -249,6 +249,15 @@ function firstVersionName(base, ext) {
   return `${base}_V1.0.${ext}`;
 }
 
+// A child name not already taken in a folder: "<desired>", else "<desired> (2)", "(3)"…
+function dedupeName(desired, taken) {
+  const set = new Set(taken || []);
+  if (!set.has(desired)) return desired;
+  let n = 2;
+  while (set.has(desired + ' (' + n + ')')) n++;
+  return desired + ' (' + n + ')';
+}
+
 // ── Task 21 (v0.2): inline note-tag extraction ───────────────────────────────
 
 // Pull completed "#tag " tokens out of free text. `flush=true` (on Add) also
@@ -444,6 +453,7 @@ module.exports = {
   nextVersionName,
   documentBaseName,
   firstVersionName,
+  dedupeName,
   extractInlineTags,
   aggregateStakeholders,
   DOCUMENT_MD_NAME,
@@ -742,7 +752,10 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-linkinput:focus { outline:none; border-color: var(--interactive-accent); }
 .doc-detail-linksug { position:absolute; top:100%; left:0; right:0; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 6px 6px; max-height:220px; overflow:auto; z-index:100; box-shadow:0 4px 12px rgba(0,0,0,.1); display:none; }
 .doc-detail-linksug.visible { display:block; }
-.doc-detail-sugitem { padding:6px 10px; font-size:13px; cursor:pointer; color: var(--text-normal); }
+.doc-detail-sugitem { display:flex; align-items:center; gap:6px; padding:6px 10px; font-size:13px; cursor:pointer; color: var(--text-normal); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.doc-detail-sugitem.folder { font-weight:600; }
+.doc-detail-sugico { display:inline-flex; flex:0 0 auto; color: var(--text-muted); }
+.doc-detail-sugico svg { width:15px; height:15px; }
 .doc-detail-sugitem:hover, .doc-detail-sugitem.active { background: var(--background-modifier-hover); }
 .doc-detail-sh-edit { display:flex; flex-direction:column; gap:6px; margin:8px 0; }
 .doc-detail-sh-row { display:flex; gap:6px; align-items:center; }
@@ -3798,11 +3811,20 @@ class DocumentDetailView extends obsidian.ItemView {
       dz.ondragleave = () => dz.removeClass('drag');
       dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
       const addWrap = p.createDiv('doc-detail-addlink');
-      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Add link — type to search vault files…' } });
+      const docRoot = this.plugin.settings.docRoot || 'Documents';
+      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Browse ' + docRoot + '/ or type a document name…' } });
       const sug = addWrap.createDiv('doc-detail-linksug');
-      // Mirrors the landing search bar: absolute dropdown, hover/active highlight,
-      // keyboard navigation (↑/↓/Enter/Esc), blur-safe selection.
-      let matches = [];
+      // Path navigator (like the Core Templates folder-location field): click to
+      // browse docRoot, drill into folders, or type to filter. Folders navigate;
+      // office files (MANAGED_EXTS) are the selectable link targets, shown with
+      // their full directory path + extension. Arrays computed once per render.
+      const underRoot = (pth) => pth === docRoot || pth.startsWith(docRoot + '/');
+      const allFolders = this.app.vault.getAllLoadedFiles().filter(f => (f instanceof obsidian.TFolder) && f.path !== docRoot && underRoot(f.path));
+      const allDocs = this.app.vault.getFiles().filter(f => docContainer.MANAGED_EXTS.includes((f.extension || '').toLowerCase()) && underRoot(f.path));
+      const depth = (pth) => (pth.match(/\//g) || []).length;
+      const byPath = (a, b) => depth(a.path) - depth(b.path) || a.path.localeCompare(b.path);
+      const parentOf = (pth) => { const i = pth.lastIndexOf('/'); return i < 0 ? '' : pth.slice(0, i); };
+      let matches = [];   // [{ kind:'folder'|'file', path, file? }]
       let activeIdx = -1;
       const chooseFile = async (f) => {
         const wl = this._relWikilink(f.path);
@@ -3821,18 +3843,31 @@ class DocumentDetailView extends obsidian.ItemView {
       };
       const hide = () => { sug.removeClass('visible'); sug.empty(); matches = []; activeIdx = -1; };
       const paint = () => Array.from(sug.children).forEach((el, i) => el.toggleClass('active', i === activeIdx));
+      const drillTo = (folderPath) => { input.value = folderPath + '/'; renderSug(); input.focus(); };
+      const pick = (m) => { if (m.kind === 'folder') drillTo(m.path); else chooseFile(m.file); };
       const renderSug = () => {
-        const q = input.value.toLowerCase(); sug.empty(); activeIdx = -1;
-        if (!q) { hide(); return; }
-        // Office documents only (docx/pptx/xlsx/pdf) — reuse MANAGED_EXTS, the
-        // canonical managed-document list. Auto-excludes sidecars (.md), .js, etc.
-        matches = this.app.vault.getFiles().filter(f => docContainer.MANAGED_EXTS.includes((f.extension || '').toLowerCase()) && f.basename.toLowerCase().includes(q)).slice(0, 12);
+        const val = input.value; sug.empty(); activeIdx = -1;
+        // Folder context: empty input or a trailing "/" → browse that folder's
+        // IMMEDIATE children; otherwise the part after the last "/" is a name
+        // fragment that also runs a nested name search across docRoot.
+        let baseDir, frag;
+        if (!val) { baseDir = docRoot; frag = ''; }
+        else if (val.endsWith('/')) { baseDir = val.slice(0, -1); frag = ''; }
+        else { const i = val.lastIndexOf('/'); baseDir = i < 0 ? docRoot : val.slice(0, i); frag = i < 0 ? val : val.slice(i + 1); }
+        const fl = frag.toLowerCase();
+        const folders = allFolders
+          .filter(fo => parentOf(fo.path) === baseDir && (!fl || fo.name.toLowerCase().includes(fl)))
+          .sort(byPath).slice(0, 25).map(fo => ({ kind: 'folder', path: fo.path }));
+        let fileHits = allDocs.filter(fi => parentOf(fi.path) === baseDir && (!fl || fi.basename.toLowerCase().includes(fl)));
+        if (fl) fileHits = fileHits.concat(allDocs.filter(fi => parentOf(fi.path) !== baseDir && fi.basename.toLowerCase().includes(fl)));   // nested name search
+        const files = fileHits.sort(byPath).slice(0, 25).map(fi => ({ kind: 'file', path: fi.path, file: fi }));
+        matches = folders.concat(files).slice(0, 50);
         if (!matches.length) { hide(); return; }
-        matches.forEach((f) => {
-          // Show just the document name (no folder directory), mirroring the
-          // Obsidi-Office search results.
-          const it = sug.createDiv({ text: f.basename, cls: 'doc-detail-sugitem' });
-          it.onmousedown = (e) => { e.preventDefault(); chooseFile(f); };   // mousedown beats input blur
+        matches.forEach((m) => {
+          const it = sug.createDiv({ cls: 'doc-detail-sugitem' + (m.kind === 'folder' ? ' folder' : '') });
+          obsidian.setIcon(it.createSpan({ cls: 'doc-detail-sugico' }), m.kind === 'folder' ? 'folder' : 'file-text');
+          it.createSpan({ text: m.path });
+          it.onmousedown = (e) => { e.preventDefault(); pick(m); };   // mousedown beats input blur
         });
         sug.addClass('visible');
       };
@@ -3843,7 +3878,7 @@ class DocumentDetailView extends obsidian.ItemView {
         if (!matches.length) return;
         if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = (activeIdx + 1) % matches.length; paint(); }
         else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = (activeIdx - 1 + matches.length) % matches.length; paint(); }
-        else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); chooseFile(matches[activeIdx]); }
+        else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); pick(matches[activeIdx]); }
         else if (e.key === 'Escape') { hide(); }
       };
     }
