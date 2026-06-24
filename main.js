@@ -7935,19 +7935,21 @@ class FileNameModal extends obsidian.Modal {
 // ===========================================================================
 
 class NewDocumentModal extends obsidian.Modal {
-  constructor(app, plugin, containerPath, containerLabel) {
+  constructor(app, plugin, containerPath, containerLabel, opts) {
     super(app);
     this.plugin = plugin;
     this.containerPath = containerPath;
     this.containerLabel = containerLabel || containerPath;
     this.ext = 'docx';
     this.templatePath = '';   // '' = Blank (embedded fallback)
+    this.onSubmit = (opts && opts.onSubmit) || null;     // optional override (loose related doc)
+    this.heading = (opts && opts.heading) || null;
   }
 
   onOpen() {
     const { contentEl } = this;
     contentEl.addClass('docx-new-doc-modal');
-    contentEl.createEl('h3', { text: 'New Document in “' + this.containerLabel + '”' });
+    contentEl.createEl('h3', { text: this.heading || ('New Document in “' + this.containerLabel + '”') });
 
     // Title
     const titleWrap = contentEl.createDiv();
@@ -8032,10 +8034,10 @@ class NewDocumentModal extends obsidian.Modal {
     const title = this.titleInput.value.trim();
     if (!title) { this.titleInput.focus(); return; }
     this._createBtn.disabled = true;
-    const folder = await this.plugin.createDocumentInContainer({
-      containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath,
-    });
-    if (folder) this.close();        // created → close; on failure keep modal open
+    const result = this.onSubmit
+      ? await this.onSubmit({ title, ext: this.ext, templatePath: this.templatePath })
+      : await this.plugin.createDocumentInContainer({ containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath });
+    if (result) this.close();        // created → close; on failure keep modal open
     else this._syncCreateState();
   }
 
