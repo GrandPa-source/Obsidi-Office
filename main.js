@@ -3972,6 +3972,57 @@ class DocumentDetailView extends obsidian.ItemView {
     return !!(cache && cache.frontmatter && cache.frontmatter.looseDoc === true);
   }
 
+  // Promote a loose related file into a first-class sibling document under the same
+  // container. Keeps metadata, re-points the parent link, adds a reciprocal back-link.
+  async _breakAway(looseFilePath, rel) {
+    const looseFile = this.app.vault.getAbstractFileByPath(looseFilePath);
+    if (!looseFile) { new obsidian.Notice('That file no longer exists.'); return; }
+    const ext = looseFile.extension;
+    const title = looseFile.basename;
+    const container = this.node.path.slice(0, this.node.path.lastIndexOf('/'));
+    const containerFolder = this.app.vault.getAbstractFileByPath(container);
+    const taken = (containerFolder && containerFolder.children || []).map(c => c.name);
+    const folderName = docContainer.dedupeName(title, taken);
+    const newFolder = container + '/' + folderName;
+    const newFilePath = newFolder + '/' + docContainer.firstVersionName(docContainer.documentBaseName(title), ext);
+    const parentCur = this.node.path + '/' + this.node.current;
+    const parentTitle = this.frontmatter().title || this.node.name;
+    try {
+      const looseScPath = looseFilePath + '.md';
+      const looseSc = this.app.vault.getAbstractFileByPath(looseScPath);
+      await this.app.vault.createFolder(newFolder);
+      // Move the file (Obsidian rewrites [[wikilinks]] to it, incl. the parent's links[]).
+      await this.app.fileManager.renameFile(looseFile, newFilePath);
+      if (looseSc) {
+        await this.app.fileManager.renameFile(looseSc, newFilePath + '.md');
+        const newSc = this.app.vault.getAbstractFileByPath(newFilePath + '.md');
+        if (newSc) await this.app.fileManager.processFrontMatter(newSc, (front) => { delete front.looseDoc; });
+      }
+      // Re-point the parent's relatedDocuments entry target (JSON path is NOT auto-updated).
+      const idx = rel.findIndex(r => r.target === looseFilePath);
+      if (idx >= 0) rel[idx] = { kind: 'link', target: newFilePath, label: title };
+      await this._mutateSidecar((front) => {
+        front.relatedDocuments = rel.map(({ link, ...r }) => r);
+      }, { action: 'Broke away related document: ' + title, type: 'link' });
+      // Reciprocal back-link on the new document → parent current version.
+      const parentWl = this._relWikilink(parentCur);
+      const newSc2 = this.app.vault.getAbstractFileByPath(newFilePath + '.md');
+      if (newSc2) await this.app.fileManager.processFrontMatter(newSc2, (front) => {
+        const r2 = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+        r2.push({ kind: 'link', target: parentCur, label: parentTitle });
+        front.relatedDocuments = r2.map(({ link, ...x }) => x);
+        const links = Array.isArray(front.links) ? front.links.slice() : [];
+        if (parentWl && !links.includes(parentWl)) links.push(parentWl);
+        front.links = links;
+      });
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      this.render();
+      new obsidian.Notice('Broke away "' + title + '" into its own document.');
+    } catch (e) {
+      new obsidian.Notice('Break away failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+
   // ── T28: Definitions (read-only glossary checkbox table) ───────────────────
   _renderDefinitionsPane(p, fm) {
     if (!this.plugin.settings.docGlossaryEnabled) {
