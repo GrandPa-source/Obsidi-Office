@@ -642,6 +642,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-sec { margin-top:22px; }
 .doc-detail-sec h4 { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color: var(--text-faint); border-bottom:1px solid var(--background-modifier-border); padding-bottom:6px; margin:0 0 8px; display:flex; align-items:center; justify-content:space-between; }
 .doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-top:1px solid var(--background-modifier-border); border-bottom:1px solid var(--background-modifier-border); }
+.doc-detail-lhead { display:flex; align-items:center; justify-content:space-between; padding:4px 11px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color: var(--text-faint); font-weight:500; }
+.doc-detail-fr { display:flex; align-items:center; gap:10px; }
 .doc-detail-frow.cur { box-shadow: inset 0 0 0 1px rgba(72,184,132,.4); border-radius:7px; }
 .doc-detail-fl { display:flex; align-items:center; gap:4px; font-size:13px; }
 .doc-detail-rellink { cursor:pointer; }
@@ -3691,11 +3693,15 @@ class DocumentDetailView extends obsidian.ItemView {
       const left = r.createDiv('doc-detail-fl');
       docIcon(left, badgeCls === 'v-att' ? 'paperclip' : 'file-text', 'doc-detail-fico');
       left.createSpan({ text: name });
-      left.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });
-      const openBtn = r.createSpan({ text: isCurrent ? (heldByMe ? 'Open in editor' : 'View Read-Only') : 'View', cls: 'doc-detail-fbtn' });
+      const right = r.createDiv('doc-detail-fr');
+      right.createSpan({ text: badge, cls: 'doc-detail-vbadge ' + badgeCls });   // version badge → right, under the "Version" header
+      const openBtn = right.createSpan({ text: isCurrent ? (heldByMe ? 'Open in editor' : 'View Read-Only') : 'View', cls: 'doc-detail-fbtn' });
       if (!isCurrent) openBtn.setAttr('title', 'Opens read-only — prior version (history)');
       openBtn.onclick = (e) => this.plugin.openDocInEditor(this.node.path + '/' + name, this.node.path, !!(e && (e.metaKey || e.ctrlKey)), this.leaf);
     };
+    const fHead = p.createDiv('doc-detail-lhead');
+    fHead.createSpan({ text: 'File' });
+    fHead.createSpan({ text: 'Version' });
     (this.node.files || []).forEach((f) => {
       const isCur = f === this.node.current;
       rowFor(f, isCur ? 'current' : docContainer.parseVersion(f).label, isCur ? 'v-cur' : 'v-old', isCur);
@@ -3914,6 +3920,11 @@ class DocumentDetailView extends obsidian.ItemView {
       };
     }
 
+    if (rel.length) {
+      const rHead = p.createDiv('doc-detail-lhead');
+      rHead.createSpan({ text: 'Document' });
+      rHead.createSpan({ text: 'Type' });
+    }
     const listEl = p.createDiv();
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
