@@ -3805,6 +3805,30 @@ class DocumentDetailView extends obsidian.ItemView {
     toggle.onclick = () => { this._relEdit = !this._relEdit; this.render(); };
 
     if (editing) {
+      const newBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New document' });
+      newBtn.style.cssText = 'margin-bottom:8px;';
+      newBtn.onclick = () => {
+        const parentDocPath = this.node.path;
+        new NewDocumentModal(this.app, this.plugin, parentDocPath, this.node.name, {
+          heading: 'New related document',
+          onSubmit: async ({ title, ext, templatePath }) => {
+            const filePath = await this.plugin.createLooseRelatedDoc({ parentDocPath, title, ext, templatePath });
+            if (!filePath) return null;
+            const wl = this._relWikilink(filePath);
+            rel.push({ kind: 'link', target: filePath, label: title.trim() });
+            await this._mutateSidecar((front) => {
+              front.relatedDocuments = rel.map(({ link, ...r }) => r);
+              if (wl) {
+                const links = Array.isArray(front.links) ? front.links.slice() : [];
+                if (!links.includes(wl)) links.push(wl);
+                front.links = links;
+              }
+            }, { action: 'Related document created: ' + title.trim(), type: 'link' });
+            this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf);   // editor; Return → parent detail
+            return filePath;   // truthy → modal closes
+          },
+        }).open();
+      };
       const dz = p.createDiv('doc-detail-dropzone');
       dz.createSpan({ text: 'Drag a file here to attach as a reference, or use Add link below' });
       dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
