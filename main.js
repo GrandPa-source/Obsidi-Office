@@ -3138,6 +3138,14 @@ class OfficeEditorView extends obsidian.FileView {
       && file.path.startsWith(s.docRoot + '/')
       && docContainer.MANAGED_EXTS.includes((file.extension || '').toLowerCase());
     if (!managed) return { editable: true, state: 'unmanaged', holder: null };
+    // A loose related doc (managed office file that is an ATTACHMENT — not part of the
+    // document's version lineage) is its own editable document, not a prior version.
+    // Exempt it from the version gate so it opens editable, not read-only "history".
+    const parent = file.parent;
+    const sibNames = (parent && parent.children || []).filter(c => c instanceof obsidian.TFile).map(c => c.name);
+    if (!docContainer.groupDocumentFiles(sibNames).versions.includes(file.name)) {
+      return { editable: true, state: 'unmanaged', holder: null };
+    }
     const current = this._isCurrentVersion(file);
     const st = this._lockStateForFile(file);
     const me = resolveAuthorId();
@@ -3977,6 +3985,14 @@ class DocumentDetailView extends obsidian.ItemView {
   // related "link" keeps the sidecar's `links` (graph edges) in sync. Falls back
   // to the basename when the file isn't resolvable.
   _relWikilink(targetPath) {
+    // For an office file, link its SIDECAR (.md) so the graph edge runs sidecar↔sidecar
+    // (both markdown, always visible) instead of pointing at the .docx attachment node,
+    // which Obsidian hides in graph by default. Keep the .md extension (omit=false) so the
+    // linktext can't collide with the same-stem .docx. Plain .md targets link directly.
+    const sc = this.app.vault.getAbstractFileByPath(targetPath + '.md');
+    if (sc instanceof obsidian.TFile) {
+      return '[[' + this.app.metadataCache.fileToLinktext(sc, this.node.path, false) + ']]';
+    }
     const f = this.app.vault.getAbstractFileByPath(targetPath);
     const lt = f ? this.app.metadataCache.fileToLinktext(f, this.node.path, true) : (targetPath.split('/').pop() || targetPath);
     return '[[' + lt + ']]';
@@ -4305,12 +4321,17 @@ class DocumentDetailView extends obsidian.ItemView {
       const title = this.frontmatter().title || this.node.name;
       const docPath = this.node.path;
       mk('Delete document', 'danger', () => {
+        // Warn about loose related docs bundled inside this folder — they go to trash
+        // with the parent (break-away first to keep them).
+        const looseDocs = (this.node.attachments || [])
+          .filter(a => this._isLooseDoc(docPath + '/' + a))
+          .map(a => a.replace(/\.(docx|pptx|xlsx)$/i, ''));
         new DeleteConfirmModal(this.app, 'document', title, async () => {
           const parent = docPath.slice(0, docPath.lastIndexOf('/'));
           await this.plugin.deleteContainerFolder(docPath, title);
           this.node = null; this._editMode = false;
           this.plugin.openContainerOverview({ path: parent || this.plugin.settings.docRoot });   // return to parent container
-        }).open();
+        }, { relatedDocs: looseDocs }).open();
       });
     }
   }
@@ -7694,11 +7715,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 // Type-the-name-to-confirm delete. The Delete button stays disabled until the
 // typed text exactly matches the name. Used for documents (and containers).
 class DeleteConfirmModal extends obsidian.Modal {
-  constructor(app, kind, name, onConfirm) { super(app); this.kind = kind; this.name = name; this.onConfirm = onConfirm; }
+  constructor(app, kind, name, onConfirm, opts) { super(app); this.kind = kind; this.name = name; this.onConfirm = onConfirm; this.relatedDocs = (opts && opts.relatedDocs) || []; }
   onOpen() {
     const { contentEl, titleEl } = this;
     titleEl.setText('Delete ' + this.kind);
     contentEl.createEl('p', { text: 'This moves "' + this.name + '" and everything inside it (all versions, sidecars, log, forks) to your system trash. Recoverable from there.' });
+    if (this.relatedDocs.length) {
+      const n = this.relatedDocs.length;
+      const warn = contentEl.createEl('p', { text: 'This also deletes ' + n + ' related document' + (n === 1 ? '' : 's') + ' bundled in this folder: ' + this.relatedDocs.join(', ') + '. Break them away first if you want to keep them.' });
+      warn.style.cssText = 'color: var(--text-error); font-weight:600;';
+    }
     contentEl.createEl('p', { text: 'Type the ' + this.kind + ' name to confirm:' });
     const input = contentEl.createEl('input', { type: 'text', attr: { placeholder: this.name, style: 'width:100%;' } });
     const row = contentEl.createDiv({ attr: { style: 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px;' } });
