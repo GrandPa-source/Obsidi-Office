@@ -3714,7 +3714,11 @@ class DocumentDetailView extends obsidian.ItemView {
       const isCur = f === this.node.current;
       rowFor(f, isCur ? 'current' : docContainer.parseVersion(f).label, isCur ? 'v-cur' : 'v-old', isCur);
     });
-    (this.node.attachments || []).forEach(a => rowFor(a, 'attachment', 'v-att', false));
+    // Exclude related documents (loose docs + drag-attached refs) from Files & Versions —
+    // they belong to the Related Documents tab only, not the version list.
+    const fmF = this.frontmatter();
+    const relNames = new Set((Array.isArray(fmF.relatedDocuments) ? fmF.relatedDocuments : []).map(r => (r.target || '').split('/').pop()));
+    (this.node.attachments || []).filter(a => !relNames.has(a)).forEach(a => rowFor(a, 'attachment', 'v-att', false));
   }
   // Write a key into the current version's sidecar (create it if absent), optionally
   // appending an activityLog entry in the SAME transaction (one write, one re-render).
