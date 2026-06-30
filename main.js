@@ -3942,9 +3942,22 @@ class DocumentDetailView extends obsidian.ItemView {
       const row = listEl.createDiv('doc-detail-frow');
       { const fl = row.createDiv('doc-detail-fl doc-detail-rellink'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target });
         fl.setAttr('title', 'Open ' + (r.label || r.target));
-        // Click to open the linked file (Ctrl/Cmd-click → new tab). Office files
-        // route to their editor via the registered extension; notes open normally.
-        fl.onclick = (e) => this.app.workspace.openLinkText(r.target, this.node.path, !!(e && (e.metaKey || e.ctrlKey))); }
+        // Click to open the linked file (Ctrl/Cmd-click → new tab). A managed target that
+        // is the CURRENT version of its own document folder (e.g. a broken-away sibling, or
+        // a hand-linked document container) opens that document's overview/detail page;
+        // loose office attachments open in the editor (with Return-to-document); notes open
+        // normally.
+        fl.onclick = (e) => {
+          const newPane = !!(e && (e.metaKey || e.ctrlKey));
+          const ext = (r.target.split('.').pop() || '').toLowerCase();
+          if (docContainer.MANAGED_EXTS.includes(ext)) {
+            const container = this._relatedDocContainer(r.target);
+            if (container) { this.plugin.openDocDetail({ path: container }); return; }
+            this.plugin.openDocInEditor(r.target, this.node.path, newPane, this.leaf);
+          } else {
+            this.app.workspace.openLinkText(r.target, this.node.path, newPane);
+          }
+        }; }
       const right = row.createDiv('doc-detail-relright');
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
@@ -4002,6 +4015,20 @@ class DocumentDetailView extends obsidian.ItemView {
     return '[[' + lt + ']]';
   }
 
+  // If a related target is the CURRENT version of its own document-container folder,
+  // return that folder path (so the click opens the document's overview page instead of
+  // the editor); otherwise null. A loose attachment lives inside another document's folder
+  // and is NOT that folder's current version, so it returns null and opens in the editor.
+  _relatedDocContainer(targetPath) {
+    const folder = targetPath.slice(0, targetPath.lastIndexOf('/'));
+    if (!folder) return null;
+    const paths = this.app.vault.getFiles().map((f) => f.path);
+    const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
+    const node = this.findDoc(tree, folder);
+    if (node && node.current && folder + '/' + node.current === targetPath) return folder;
+    return null;
+  }
+
   // True when a related target is a plugin-created loose document (eligible for Break away).
   _isLooseDoc(targetPath) {
     const sc = this.app.vault.getAbstractFileByPath(targetPath + '.md');
@@ -4027,15 +4054,24 @@ class DocumentDetailView extends obsidian.ItemView {
     const parentTitle = this.frontmatter().title || this.node.name;
     const oldWl = this._relWikilink(looseFilePath);   // compute BEFORE the move (file still at old path)
     try {
-      const looseScPath = looseFilePath + '.md';
-      const looseSc = this.app.vault.getAbstractFileByPath(looseScPath);
+      // Detach any editor open on the loose file BEFORE renaming. The create flow opens the
+      // loose file, so it's commonly still in a tab; renaming a live OfficeEditorView file
+      // races with the rename and throws (leaving break-away half-done).
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        const v = leaf.view;
+        if (v instanceof OfficeEditorView && v.file && v.file.path === looseFilePath) { try { leaf.detach(); } catch (e) {} }
+      });
+      const looseSc = this.app.vault.getAbstractFileByPath(looseFilePath + '.md');
       await this.app.vault.createFolder(newFolder);
+      // Rename the SIDECAR first, then the .docx. The plugin's office-file rename watcher
+      // (vault 'rename' → auto-moves "<oldPath>.md") would otherwise move the sidecar the
+      // instant the .docx renames, colliding with our own sidecar rename (throws, leaves
+      // break-away half-done). Moving the sidecar ourselves first means the watcher finds
+      // nothing at the old sidecar path when the .docx renames, so it skips.
+      if (looseSc) await this.app.fileManager.renameFile(looseSc, newFilePath + '.md');
       await this.app.fileManager.renameFile(looseFile, newFilePath);
-      if (looseSc) {
-        await this.app.fileManager.renameFile(looseSc, newFilePath + '.md');
-        const newSc = this.app.vault.getAbstractFileByPath(newFilePath + '.md');
-        if (newSc) await this.app.fileManager.processFrontMatter(newSc, (front) => { delete front.looseDoc; });
-      }
+      // looseSc IS the same TFile, now at the new path (renameFile mutates in place).
+      if (looseSc) await this.app.fileManager.processFrontMatter(looseSc, (front) => { delete front.looseDoc; });
       // Re-point the parent: relatedDocuments target (JSON path, never auto-updated) AND
       // the graph wikilink. The links[] swap is idempotent, so it is correct whether or
       // not Obsidian auto-rewrote the frontmatter wikilink for the moved .docx.
@@ -4049,10 +4085,9 @@ class DocumentDetailView extends obsidian.ItemView {
         if (newWl && !links.includes(newWl)) links.push(newWl);
         front.links = links;
       }, { action: 'Broke away related document: ' + title, type: 'link' });
-      // Reciprocal back-link on the new document → parent current version.
+      // Reciprocal back-link on the new document → parent current version (use the renamed sidecar).
       const parentWl = this._relWikilink(parentCur);
-      const newSc2 = this.app.vault.getAbstractFileByPath(newFilePath + '.md');
-      if (newSc2) await this.app.fileManager.processFrontMatter(newSc2, (front) => {
+      if (looseSc) await this.app.fileManager.processFrontMatter(looseSc, (front) => {
         const r2 = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
         r2.push({ kind: 'link', target: parentCur, label: parentTitle });
         front.relatedDocuments = r2.map(({ link, ...x }) => x);
@@ -7672,7 +7707,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async _appendActivity(officePath, action, type) {
     if (!officePath || !officePath.startsWith(this.settings.docRoot + '/')) return;
     const folder = officePath.slice(0, officePath.lastIndexOf('/'));
-    return this.appendLog(folder, action);
+    const name = officePath.slice(officePath.lastIndexOf('/') + 1);   // name the file in the log
+    return this.appendLog(folder, action, name);                       // → "Opened in editor (Minutes.docx)"
   }
 
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
