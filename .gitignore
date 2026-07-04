@@ -13,3 +13,8 @@ node_modules/
 Thumbs.db
 
 .superpowers/
+
+# Runtime downloads / crash junk / user settings
+assets/pdfium/
+*.stackdump
+data.json

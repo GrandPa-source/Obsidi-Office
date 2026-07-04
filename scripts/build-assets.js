@@ -14,8 +14,8 @@
 //   --no-clean       don't wipe output dir before building
 //   --dry            list what would happen without doing it
 //   --zip <path>     after building, package the output as a .zip at <path>
-//                    (uses PowerShell Compress-Archive on win32, `zip` elsewhere;
-//                     fflate-compatible standard zip format for runtime extraction)
+//                    (zipped in-process via lib/fflate.umd.js — standard zip
+//                     format, matching the runtime unzipSync extraction)
 //
 // What it does:
 //   1. Walks the source tree, copying everything that's NOT in DROP_PATHS
@@ -43,43 +43,34 @@ const path = require("path");
 // ---------------------------------------------------------------------------
 
 function parseArgs(argv) {
-  const args = {
-    src: null,
-    shim: null,
-    mock: null,
-    x2tFonts: null,
-    dictionaries: null,
-    out: null,
-    topFonts: 20,
-    keepLocales: ["en"],
-    clean: true,
-    dry: false,
-    zip: null,
-  };
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    const next = () => argv[++i];
-    switch (a) {
-      case "--src":          args.src = next(); break;
-      case "--shim":         args.shim = next(); break;
-      case "--mock":         args.mock = next(); break;
-      case "--x2t-fonts":    args.x2tFonts = next(); break;
-      case "--dictionaries": args.dictionaries = next(); break;
-      case "--out":          args.out = next(); break;
-      case "--top-fonts":    args.topFonts = parseInt(next(), 10); break;
-      case "--keep-locales": args.keepLocales = next().split(",").map(s => s.trim()).filter(Boolean); break;
-      case "--no-clean":     args.clean = false; break;
-      case "--dry":          args.dry = true; break;
-      case "--zip":          args.zip = next(); break;
-      case "--help": case "-h":
-        printHelp();
-        process.exit(0);
-      default:
-        console.error("unknown arg:", a);
-        process.exit(2);
-    }
+  let v;
+  try {
+    v = require("util").parseArgs({
+      args: argv,
+      strict: true,
+      options: {
+        src: { type: "string" }, shim: { type: "string" }, mock: { type: "string" },
+        "x2t-fonts": { type: "string" }, dictionaries: { type: "string" },
+        out: { type: "string" }, zip: { type: "string" },
+        "top-fonts": { type: "string" }, "keep-locales": { type: "string" },
+        "no-clean": { type: "boolean" }, dry: { type: "boolean" },
+        help: { type: "boolean", short: "h" },
+      },
+    }).values;
+  } catch (e) {
+    console.error(e.message);
+    process.exit(2);
   }
-  return args;
+  if (v.help) { printHelp(); process.exit(0); }
+  return {
+    src: v.src || null, shim: v.shim || null, mock: v.mock || null,
+    x2tFonts: v["x2t-fonts"] || null, dictionaries: v.dictionaries || null,
+    out: v.out || null, zip: v.zip || null,
+    topFonts: v["top-fonts"] != null ? parseInt(v["top-fonts"], 10) : 20,
+    keepLocales: (v["keep-locales"] || "en").split(",").map(s => s.trim()).filter(Boolean),
+    clean: !v["no-clean"],
+    dry: !!v.dry,
+  };
 }
 
 function printHelp() {
@@ -140,8 +131,9 @@ const HTML_TO_PATCH = [
 
 const SOCKET_IO_REL = "onlyoffice/web-apps/vendor/socketio/socket.io.min.js";
 
-// Sentinel injected into pre-patched HTML so we can detect tampering at
-// runtime if needed. Distinct from the runtime AssetPatcher sentinels.
+// Sentinel injected into pre-patched HTML so a re-run over already-built
+// output stays idempotent (default --src is the previously-built deploy).
+// Distinct from the runtime AssetPatcher sentinels.
 const PREPATCH_SENTINEL = "<!-- obsidi-office-prepatched -->";
 
 // ---------------------------------------------------------------------------
@@ -308,33 +300,22 @@ function build(args) {
         if (isUnder(relPath, dp)) { dropReason = "drop-list:" + dp; break; }
       }
 
-      // 2. Locale filter — locale/ contains <locale>.json files (en.json,
-      //    pt-pt.json, zh-tw.json, ...). Strip the .json suffix to compare
-      //    against keepLocales.
-      if (!dropReason && isUnder(relPath, LOCALE_PARENT) && relPath !== LOCALE_PARENT) {
-        const after = relPath.slice(LOCALE_PARENT.length + 1);
-        const firstSeg = after.split("/")[0];
-        const localeName = firstSeg.replace(/\.json$/i, "");
-        if (!args.keepLocales.includes(localeName)) {
-          dropReason = "locale:" + localeName;
-        }
-      }
-      // 2b. Same locale filter for presentationeditor (pptx parallel).
-      if (!dropReason && isUnder(relPath, LOCALE_PARENT_PPTX) && relPath !== LOCALE_PARENT_PPTX) {
-        const after = relPath.slice(LOCALE_PARENT_PPTX.length + 1);
-        const firstSeg = after.split("/")[0];
-        const localeName = firstSeg.replace(/\.json$/i, "");
-        if (!args.keepLocales.includes(localeName)) {
-          dropReason = "locale-pptx:" + localeName;
-        }
-      }
-      // 2c. Same locale filter for spreadsheeteditor (xlsx parallel).
-      if (!dropReason && isUnder(relPath, LOCALE_PARENT_XLSX) && relPath !== LOCALE_PARENT_XLSX) {
-        const after = relPath.slice(LOCALE_PARENT_XLSX.length + 1);
-        const firstSeg = after.split("/")[0];
-        const localeName = firstSeg.replace(/\.json$/i, "");
-        if (!args.keepLocales.includes(localeName)) {
-          dropReason = "locale-xlsx:" + localeName;
+      // 2. Locale filter (all three editors) — locale/ contains <locale>.json
+      //    files (en.json, pt-pt.json, zh-tw.json, ...). Strip the .json
+      //    suffix to compare against keepLocales.
+      if (!dropReason) {
+        for (const [parent, reason] of [
+          [LOCALE_PARENT, "locale"],
+          [LOCALE_PARENT_PPTX, "locale-pptx"],
+          [LOCALE_PARENT_XLSX, "locale-xlsx"],
+        ]) {
+          if (!isUnder(relPath, parent) || relPath === parent) continue;
+          const firstSeg = relPath.slice(parent.length + 1).split("/")[0];
+          const localeName = firstSeg.replace(/\.json$/i, "");
+          if (!args.keepLocales.includes(localeName)) {
+            dropReason = reason + ":" + localeName;
+          }
+          break;
         }
       }
 
@@ -346,9 +327,7 @@ function build(args) {
       if (dropReason) {
         const sz = entry.isDirectory() ? dirSize(srcPath) : fs.statSync(srcPath).size;
         stats.addDrop(relPath, sz, dropReason);
-        if (!args.dry) {
-          // Don't copy this entry. If a directory, the entire tree is skipped.
-        }
+        // Don't copy this entry. If a directory, the entire tree is skipped.
         continue;
       }
 
