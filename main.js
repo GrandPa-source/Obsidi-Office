@@ -64,8 +64,6 @@ const DOC_FIELDS = {
 // docs/superpowers/specs/2026-06-17-doc-container-document-md-metadata-migration-design.md
 
 const DOCUMENT_MD_NAME = '_document.md';   // folder-note: the logical Document's record
-const PROJECT_MD_NAME  = '_project.md';    // existing project-container folder-note
-const DOC_MARKER       = 'document';       // _document.md frontmatter: `docContainer: document`
 const LOG_MD_NAME      = 'log.md';         // per-document append-only activity log (markdown body)
 
 // Keys owned by _document.md (the logical-document system of record).
@@ -158,11 +156,7 @@ function buildTaxonomy(paths, root) {
     const folder = p.slice(0, slash);
     const name = p.slice(slash + 1);
     if (isSidecar(name)) continue;
-    if (!isManaged(name)) { // remember stray files too, as attachments
-      if (!folderFiles.has(folder)) folderFiles.set(folder, []);
-      folderFiles.get(folder).push(name);
-      continue;
-    }
+    // managed office files AND stray files both collect here (strays become attachments)
     if (!folderFiles.has(folder)) folderFiles.set(folder, []);
     folderFiles.get(folder).push(name);
   }
@@ -464,8 +458,6 @@ module.exports = {
   extractInlineTags,
   aggregateStakeholders,
   DOCUMENT_MD_NAME,
-  PROJECT_MD_NAME,
-  DOC_MARKER,
   LOG_MD_NAME,
   DOC_LEVEL_KEYS,
   VERSION_KEYS,
@@ -639,8 +631,6 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-lab { font-size:10px; letter-spacing:.05em; text-transform:uppercase; color: var(--text-faint); margin-bottom:4px; }
 .doc-detail-val { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:6px; padding:8px 11px; min-height:34px; font-size:13px; color: var(--text-normal); }
 .doc-detail-val.over { color:#e05c5c; border-color: rgba(224,92,92,.4); }
-.doc-detail-sec { margin-top:22px; }
-.doc-detail-sec h4 { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color: var(--text-faint); border-bottom:1px solid var(--background-modifier-border); padding-bottom:6px; margin:0 0 8px; display:flex; align-items:center; justify-content:space-between; }
 .doc-detail-frow { display:flex; align-items:center; justify-content:space-between; padding:8px 11px; border-top:1px solid var(--background-modifier-border); border-bottom:1px solid var(--background-modifier-border); }
 .doc-detail-lhead { display:flex; align-items:center; justify-content:space-between; padding:4px 11px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; color: var(--text-faint); font-weight:500; }
 .doc-detail-fr { display:flex; align-items:center; gap:10px; }
@@ -706,10 +696,6 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-chip.c-review { background: rgba(91,141,239,.18); color:#5b8def; }
 .doc-detail-chip.c-arch { color: var(--text-faint); }
 .doc-detail-h1actions { margin-left:auto; display:flex; align-items:center; gap:8px; flex:0 0 auto; }
-.doc-detail-lockbar { display:flex; align-items:center; gap:10px; margin:2px 0 14px; font-size:12px; }
-.doc-detail-lockbtn { cursor:pointer; padding:5px 12px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); }
-.doc-detail-lockbtn:hover { background: var(--interactive-accent-hover); }
-.doc-detail-lockbtn.ghost { background: var(--background-modifier-border); color: var(--text-normal); }
 .doc-detail-lockmine { color: var(--text-success); }
 .doc-detail-lockother { color: var(--text-error); }
 .doc-detail-pendrow { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 4px; border-bottom:1px solid var(--background-modifier-border); font-size:12px; }
@@ -717,18 +703,25 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-pendactions { display:flex; gap:6px; flex:0 0 auto; }
 .doc-detail-editbtn { font-size:12px; padding:6px 14px; border-radius:6px; background: var(--interactive-accent); color: var(--text-on-accent); cursor:pointer; }
 .doc-detail-editbtn:hover { background: var(--interactive-accent-hover); }
-.doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:10px; padding:14px 16px 16px; margin-top:6px; }
+.doc-detail-metacard { background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-radius:0 0 10px 10px; padding:14px 16px 16px; margin-top:6px; }
+.doc-detail-metatabs { display:flex; justify-content:flex-end; padding-right:2px; position:relative; z-index:1; margin-top:6px; margin-bottom:-1px; }
+.doc-detail-metatabs .doc-detail-tabb { cursor:default; background: var(--background-secondary); border-bottom:none; }
+.doc-detail-metatabs + .doc-detail-metacard { margin-top:0; }
+.doc-detail-rellist { max-height:192px; overflow-y:auto; }   /* ~5 related rows, then scroll */
+.doc-detail-reladded { font-size:10px; color: var(--text-faint); margin-right:8px; }
 .doc-detail-grp { font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; color: var(--text-muted); font-weight:600; margin:14px 0 9px; }
 .doc-detail-grp:first-child { margin-top:0; }
 .doc-detail-metacard .doc-detail-grid { grid-template-columns: repeat(4, 1fr); }
 .doc-detail-metacard .doc-detail-fld.span2 { grid-column: span 2; }
 .doc-detail-cols { display:grid; grid-template-columns: 1.3fr 1fr; gap:20px; margin-top:22px; align-items:start; }
 .doc-detail-col { min-width:0; }
-.doc-detail-tabs { display:flex; gap:3px; border-bottom:1px solid var(--background-modifier-border); flex-wrap:wrap; }
-.doc-detail-tabb { font-size:12px; padding:7px 12px; color: var(--text-muted); cursor:pointer; border-radius:7px 7px 0 0; border:1px solid transparent; border-bottom:none; display:flex; align-items:center; gap:5px; }
+.doc-detail-tabs { display:flex; gap:3px; border-bottom:1px solid var(--background-modifier-border); flex-wrap:wrap; position:relative; padding-left:2px; }
+.doc-detail-tabs.is-wrapped::after { content:''; position:absolute; left:0; right:0; top:var(--doc-tabs-wrap-top); bottom:0; border-top:1px solid var(--background-modifier-border); border-right:1px solid var(--background-modifier-border); border-left:1px solid var(--background-modifier-border); pointer-events:none; }
+.doc-detail-tabb { font-size:12px; padding:7px 12px; color: var(--text-muted); cursor:pointer; border-radius:7px 7px 0 0; border:1px solid var(--background-modifier-border); display:flex; align-items:center; gap:5px; }
 .doc-detail-tabb:hover { color: var(--text-normal); }
-.doc-detail-tabb.is-active { color: var(--text-normal); background: var(--background-secondary); border-color: var(--background-modifier-border); }
+.doc-detail-tabb.is-active { color: var(--text-normal); background: var(--background-secondary); border-color: var(--interactive-accent); }
 .doc-detail-tabcnt { font-size:9px; opacity:.7; }
+.doc-detail-tagpill { display:inline-block; font-size:11px; padding:2px 9px; border-radius:10px; background: var(--background-secondary); border:1px solid var(--background-modifier-border); color: var(--text-muted); margin:0 5px 4px 0; }
 .doc-detail-tabpane { display:none; background: var(--background-secondary); border:1px solid var(--background-modifier-border); border-top:none; border-radius:0 0 9px 9px; padding:10px; min-height:200px; }
 .doc-detail-tabpane.is-active { display:block; }
 .doc-detail-paneacts { display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px; }
@@ -750,7 +743,6 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-role { font-size:10px; background: var(--background-modifier-border); border-radius:20px; padding:2px 9px; color: var(--text-muted); }
 .doc-detail-dropzone { border:1.5px dashed var(--background-modifier-border); border-radius:9px; padding:14px; text-align:center; color: var(--text-faint); font-size:12px; cursor:default; margin-bottom:8px; transition:.12s; }
 .doc-detail-dropzone.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); color: var(--text-normal); }
-.doc-detail-dzlink { color: var(--interactive-accent); text-decoration:underline; cursor:pointer; }
 .doc-detail-relright { display:flex; align-items:center; gap:6px; }
 .doc-detail-reltype { font-size:9px; padding:2px 8px; border-radius:9px; }
 .doc-detail-reltype.rt-link { color:#5b8def; }
@@ -822,7 +814,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-logico { font-size:13px; width:18px; text-align:center; opacity:.85; flex:0 0 auto; }
 .doc-detail-logaction { font-size:12.5px; line-height:1.35; color: var(--text-normal); }
 .doc-detail-logmeta { font-size:10px; color: var(--text-faint); margin-top:2px; }
-.doc-detail-tabb.right { margin-left:auto; }
+.doc-detail-tabb.right { position:absolute; top:0; right:0; }   /* pinned to the upper row, right edge, even when the bar wraps */
+.doc-detail-tabs.has-right { padding-right:64px; }              /* reserve the pinned tab's footprint so row-1 tabs never underlap it */
 /* ── v0.3 Project view ── */
 .doc-pv-h1row { display:flex; align-items:center; gap:12px; margin:2px 0; }
 .doc-ov-typetag { font-size:9px; text-transform:uppercase; letter-spacing:.05em; background: rgba(124,108,239,.16); color:#b3a8f5; padding:2px 8px; border-radius:9px; }
@@ -841,24 +834,15 @@ const DOC_CONTAINER_CSS = `
 .doc-pv-ta { width:100%; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:7px; padding:10px 12px; font-size:12.8px; min-height:110px; line-height:1.55; color: var(--text-normal); resize:vertical; }
 .doc-pv-ta:focus { outline:none; border-color: var(--interactive-accent); }
 .doc-pv-tabwrap { margin-top:22px; }
-.doc-pv-edit { display:flex; flex-direction:column; gap:7px; margin:8px 0; }
-.doc-pv-editrow { display:flex; align-items:center; gap:10px; }
-.doc-pv-editlab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
-.doc-pv-editrow input { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
 .doc-pv-dcount { font-size:9.5px; background: rgba(124,108,239,.16); color:#b3a8f5; border-radius:9px; padding:1px 7px; margin-right:7px; }
 .doc-pv-dchip { font-size:9px; color: var(--text-faint); margin-right:5px; }
-.doc-detail-md-edit { display:flex; flex-direction:column; gap:8px; margin:8px 0; max-height:60vh; overflow:auto; }
-.doc-detail-md-row { display:flex; align-items:center; gap:10px; }
-.doc-detail-md-lab { font-size:11px; color: var(--text-muted); min-width:150px; flex:0 0 auto; }
-.doc-detail-md-row input, .doc-detail-md-row select, .doc-detail-md-row textarea { flex:1; padding:5px 8px; font-size:12px; border:1px solid var(--background-modifier-border); border-radius:5px; background: var(--background-primary); color: var(--text-normal); }
-.doc-detail-md-row textarea { resize:vertical; line-height:1.4; }
 /* ── inline view/edit mode: metadata inputs + ghost button ── */
 .doc-detail-vinput { width:100%; background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:6px; padding:7px 10px; font-size:13px; color: var(--text-normal); font-family: inherit; }
 .doc-detail-vinput:focus { outline:none; border-color: var(--interactive-accent); }
 textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px; }
 .doc-detail-editbtn.ghost { background: transparent; color: var(--text-muted); border:1px solid var(--background-modifier-border); }
 .doc-detail-editbtn.ghost:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.doc-pv-ta-view { white-space:pre-wrap; min-height:auto; }
+.doc-pv-ta-view { white-space:pre-wrap; min-height:auto; background: var(--background-secondary); }
 .doc-detail-addlink { margin:6px 0 8px; position:relative; }
 /* ── B1 New Document modal ── */
 .docx-new-doc-modal .doc-newdoc-label { font-size:10px; text-transform:uppercase; letter-spacing:.05em; color: var(--text-faint); }
@@ -1037,7 +1021,6 @@ const SPELL_WORKER_PROLOGUE = `(function(){
 const DEFAULT_SETTINGS = {
   defaultMode: "edit",
   debugLogging: true,
-  autoSaveDelayMs: 1500,
   // Phase 7.5 — consolidated templates root with per-format subdirs:
   //   <templatesRoot>/docx/Blank Document.docx
   //   <templatesRoot>/pptx/Blank Presentation.pptx
@@ -2045,17 +2028,6 @@ class TransportBridge {
 // Helpers
 // ===========================================================================
 
-function pathToFileUrl(absPath) {
-  // Convert an absolute filesystem path to a file:// URL.
-  // Windows: C:\foo\bar -> file:///C:/foo/bar
-  // Unix:    /foo/bar   -> file:///foo/bar
-  let p = absPath.split(path.sep).join("/");
-  if (!p.startsWith("/")) p = "/" + p;
-  // Percent-encode spaces and special chars that break URL parsing
-  p = p.replace(/ /g, "%20").replace(/#/g, "%23");
-  return "file://" + p;
-}
-
 function concatChunks(chunks) {
   let total = 0;
   for (const c of chunks) total += c.byteLength;
@@ -2065,42 +2037,11 @@ function concatChunks(chunks) {
   return out;
 }
 function randomHex(bytes) {
-  // Use Web Crypto API â€” present in both Electron renderer and Capacitor
-  // WKWebView. The module-top `crypto` is the Node module and is null on
-  // mobile; `globalThis.crypto` is the Web Crypto API which is separate
-  // and always available in browser-like environments.
-  const wc = (typeof globalThis !== "undefined" && globalThis.crypto) ||
-             (typeof window !== "undefined" && window.crypto);
-  if (wc && typeof wc.getRandomValues === "function") {
-    const arr = new Uint8Array(bytes);
-    wc.getRandomValues(arr);
-    let hex = "";
-    for (let i = 0; i < arr.length; i++) {
-      const b = arr[i];
-      hex += (b < 16 ? "0" : "") + b.toString(16);
-    }
-    return hex;
-  }
-  if (crypto && typeof crypto.randomBytes === "function") {
-    return crypto.randomBytes(bytes).toString("hex");
-  }
-  // Last-resort Math.random â€” keys are opaque session IDs, not security-bearing.
-  let hex = "";
-  for (let i = 0; i < bytes; i++) {
-    const b = Math.floor(Math.random() * 256);
-    hex += (b < 16 ? "0" : "") + b.toString(16);
-  }
-  return hex;
-}
-
-function makeEditorKey(seed) {
-  if (crypto && typeof crypto.createHash === "function") {
-    return crypto.createHash("sha256")
-      .update(String(seed) + Date.now().toString())
-      .digest("hex").slice(0, 20);
-  }
-  return Math.random().toString(16).slice(2, 14) +
-         Date.now().toString(16).slice(-8);
+  // Web Crypto is present in both Electron renderer and Capacitor WKWebView
+  // (the module-top `crypto` is the Node module and is null on mobile).
+  const arr = new Uint8Array(bytes);
+  globalThis.crypto.getRandomValues(arr);
+  return Array.from(arr, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 // Username for the OnlyOffice editor's user.id/name. Desktop reads OS user;
@@ -2522,7 +2463,7 @@ class OfficeEditorView extends obsidian.FileView {
       if (!this._returnToDocPath) return;
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
       const leaf = existing || this.leaf;   // reuse an open detail tab (Ctrl-click case), else swap THIS editor tab back
-      leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false } });
+      leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false, tab: this._returnToDocTab || null } });
       this.app.workspace.revealLeaf(leaf);
     };
     this._returnBtnEl = b;
@@ -2550,6 +2491,7 @@ class OfficeEditorView extends obsidian.FileView {
   getState() {
     const s = super.getState();
     if (this._returnToDocPath) s.returnDocPath = this._returnToDocPath;
+    if (this._returnToDocTab) s.returnTab = this._returnToDocTab;
     return s;
   }
   async setState(state, result) {
@@ -2557,6 +2499,7 @@ class OfficeEditorView extends obsidian.FileView {
     // "different file" clear branch doesn't fire) and _syncReturnAction draws the button.
     if (state && state.returnDocPath) {
       this._returnToDocPath = state.returnDocPath;
+      this._returnToDocTab = state.returnTab || null;
       this._returnForPath = state.file || null;
     }
     return super.setState(state, result);
@@ -2574,8 +2517,8 @@ class OfficeEditorView extends obsidian.FileView {
     // "Return to document": consume the context the detail page set when launching us. Survives a same-file
     // reload (via _returnForPath); cleared when a DIFFERENT file loads into this (possibly reused) editor.
     const rc = this.plugin && this.plugin._returnContext;
-    if (rc && file && rc.path === file.path) { this._returnToDocPath = rc.docPath; this._returnForPath = file.path; this.plugin._returnContext = null; }
-    else if (this._returnForPath && file && this._returnForPath !== file.path) { this._returnToDocPath = null; this._returnForPath = null; }
+    if (rc && file && rc.path === file.path) { this._returnToDocPath = rc.docPath; this._returnToDocTab = rc.tab || null; this._returnForPath = file.path; this.plugin._returnContext = null; }
+    else if (this._returnForPath && file && this._returnForPath !== file.path) { this._returnToDocPath = null; this._returnToDocTab = null; this._returnForPath = null; }
     try {
       await this._onLoadFileInner(file);
       this._syncReturnAction();   // add the floating Return button AFTER the editor renders (else _renderEditor wipes it)
@@ -3117,11 +3060,6 @@ class OfficeEditorView extends obsidian.FileView {
     const fm = lf ? (this.app.metadataCache.getFileCache(lf) || {}).frontmatter || {} : {};
     return docContainer.lockStateFromFront(fm, new Date().toISOString(), this.plugin.settings.checkoutTimeoutHours || 0);
   }
-  // Check-out gate: is this open office file checked out by someone other than me?
-  _isLockedByOther(file) {
-    const st = this._lockStateForFile(file);
-    return !!st.by && st.by !== resolveAuthorId();
-  }
   // True when `file` is the highest (current) version in its document folder.
   _isCurrentVersion(file) {
     const parent = file.parent;
@@ -3158,7 +3096,7 @@ class OfficeEditorView extends obsidian.FileView {
   }
   _buildEditorConfig() {
     const filename = this.file.basename + "." + this.file.extension;
-    const editorKey = makeEditorKey(this.file.path);
+    const editorKey = randomHex(10);
     const username = getUsername();
     const gate = this._editGate(this.file);
     const editable = gate.editable;
@@ -3342,6 +3280,11 @@ class PdfView extends OfficeEditorView {
 // ===========================================================================
 
 // Append a fresh span containing a Lucide SVG icon to `parent`; returns the span.
+// Today as YYYY-MM-DD for doc-container date stamps (relatedDocuments.added etc.).
+function docToday() {
+  return window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+}
+
 function docIcon(parent, name, cls) {
   const s = parent.createSpan({ cls: cls || 'doc-ico' });
   obsidian.setIcon(s, name);
@@ -3356,6 +3299,23 @@ function docIconLabel(parent, name, label, opts) {
   docIcon(el, name, 'doc-btn-ico');
   el.createSpan({ text: label });
   return el;
+}
+
+// When a .doc-detail-tabs flex bar wraps to 2+ rows, draw a grey L-border (under
+// the upper row, down the right edge to the pane) so the lower row stays visually
+// grouped with the element. Pure CSS can't detect flex wrap — measure, and
+// re-measure on resize. The bar is position:relative, so child offsetTop is bar-relative.
+function docTabsWrapGuard(bar) {
+  const measure = () => {
+    if (!bar.isConnected) { ro.disconnect(); return; }
+    const first = bar.firstElementChild;
+    if (!first) return;
+    const wrapped = Array.from(bar.children).some(c => c.offsetTop > first.offsetTop);
+    bar.toggleClass('is-wrapped', wrapped);
+    if (wrapped) bar.style.setProperty('--doc-tabs-wrap-top', (first.offsetTop + first.offsetHeight - 1) + 'px');
+  };
+  const ro = new ResizeObserver(measure);
+  ro.observe(bar);
 }
 
 // ===========================================================================
@@ -3497,7 +3457,7 @@ class DocumentDetailView extends obsidian.ItemView {
       this.node = this.findDoc(tree, state.docPath);
       this._editMode = !!state.edit; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode (unless edit requested, e.g. a just-created doc)
       this._fresh = !!state.fresh;   // a just-created doc: Cancel discards it (see Cancel handler)
-      this._activeTab = {};     // new document → default tabs (Files & Versions / Recent Notes)
+      this._activeTab = state.tab ? { left: state.tab } : {};   // tab hint (e.g. Return from a related doc → Related Documents); else default tabs
       this._wantScrollTop = true;   // scroll to top for a different document (preserved otherwise)
       this.render();
     }
@@ -3588,7 +3548,7 @@ class DocumentDetailView extends obsidian.ItemView {
     this._tabGroup(rightCol, [
       { id: 'recent', label: 'Recent Notes', count: arr(fm.noteLog).length,     fill: (p) => this._renderRecentNotesPane(p, fm) },
       { id: 'search', label: 'Search Notes',                                     fill: (p) => this._renderSearchNotesPane(p, fm) },
-      { id: 'log',    label: 'Log',          fill: (p) => this._renderLogPane(p, fm) },   // no count: entries live in log.md (read async), not fm.activityLog
+      { id: 'log',    label: 'Log',   right: true, fill: (p) => this._renderLogPane(p, fm) },   // no count: entries live in log.md (read async), not fm.activityLog
     ], 'right');
 
     // Sticky footer (5 actions)
@@ -3610,10 +3570,11 @@ class DocumentDetailView extends obsidian.ItemView {
   _tabGroup(colEl, specs, colKey) {
     if (!this._activeTab) this._activeTab = {};
     const bar = colEl.createDiv('doc-detail-tabs');
+    if (specs.some(s => s.right)) bar.addClass('has-right');
     const panes = colEl.createDiv('doc-detail-panes');
     const hasActive = specs.some(s => s.id === this._activeTab[colKey]);
     specs.forEach((spec, i) => {
-      const tab = bar.createDiv('doc-detail-tabb');
+      const tab = bar.createDiv('doc-detail-tabb' + (spec.right ? ' right' : ''));
       tab.createSpan({ text: spec.label });
       if (spec.count != null) tab.createSpan({ text: String(spec.count), cls: 'doc-detail-tabcnt' });
       const pane = panes.createDiv('doc-detail-tabpane');
@@ -3627,10 +3588,15 @@ class DocumentDetailView extends obsidian.ItemView {
       tab.onclick = activate;
       if (hasActive ? spec.id === this._activeTab[colKey] : i === 0) activate();
     });
+    docTabsWrapGuard(bar);
   }
 
   _renderMeta(wrap, fm) {
     if (this._editMode) this._mdInputs = {};
+    // Placeholder Tasks tab affixed to the metadata card (top-right, under the Edit
+    // button) — future planning anchor, no function yet.
+    const mtabs = wrap.createDiv('doc-detail-metatabs');
+    mtabs.createDiv('doc-detail-tabb').createSpan({ text: 'Tasks' });
     const card = wrap.createDiv('doc-detail-metacard');
     const byKey = {}; for (const f of docContainer.DOC_FIELDS.phase1) byKey[f.key] = f;
     const groups = [
@@ -3677,7 +3643,14 @@ class DocumentDetailView extends obsidian.ItemView {
     }
 
     let val = fm[f.key];
-    if (f.key === 'tags' && Array.isArray(val)) val = val.map(t => '#' + String(t).replace(/^#/, '')).join(' ');
+    if (f.key === 'tags') {
+      const arr = Array.isArray(val) ? val : (val ? String(val).split(/[,\s]+/) : []);
+      const tags = arr.map(t => String(t).replace(/^#/, '')).filter(Boolean);
+      if (!tags.length) { cell.createDiv({ text: '—', cls: 'doc-detail-val' }); return; }
+      const box = cell.createDiv('doc-detail-val');
+      tags.forEach(t => box.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
+      return;
+    }
     if (f.key === 'revision' && !val && this.node.current) val = docContainer.parseVersion(this.node.current).label.replace('rev ', '');
     if (f.key === 'nextReviewDate') {
       const nr = val || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays);
@@ -3751,16 +3724,25 @@ class DocumentDetailView extends obsidian.ItemView {
     if (!changed) { this.render(); return; }  // nothing to write — just exit edit mode (no stale read)
     const st = inputs.status;
     const statusChanged = st && st.inp.value !== st.orig;
-    await this._mutateSidecar((front) => {
-      for (const k in inputs) {
-        const { inp, orig, field } = inputs[k];
-        const v = inp.value;
-        if (v === orig) continue;             // never clobber untouched/hand-authored values
-        if (k === 'tags') front.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
-        else if (field.type === 'number') front[k] = v === '' ? null : Number(v);
-        else front[k] = v === '' ? null : v;
-      }
-    }, statusChanged ? { action: 'Status changed: ' + (st.orig || '—') + ' → ' + (st.inp.value || '—'), type: 'status' } : { action: 'Metadata edited', type: 'meta' });
+    try {
+      await this._mutateSidecar((front) => {
+        for (const k in inputs) {
+          const { inp, orig, field } = inputs[k];
+          const v = inp.value;
+          if (v === orig) continue;             // never clobber untouched/hand-authored values
+          if (k === 'tags') front.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+          else if (field.type === 'number') front[k] = v === '' ? null : Number(v);
+          else front[k] = v === '' ? null : v;
+        }
+      }, statusChanged ? { action: 'Status changed: ' + (st.orig || '—') + ' → ' + (st.inp.value || '—'), type: 'status' } : { action: 'Metadata edited', type: 'meta' });
+    } catch (e) {
+      // Surface the failure instead of silently stranding the edit form; stay in edit
+      // mode WITHOUT re-rendering so the user's typed values survive in the DOM.
+      elog('[doc-container] metadata save failed:', e && e.stack || e);
+      new obsidian.Notice('Save failed: ' + ((e && e.message) || e));
+      this._editMode = true;
+      return;
+    }
     // the metadataCache 'changed' listener re-renders view-mode with fresh data (no manual render → no stale read)
   }
 
@@ -3840,7 +3822,7 @@ class DocumentDetailView extends obsidian.ItemView {
             const filePath = await this.plugin.createLooseRelatedDoc({ parentDocPath, title, ext, templatePath });
             if (!filePath) return null;
             const wl = this._relWikilink(filePath);
-            rel.push({ kind: 'link', target: filePath, label: title.trim() });
+            rel.push({ kind: 'link', target: filePath, label: title.trim(), added: docToday() });
             await this._mutateSidecar((front) => {
               front.relatedDocuments = rel.map(({ link, ...r }) => r);
               if (wl) {
@@ -3849,7 +3831,7 @@ class DocumentDetailView extends obsidian.ItemView {
                 front.links = links;
               }
             }, { action: 'Related document created: ' + title.trim(), type: 'link' });
-            this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf);   // editor; Return → parent detail
+            this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf, 'reldocs');   // editor; Return → parent detail, Related tab
             return filePath;   // truthy → modal closes
           },
         }).open();
@@ -3877,7 +3859,7 @@ class DocumentDetailView extends obsidian.ItemView {
       let activeIdx = -1;
       const chooseFile = async (f) => {
         const wl = this._relWikilink(f.path);
-        rel.push({ kind: 'link', target: f.path, label: f.basename });
+        rel.push({ kind: 'link', target: f.path, label: f.basename, added: docToday() });
         await this._mutateSidecar((front) => {
           // Strip any legacy `link` field off entries — a wikilink inside the
           // relatedDocuments objects makes Obsidian render it as "[object Object]"
@@ -3935,9 +3917,9 @@ class DocumentDetailView extends obsidian.ItemView {
     if (rel.length) {
       const rHead = p.createDiv('doc-detail-lhead');
       rHead.createSpan({ text: 'Document' });
-      rHead.createSpan({ text: 'Type' });
+      rHead.createSpan({ text: 'Added · Type' });
     }
-    const listEl = p.createDiv();
+    const listEl = p.createDiv('doc-detail-rellist');
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
       { const fl = row.createDiv('doc-detail-fl doc-detail-rellink'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target });
@@ -3953,12 +3935,13 @@ class DocumentDetailView extends obsidian.ItemView {
           if (docContainer.MANAGED_EXTS.includes(ext)) {
             const container = this._relatedDocContainer(r.target);
             if (container) { this.plugin.openDocDetail({ path: container }); return; }
-            this.plugin.openDocInEditor(r.target, this.node.path, newPane, this.leaf);
+            this.plugin.openDocInEditor(r.target, this.node.path, newPane, this.leaf, 'reldocs');   // Return → Related tab
           } else {
             this.app.workspace.openLinkText(r.target, this.node.path, newPane);
           }
         }; }
       const right = row.createDiv('doc-detail-relright');
+      if (r.added) right.createSpan({ text: r.added, cls: 'doc-detail-reladded', attr: { title: 'Added/linked ' + r.added } });
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
         const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
@@ -3992,7 +3975,7 @@ class DocumentDetailView extends obsidian.ItemView {
         let dest = this.node.path + '/' + f.name;
         if (this.app.vault.getAbstractFileByPath(dest)) dest = this.node.path + '/' + Date.now() + '-' + f.name;
         await this.app.vault.createBinary(dest, buf);
-        rel.push({ kind: 'ref', target: dest, label: f.name });
+        rel.push({ kind: 'ref', target: dest, label: f.name, added: docToday() });
       } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
     }
     await this._saveSidecar('relatedDocuments', rel, { action: 'Reference attached', type: 'attach' });
@@ -4608,6 +4591,7 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   _projTabs(parent, node, pn) {
     const bar = parent.createDiv('doc-detail-tabs');
+    bar.addClass('has-right');   // Log tab is pinned top-right
     const panes = parent.createDiv('doc-detail-panes');
     const docs = this.docsUnder(node);
     const arr = (v) => Array.isArray(v) ? v : [];
@@ -4635,6 +4619,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       // Restore the previously-active tab across a re-render (after a project edit); else first
       if (hasActive ? spec.id === this._projActiveTab : i === 0) activate();
     });
+    docTabsWrapGuard(bar);
   }
 
   _pushProjLog(fm, action, type) {
@@ -5175,11 +5160,6 @@ function renderStandaloneLandingPage(containerEl, plugin) {
     if (typeof tags === "string") return tags.split(/[\s,]+/).map((t) => t.replace(/^#/, "")).filter(Boolean);
     return [];
   }
-  // Back-compat thin wrapper — returns space-joined lowercased text.
-  function sidecarTagText(file) {
-    return sidecarTagArray(file).join(" ");
-  }
-
   // Note tab — read tags from the note's OWN frontmatter (notes carry their
   // own frontmatter; they have no sidecar). Same array/string handling as
   // sidecarTagArray.
@@ -6117,8 +6097,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         const sidecarPath = file.path + ".md";
         const sf = this.app.vault.getAbstractFileByPath(sidecarPath);
         if (sf && sf instanceof obsidian.TFile) {
-          this.app.vault.delete(sf);
-          dlog("sidecar deleted:", sidecarPath);
+          // A folder delete (doc-container Clean Delete) trashes the sidecar with the
+          // folder before this fires — swallow the ENOENT instead of leaving an
+          // unhandled rejection when we race it.
+          this.app.vault.delete(sf).then(
+            () => dlog("sidecar deleted:", sidecarPath),
+            () => {}
+          );
         }
       }
     }));
@@ -7453,7 +7438,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     try {
       await this.app.vault.trash(folder, true);   // true = system trash (recoverable)
     } catch (e) { new obsidian.Notice('Could not delete: ' + (e && e.message ? e.message : e)); return; }
-    if (typeof this.buildDocIndex === 'function') this.buildDocIndex();
+    this.buildDocIndex();
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER).forEach(l => l.view.render && l.view.render());
     new obsidian.Notice('Moved "' + (name || path) + '" to trash.');
@@ -7618,16 +7603,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   // ── Task 9: Detail action handlers ───────────────────────────────────────────
-  async openFileInEditor(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) { new obsidian.Notice('File not found: ' + path); return; }
-    await this._openInView(file);   // existing P21 office-editor router; takes a TFile (uses file.extension)
-    this._appendActivity(path, 'Opened in editor', 'open');
-  }
   // Open an office file FROM the doc-container detail page. sameLeaf = swap into the
   // detail's own tab; newPane (Ctrl/Cmd-click) = a new tab. Either way the editor gets
   // a "Return to document" header action back to returnDocPath.
-  async openDocInEditor(filePath, returnDocPath, newPane, sameLeaf) {
+  async openDocInEditor(filePath, returnDocPath, newPane, sameLeaf, returnTab) {
     const file = this.app.vault.getAbstractFileByPath(filePath);
     if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('File not found: ' + filePath); return; }
     // Route by extension and force OUR editor view via setViewState (same mechanism
@@ -7638,10 +7617,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     else if (file.extension === 'xlsx') viewType = VIEW_TYPE_XLSX;
     else if (file.extension === 'pdf') viewType = VIEW_TYPE_PDF;
     const leaf = newPane ? this.app.workspace.getLeaf('tab') : (sameLeaf || this.app.workspace.getLeaf('tab'));
-    this._returnContext = { path: filePath, docPath: returnDocPath };   // consumed by OfficeEditorView.onLoadFile
+    this._returnContext = { path: filePath, docPath: returnDocPath, tab: returnTab || null };   // consumed by OfficeEditorView.onLoadFile
     // returnDocPath also goes into the view state so setState sets _returnToDocPath
     // synchronously (no race with async onLoadFile) → it persists via getState across restart.
-    await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath } });
+    await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath, returnTab: returnTab || null } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
@@ -7653,12 +7632,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     try { const { shell } = require('electron'); shell.openPath(full); }
     catch (e) { new obsidian.Notice('System app unavailable on this platform'); }   // mobile/iPad: graceful
     this._appendActivity(path, 'Opened in system app', 'open');
-  }
-
-  openMetadataModal(path) {
-    const file = this.app.vault.getAbstractFileByPath(path);
-    if (!file) { new obsidian.Notice('File not found: ' + path); return; }
-    new MetadataModal(this.app, path).open();   // takes the office path; appends .md itself
   }
 
   revealInExplorer(path) {
