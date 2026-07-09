@@ -3496,7 +3496,8 @@ class ContainerNoteView extends obsidian.FileView {
       this._dirty = false;               // discard, do not flush (lock ≠ save)
       this._destroyCm();
       this.contentEl.empty();
-      this._previewing = false; this._previewEl = null; this._previewAction = null;
+      this._previewing = false; this._previewEl = null;
+      if (this._previewAction) { this._previewAction.remove(); this._previewAction = null; }   // header icon lives outside contentEl — must be removed, or unlock re-adds a duplicate
       this._renderLockedPlaceholder();
       dlog('note view locked:', this.file && this.file.path);
     } else if (this.file) {
@@ -3504,9 +3505,18 @@ class ContainerNoteView extends obsidian.FileView {
       this.onLoadFile(this.file);        // reload from disk
     }
   }
+  // Returns true when the view locked, false when the save failed (or new edits
+  // landed mid-save) and the buffer was preserved — the autolock layer decides
+  // retry policy. Locking after a failed save would silently discard edits.
   async saveThenLock() {
     await this._saveNow();               // strictly ordered: save completes, then lock
+    if (this._dirty) {                   // write failed (re-marked dirty) — do NOT discard
+      elog('saveThenLock: save failed; view left unlocked to preserve the buffer');
+      new obsidian.Notice('Note save failed — not locking this view.');
+      return false;
+    }
     this.setLocked(true);
+    return true;
   }
 }
 
