@@ -7645,8 +7645,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async readNoteBody(file) {
     return await this.app.vault.read(file);
   }
-  async writeNoteBody(file, text) {
-    await this.app.vault.modify(file, text);
+  // Accepts a TFile or a vault path. Creates the file when it doesn't exist yet
+  // (the initial seed) so first-write ALSO passes through the seam — otherwise
+  // Phase D would leave the seed content unencrypted.
+  async writeNoteBody(fileOrPath, text) {
+    if (typeof fileOrPath === 'string') {
+      const existing = this.app.vault.getAbstractFileByPath(fileOrPath);
+      if (existing instanceof obsidian.TFile) { await this.app.vault.modify(existing, text); return; }
+      await this.app.vault.create(fileOrPath, text);
+      return;
+    }
+    await this.app.vault.modify(fileOrPath, text);
   }
 
   // Machine-written skeleton: extract title/tags/links from the PLAINTEXT body
@@ -7684,7 +7693,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
     try {
       await this.app.vault.createFolder(noteFolder);
-      await this.app.vault.create(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');
+      await this.writeNoteBody(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');   // seed through the choke point
       const nowIso = new Date().toISOString();
       const yaml = '---\n'
         + 'docId: ' + this.generateDocId() + '\n'
