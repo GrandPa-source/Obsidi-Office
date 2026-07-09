@@ -3371,6 +3371,7 @@ class ContainerNoteView extends obsidian.FileView {
     dlog('ContainerNoteView onLoadFile:', file && file.path);
     await this._flushSave();   // leaf reuse: persist the previous file's buffer first
     this.contentEl.empty();
+    this._editorHostEl = null;   // else a failed load leaves a stale host and _togglePreview's guard passes
     this._previewing = false;
     this._previewEl = null;
     this._destroyCm();
