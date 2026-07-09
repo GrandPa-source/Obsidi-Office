@@ -3402,10 +3402,29 @@ class ContainerNoteView extends obsidian.FileView {
   _renderLockedPlaceholder() {
     this.contentEl.createEl('div', { cls: 'obsidi-note-locked', text: 'Locked' });
   }
-  // Task 5 fills these in; stubs keep onLoadFile/onClose callable meanwhile.
-  _noteChanged() {}
-  async _saveNow() {}
-  async _flushSave() {}
+  _noteChanged() {
+    this._dirty = true;
+    if (this._saveTimer) clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => { this._saveNow(); }, 5000);   // Paul decision: 5 s after typing stops
+  }
+  async _saveNow() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    if (!this._dirty || !this._cm || !this.file) return;
+    const text = this._cm.state.doc.toString();
+    this._dirty = false;   // optimistic; a failed write re-marks dirty below
+    try {
+      // Order is load-bearing (encryption seam): skeleton extraction runs on the
+      // PLAINTEXT buffer BEFORE the body write (later: before encryption).
+      await this.plugin.updateNoteSkeleton(this.file.parent.path, text);
+      await this.plugin.writeNoteBody(this.file, text);
+      dlog('note saved:', this.file.path, text.length, 'chars');
+    } catch (e) {
+      this._dirty = true;
+      elog('note save failed:', e && e.stack || e);
+      new obsidian.Notice('Note save failed: ' + (e && e.message ? e.message : e));
+    }
+  }
+  async _flushSave() { if (this._dirty) await this._saveNow(); }
 }
 
 // ===========================================================================
