@@ -3351,6 +3351,9 @@ class ContainerNoteView extends obsidian.FileView {
     this._dirty = false;
     this._locked = false;
     this._editorHostEl = null;
+    this._previewing = false;
+    this._previewEl = null;
+    this._previewAction = null;
   }
   getViewType() { return VIEW_TYPE_NOTE; }
   getIcon() { return 'notebook-pen'; }
@@ -3368,6 +3371,8 @@ class ContainerNoteView extends obsidian.FileView {
     dlog('ContainerNoteView onLoadFile:', file && file.path);
     await this._flushSave();   // leaf reuse: persist the previous file's buffer first
     this.contentEl.empty();
+    this._previewing = false;
+    this._previewEl = null;
     this._destroyCm();
     if (this._locked) { this._renderLockedPlaceholder(); return; }
     const cm = requireCm();
@@ -3393,6 +3398,9 @@ class ContainerNoteView extends obsidian.FileView {
       parent: this._editorHostEl,
     });
     dlog('note editor ready:', file.path, text.length, 'chars');
+    if (!this._previewAction) {
+      this._previewAction = this.addAction('book-open', 'Toggle preview', () => this._togglePreview());
+    }
   }
   async onUnloadFile(file) { await this._flushSave(); this._destroyCm(); return super.onUnloadFile(file); }
   async onClose() { await this._flushSave(); this._destroyCm(); return super.onClose(); }
@@ -3437,6 +3445,22 @@ class ContainerNoteView extends obsidian.FileView {
   async _flushSave() {
     while (this._savePromise) await this._savePromise;   // flush = fully settled, not just "no dirty flag"
     if (this._dirty) await this._saveNow();
+  }
+  async _togglePreview() {
+    if (this._locked || !this.file || !this._editorHostEl) return;
+    this._previewing = !this._previewing;
+    if (this._previewing) {
+      await this._flushSave();
+      const text = this._cm ? this._cm.state.doc.toString() : await this.plugin.readNoteBody(this.file);
+      this._editorHostEl.style.display = 'none';
+      this._previewEl = this.contentEl.createEl('div', { cls: 'obsidi-note-preview markdown-rendered' });
+      await obsidian.MarkdownRenderer.render(this.plugin.app, text, this._previewEl, this.file.path, this);
+      dlog('note preview on:', this.file.path);
+    } else {
+      if (this._previewEl) { this._previewEl.remove(); this._previewEl = null; }
+      this._editorHostEl.style.display = '';
+      dlog('note preview off:', this.file.path);
+    }
   }
 }
 
