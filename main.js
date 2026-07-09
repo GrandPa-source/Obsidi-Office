@@ -3334,8 +3334,26 @@ function requireCm() {
       view: require('@codemirror/view'),
       state: require('@codemirror/state'),
       commands: require('@codemirror/commands'),
+      autocomplete: require('@codemirror/autocomplete'),
     };
   } catch (e) { elog('CodeMirror modules unavailable:', e && e.message); return null; }
+}
+
+// [[ completion inside the note editor. Fires only when the text before the
+// cursor contains an unclosed "[[". Inserts "<target>]]".
+function noteLinkCompletionSource(plugin) {
+  return (ctx) => {
+    const line = ctx.state.doc.lineAt(ctx.pos);
+    const before = line.text.slice(0, ctx.pos - line.from);
+    const m = before.match(/\[\[([^\][]*)$/);
+    if (!m) return null;
+    const q = m[1].toLowerCase();
+    const options = plugin.noteLinkCandidates()
+      .filter(c => c.label.toLowerCase().includes(q))
+      .slice(0, 25)
+      .map(c => ({ label: c.label, apply: c.insert + ']]' }));
+    return { from: ctx.pos - m[1].length, options, filter: false };
+  };
 }
 
 // Plugin-owned markdown note editor over a body.cnote file. The note's title/
@@ -3393,6 +3411,8 @@ class ContainerNoteView extends obsidian.FileView {
           cm.commands.history(),
           cm.view.keymap.of([...cm.commands.defaultKeymap, ...cm.commands.historyKeymap]),
           cm.view.EditorView.lineWrapping,
+          cm.autocomplete.autocompletion({ override: [noteLinkCompletionSource(this.plugin)] }),
+          cm.view.keymap.of(cm.autocomplete.completionKeymap),
           cm.view.EditorView.updateListener.of((u) => { if (u.docChanged) this._noteChanged(); }),
         ],
       }),
@@ -7910,6 +7930,27 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
+  }
+
+  // Container-notes titles provider — the pluggable seam behind [[ completion
+  // (later: the RAM title map). Vault note basenames + note-container titles.
+  // Inserts the link TARGET (basename or full _document path), never an alias.
+  noteLinkCandidates() {
+    const out = [];
+    const seen = new Set();
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (/\.(docx|pptx|xlsx|pdf)\.md$/i.test(f.path)) continue;   // office sidecars
+      if (f.name === docContainer.DOCUMENT_MD_NAME || f.name === docContainer.LOG_MD_NAME) continue;
+      if (f.name === '_project.md' || f.name === '_migration-report.md') continue;
+      if (!seen.has(f.basename)) { seen.add(f.basename); out.push({ label: f.basename, insert: f.basename }); }
+    }
+    if (this._docIndex) {
+      for (const rec of this._docIndex.values()) {
+        const t = rec.front && rec.front.title;
+        if (t && !seen.has(t)) { seen.add(t); out.push({ label: t, insert: rec.path + '/_document' }); }
+      }
+    }
+    return out;
   }
 
   // Resolve once the sidecar at scPath is parsed into metadataCache (frontmatter
