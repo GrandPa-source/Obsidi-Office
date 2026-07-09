@@ -3487,6 +3487,27 @@ class ContainerNoteView extends obsidian.FileView {
       dlog('note preview off:', this.file.path);
     }
   }
+  // ── Locked-state seams (INERT — the key/autolock layer calls these later;
+  // nothing in this build triggers them). lock = discard buffer, no save.
+  setLocked(locked) {
+    this._locked = !!locked;
+    if (this._locked) {
+      if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+      this._dirty = false;               // discard, do not flush (lock ≠ save)
+      this._destroyCm();
+      this.contentEl.empty();
+      this._previewing = false; this._previewEl = null; this._previewAction = null;
+      this._renderLockedPlaceholder();
+      dlog('note view locked:', this.file && this.file.path);
+    } else if (this.file) {
+      dlog('note view unlocked:', this.file.path);
+      this.onLoadFile(this.file);        // reload from disk
+    }
+  }
+  async saveThenLock() {
+    await this._saveNow();               // strictly ordered: save completes, then lock
+    this.setLocked(true);
+  }
 }
 
 // ===========================================================================
