@@ -3391,7 +3391,7 @@ class ContainerNoteView extends obsidian.FileView {
   }
   async onLoadFile(file) {
     dlog('ContainerNoteView onLoadFile:', file && file.path);
-    await this._flushSave();   // leaf reuse: persist the previous file's buffer first
+    await this._flushSave();   // defensive only: onUnloadFile already flushed + destroyed CM before this runs; no-ops unless Obsidian's unload-before-load ordering ever changes
     this.contentEl.empty();
     this._editorHostEl = null;   // else a failed load leaves a stale host and _togglePreview's guard passes
     this._previewing = false;
@@ -7961,6 +7961,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const bodyPath = node.path + '/' + (node.noteBody || docContainer.NOTE_BODY_NAME);
     const file = this.app.vault.getAbstractFileByPath(bodyPath);
     if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('Note body not found: ' + bodyPath); return; }
+    // One editor per note: a second tab on the same body would autosave from a
+    // divergent buffer and silently clobber the first (last writer wins).
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_NOTE)
+      .find(l => l.view && l.view.file && l.view.file.path === bodyPath);
+    if (existing) {
+      this.app.workspace.setActiveLeaf(existing, { focus: true });
+      this.app.workspace.revealLeaf(existing);
+      return;
+    }
     const leaf = this.app.workspace.getLeaf('tab');
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this.app.workspace.revealLeaf(leaf);

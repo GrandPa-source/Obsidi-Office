@@ -496,7 +496,7 @@ class ContainerNoteView extends obsidian.FileView {
   }
   async onLoadFile(file) {
     dlog('ContainerNoteView onLoadFile:', file && file.path);
-    await this._flushSave();   // leaf reuse: persist the previous file's buffer first
+    await this._flushSave();   // defensive only: onUnloadFile already flushed + destroyed CM before this runs; no-ops unless Obsidian's unload-before-load ordering ever changes
     this.contentEl.empty();
     this._editorHostEl = null;   // else a failed load leaves a stale host and _togglePreview's guard passes
     this._destroyCm();
@@ -564,6 +564,15 @@ After the xlsx `registerExtensions` block (~line 5862):
     const bodyPath = node.path + '/' + (node.noteBody || docContainer.NOTE_BODY_NAME);
     const file = this.app.vault.getAbstractFileByPath(bodyPath);
     if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('Note body not found: ' + bodyPath); return; }
+    // One editor per note: a second tab on the same body would autosave from a
+    // divergent buffer and silently clobber the first (last writer wins).
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_NOTE)
+      .find(l => l.view && l.view.file && l.view.file.path === bodyPath);
+    if (existing) {
+      this.app.workspace.setActiveLeaf(existing, { focus: true });
+      this.app.workspace.revealLeaf(existing);
+      return;
+    }
     const leaf = this.app.workspace.getLeaf('tab');
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this.app.workspace.revealLeaf(leaf);
@@ -951,7 +960,7 @@ git commit -m "feat(container-notes): inert locked-state seams (setLocked / save
 - Repo: push branch
 
 - [ ] **Step 1: Full desktop smoke (Paul)** — one pass over: create → edit → autosave → rename-by-H1 → tags/graph/backlinks → filter → preview → `[[` completion → flush-on-close → restart Obsidian with a note tab open (FileView restores the file; tab title correct) → office documents REGRESSION: open/edit/save a docx, check-out gate still behaves, browser tree office rows unchanged.
-- [ ] **Step 2: Run the full test suite one last time** — `node --test lib/doc-container.test.js` → 60/60.
+- [ ] **Step 2: Run the full test suite one last time** — `node --test lib/doc-container.test.js` → 63/63 (60 + 3 taxonomy-shape tests added at final review: `note.children` empty, root-level note folder, three-level-deep note folder).
 - [ ] **Step 3: Push**
 
 ```powershell
