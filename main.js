@@ -167,9 +167,13 @@ function buildTaxonomy(paths, root) {
     folderFiles.get(folder).push(name);
   }
   // A folder is a Document if it has ≥1 managed office file directly in it.
+  // A folder is a NOTE container if it has a .cnote body and NO office file
+  // (office wins: the .cnote then rides along as an attachment).
   const documents = new Set();
+  const notes = new Set();
   for (const [folder, files] of folderFiles) {
     if (files.some(isManaged)) documents.add(folder);
+    else if (files.some(isNoteBody)) notes.add(folder);
   }
   // Build nested category/collection/document tree.
   const rootNode = { children: [] };
@@ -178,24 +182,31 @@ function buildTaxonomy(paths, root) {
     if (!n) { n = { name, path, kind: null, children: [] }; parent.children.push(n); }
     return n;
   };
-  for (const docFolder of documents) {
+  const leaves = [];
+  for (const f of documents) leaves.push({ folder: f, leafKind: 'document' });
+  for (const f of notes)     leaves.push({ folder: f, leafKind: 'note' });
+  for (const { folder: docFolder, leafKind } of leaves) {
     const rel = docFolder.slice(prefix.length);          // e.g. Governance/Policy/Fan-Out…
     const segs = rel.split('/');
     let parent = rootNode, acc = root;
     segs.forEach((seg, i) => {
       acc += '/' + seg;
       const node = ensure(parent, seg, acc);
-      if (i === segs.length - 1) node.kind = 'document';
+      if (i === segs.length - 1) node.kind = leafKind;
       else if (i === 0) node.kind = 'category';
       else if (!node.kind) node.kind = 'collection';
       parent = node;
     });
-    // attach grouped files to the document node
     const docNode = parent;
-    const grouped = groupDocumentFiles(folderFiles.get(docFolder));
-    docNode.current = grouped.current;
-    docNode.files = grouped.versions;
-    docNode.attachments = grouped.attachments;
+    if (leafKind === 'document') {
+      const grouped = groupDocumentFiles(folderFiles.get(docFolder));
+      docNode.current = grouped.current;
+      docNode.files = grouped.versions;
+      docNode.attachments = grouped.attachments;
+    } else {
+      docNode.noteBody = folderFiles.get(docFolder).find(isNoteBody);
+      docNode.current = null; docNode.files = []; docNode.attachments = [];
+    }
   }
   return rootNode.children;
 }
