@@ -5888,6 +5888,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.addCommand({ id: 'doc-container-migrate-dryrun',
         name: 'Doc-Container: migrate metadata to _document.md (dry run)',
         callback: () => this.dryRunMetadataMigration() });
+      // Container-notes: create a plugin-owned note (folder + skeleton + body).
+      this.addCommand({ id: 'create-container-note', name: 'Create container note',
+        callback: () => new NoteTitleModal(this.app, (title) => this.createNoteContainer({ title })).open() });
     }
 
     this.addCommand({
@@ -6188,6 +6191,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         if (!(file instanceof obsidian.TFile)) return;
         if (file.extension !== "md") return;
         if (/\.(docx|pptx|xlsx)\.md$/i.test(file.path)) return;  // office sidecar
+        if (file.name === docContainer.DOCUMENT_MD_NAME) return;  // machine-written note/doc skeleton
         const root = this.settings.templatesRoot || "_obsidi-office-templates";
         if (file.path === root || file.path.startsWith(root + "/")) return;  // template file
         if (this.settings.autoNoteFrontmatter === false) return;
@@ -7099,6 +7103,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.nav-file-title[data-path$=".pptx.md"], ' +
       '.nav-file-title[data-path$=".xlsx.md"], ' +
       '.nav-file-title[data-path$=".pdf.md"], ' +
+      '.nav-file-title[data-path$=".cnote"], ' +
       '.nav-file-title[data-path$="/log.md"], ' +
       '.nav-file-title[data-path$="/_document.md"], ' +
       '.nav-folder-title[data-path$="/_forks"] { display: none !important; }';
@@ -7630,6 +7635,76 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (e) {
       new obsidian.Notice('Could not create related document: ' + (e && e.message ? e.message : e));
       return;
+    }
+  }
+
+  // ── Container-notes (2026-07-09 plan) ────────────────────────────────────────
+  // Storage adapter — the ONE body read/write choke point (THE encryption seam,
+  // secure-vault design §5/§8 Phase D). Later these two methods become
+  // decrypt/encrypt under the vault key; NO other code path may touch body.cnote.
+  async readNoteBody(file) {
+    return await this.app.vault.read(file);
+  }
+  async writeNoteBody(file, text) {
+    await this.app.vault.modify(file, text);
+  }
+
+  // Machine-written skeleton: extract title/tags/links from the PLAINTEXT body
+  // and write them into the note's _document.md. Order is load-bearing: this
+  // runs BEFORE writeNoteBody (later: before encryption). Never touches
+  // docId/created; humans never edit this file.
+  async updateNoteSkeleton(folderPath, bodyText) {
+    const dm = this.app.vault.getAbstractFileByPath(folderPath + '/' + docContainer.DOCUMENT_MD_NAME);
+    if (!(dm instanceof obsidian.TFile)) { elog('updateNoteSkeleton: no _document.md in', folderPath); return; }
+    const sk = docContainer.extractNoteSkeleton(bodyText);
+    await this.app.fileManager.processFrontMatter(dm, (fm) => {
+      if (sk.title) fm.title = sk.title;
+      fm.tags = sk.tags;
+      fm.links = sk.links;
+      fm.modified = new Date().toISOString();
+    });
+    dlog('note skeleton updated:', folderPath, 'title:', sk.title, 'tags:', sk.tags.length, 'links:', sk.links.length);
+  }
+
+  // Create a note container: <parent>/<Title>/ holding body.cnote (seeded with
+  // an H1) + a machine-written _document.md skeleton with a docId from day one.
+  // Notes land straight in the editor (no detail page) — single-author quick
+  // capture, outside the check-out gate by construction (.cnote ∉ MANAGED_EXTS).
+  async createNoteContainer({ containerPath, title }) {
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) { new obsidian.Notice('Enter a note title'); return; }
+    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
+    const parent = containerPath || (this.settings.docRoot + '/Notes');
+    if (!this.app.vault.getAbstractFileByPath(parent)) {
+      try { await this.app.vault.createFolder(parent); } catch (e) { /* exists or race — creation below will surface real failures */ }
+    }
+    const noteFolder = parent + '/' + cleanTitle;
+    if (this.app.vault.getAbstractFileByPath(noteFolder)) {
+      new obsidian.Notice('A note named "' + cleanTitle + '" already exists here.'); return;
+    }
+    try {
+      await this.app.vault.createFolder(noteFolder);
+      await this.app.vault.create(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');
+      const nowIso = new Date().toISOString();
+      const yaml = '---\n'
+        + 'docId: ' + this.generateDocId() + '\n'
+        + 'docClass: Note\n'
+        + 'title: ' + JSON.stringify(cleanTitle) + '\n'
+        + 'created: "' + nowIso + '"\n'
+        + 'modified: "' + nowIso + '"\n'
+        + 'tags: []\n'
+        + 'links: []\n'
+        + '---\n';
+      await this.app.vault.create(noteFolder + '/' + docContainer.DOCUMENT_MD_NAME, yaml);
+      this.buildDocIndex();                       // docId indexed from day one
+      this.appendLog(noteFolder, 'created');
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      dlog('note container created:', noteFolder);
+      new obsidian.Notice('Created note "' + cleanTitle + '"');
+      return noteFolder;
+    } catch (e) {
+      elog('createNoteContainer failed:', e && e.stack || e);
+      new obsidian.Notice('Could not create note: ' + (e && e.message ? e.message : e));
     }
   }
 
@@ -8173,6 +8248,23 @@ class FileNameModal extends obsidian.Modal {
       if (e.key === "Enter") { const name = input.value.trim(); if (name) { this.onSubmit(name); this.close(); } }
       if (e.key === "Escape") this.close();
     });
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
+// Container-notes: minimal title prompt for Create container note.
+class NoteTitleModal extends obsidian.Modal {
+  constructor(app, onSubmit) { super(app); this.onSubmit = onSubmit; }
+  onOpen() {
+    this.titleEl.setText('New note');
+    const input = this.contentEl.createEl('input', { type: 'text', attr: { placeholder: 'Note title' } });
+    input.style.width = '100%';
+    const go = () => { const v = input.value.trim(); if (v) { this.close(); this.onSubmit(v); } };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    const btn = this.contentEl.createEl('button', { text: 'Create' });
+    btn.style.marginTop = '8px';
+    btn.onclick = go;
+    setTimeout(() => input.focus(), 0);
   }
   onClose() { this.contentEl.empty(); }
 }
