@@ -3348,10 +3348,14 @@ function noteLinkCompletionSource(plugin) {
     const m = before.match(/\[\[([^\][]*)$/);
     if (!m) return null;
     const q = m[1].toLowerCase();
+    // Editing inside an existing link: a ']]' already sits right after the
+    // cursor, so don't append another one — the existing closer stays.
+    const after = line.text.slice(ctx.pos - line.from);
+    const closer = after.startsWith(']]') ? '' : ']]';
     const options = plugin.noteLinkCandidates()
       .filter(c => c.label.toLowerCase().includes(q))
       .slice(0, 25)
-      .map(c => ({ label: c.label, apply: c.insert + ']]' }));
+      .map(c => ({ label: c.label, apply: c.insert + closer }));
     return { from: ctx.pos - m[1].length, options, filter: false };
   };
 }
