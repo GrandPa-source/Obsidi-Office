@@ -35,6 +35,12 @@ const docContainer = (function(){ const module = { exports: {} };
 
 const MANAGED_EXTS = ['docx', 'pptx', 'xlsx', 'pdf'];
 
+// Container-notes (2026-07-09 plan): a note is a folder holding a machine-written
+// _document.md skeleton + the body in a .cnote file. NOTE_EXT is deliberately
+// NOT in MANAGED_EXTS — notes bypass the check-out gate and version grouping.
+const NOTE_EXT = 'cnote';
+const NOTE_BODY_NAME = 'body.' + NOTE_EXT;
+
 const STATUS_VALUES = ['Draft','In Review','Pending Approval','Approved','Active','Archived','Obsolete'];
 const DOC_CLASSES   = ['Policy','SOP','Work Instruction','Form','Flowchart','Other'];
 
@@ -275,6 +281,35 @@ function extractInlineTags(text, flush) {
   return { body: body.trim().replace(/\s+/g, ' '), tags };
 }
 
+// ── Container-notes: skeleton extraction ─────────────────────────────────────
+
+function isNoteBody(name) {
+  return String(name || '').toLowerCase().endsWith('.' + NOTE_EXT);
+}
+
+// Extract the machine-written skeleton fields from a note's PLAINTEXT body:
+// title = first ATX H1; tags = inline #tag tokens (letter-first, so "#1"/"##"
+// never match); links = [[wikilink]] targets with alias (|…) and subpath (#…)
+// stripped, returned as '[[Target]]' strings ready for a frontmatter links:
+// array (the quoted-wikilink form the native indexer parses at boot).
+// v1 limitation (accepted): fenced code blocks are not excluded from scanning.
+function extractNoteSkeleton(text) {
+  const src = String(text || '');
+  const h1 = src.match(/^#\s+(.+)$/m);
+  const title = h1 ? h1[1].trim() : null;
+  const tags = [];
+  const tagRe = /(^|[\s(])#([A-Za-z][\w/-]*)/g;
+  let m;
+  while ((m = tagRe.exec(src))) { if (!tags.includes(m[2])) tags.push(m[2]); }
+  const links = [];
+  const linkRe = /\[\[([^\]|#\n]+)(?:[#|][^\]\n]*)?\]\]/g;
+  while ((m = linkRe.exec(src))) {
+    const t = m[1].trim();
+    if (t && !links.includes('[[' + t + ']]')) links.push('[[' + t + ']]');
+  }
+  return { title, tags, links };
+}
+
 // ── Task 30 (v0.3): aggregate stakeholders across a container's documents ─────
 
 // Group every document's stakeholders[] by (name + title); collect each person's
@@ -446,6 +481,10 @@ module.exports = {
   groupDocumentFiles,
   isManaged,
   isSidecar,
+  NOTE_EXT,
+  NOTE_BODY_NAME,
+  isNoteBody,
+  extractNoteSkeleton,
   buildTaxonomy,
   computeNextReview,
   isOverdue,
