@@ -648,6 +648,7 @@ const VIEW_TYPE_PDF = "obsidi-office-pdf";  // PDF PoC (Gate 1)
 const VIEW_TYPE_DOC_BROWSER   = 'obsidi-office-doc-browser';
 const VIEW_TYPE_DOC_DETAIL    = 'obsidi-office-doc-detail';
 const VIEW_TYPE_DOC_CONTAINER = 'obsidi-office-doc-container';
+const VIEW_TYPE_NOTE = 'obsidi-office-note';   // container-notes editor (2026-07-09 plan)
 
 // ---------------------------------------------------------------------------
 // doc-container styles (Task 11) — injected once into document.head at load.
@@ -3323,6 +3324,90 @@ class PdfView extends OfficeEditorView {
   static get sidecarExtension() { return ".pdf.md"; }
 }
 
+// ── Container-notes editor (2026-07-09 plan) ─────────────────────────────────
+// CM6 modules are provided by Obsidian's plugin require on desktop AND mobile
+// (the documented esbuild externals). Lazy + guarded: a missing module degrades
+// to an in-view message instead of breaking plugin load.
+function requireCm() {
+  try {
+    return {
+      view: require('@codemirror/view'),
+      state: require('@codemirror/state'),
+      commands: require('@codemirror/commands'),
+    };
+  } catch (e) { elog('CodeMirror modules unavailable:', e && e.message); return null; }
+}
+
+// Plugin-owned markdown note editor over a body.cnote file. The note's title/
+// tags/links live in the sibling _document.md skeleton (machine-written).
+// Encryption-READY: all body I/O goes through plugin.readNoteBody/writeNoteBody.
+class ContainerNoteView extends obsidian.FileView {
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.plugin = plugin;
+    this._cm = null;
+    this._saveTimer = null;
+    this._dirty = false;
+    this._locked = false;
+    this._editorHostEl = null;
+  }
+  getViewType() { return VIEW_TYPE_NOTE; }
+  getIcon() { return 'notebook-pen'; }
+  getDisplayText() {
+    // Title from metadata, never filename semantics (stable-docId rule).
+    const folder = this.file && this.file.parent;
+    if (folder) {
+      const dm = this.plugin.app.vault.getAbstractFileByPath(folder.path + '/' + docContainer.DOCUMENT_MD_NAME);
+      const fm = dm && (this.plugin.app.metadataCache.getFileCache(dm) || {}).frontmatter;
+      if (fm && fm.title) return fm.title;
+    }
+    return folder ? folder.name : 'Note';
+  }
+  async onLoadFile(file) {
+    dlog('ContainerNoteView onLoadFile:', file && file.path);
+    await this._flushSave();   // leaf reuse: persist the previous file's buffer first
+    this.contentEl.empty();
+    this._destroyCm();
+    if (this._locked) { this._renderLockedPlaceholder(); return; }
+    const cm = requireCm();
+    if (!cm) { this.contentEl.createEl('div', { text: 'Editor unavailable: CodeMirror modules missing.' }); return; }
+    let text;
+    try { text = await this.plugin.readNoteBody(file); }
+    catch (e) {
+      elog('note body read failed:', e && e.stack || e);
+      this.contentEl.createEl('div', { text: 'Could not read note body.' });
+      return;
+    }
+    this._editorHostEl = this.contentEl.createEl('div', { cls: 'obsidi-note-editor' });
+    this._cm = new cm.view.EditorView({
+      state: cm.state.EditorState.create({
+        doc: text,
+        extensions: [
+          cm.commands.history(),
+          cm.view.keymap.of([...cm.commands.defaultKeymap, ...cm.commands.historyKeymap]),
+          cm.view.EditorView.lineWrapping,
+          cm.view.EditorView.updateListener.of((u) => { if (u.docChanged) this._noteChanged(); }),
+        ],
+      }),
+      parent: this._editorHostEl,
+    });
+    dlog('note editor ready:', file.path, text.length, 'chars');
+  }
+  async onUnloadFile(file) { await this._flushSave(); this._destroyCm(); return super.onUnloadFile(file); }
+  async onClose() { await this._flushSave(); this._destroyCm(); return super.onClose(); }
+  _destroyCm() {
+    if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    if (this._cm) { try { this._cm.destroy(); } catch (e) { /* already detached */ } this._cm = null; }
+  }
+  _renderLockedPlaceholder() {
+    this.contentEl.createEl('div', { cls: 'obsidi-note-locked', text: 'Locked' });
+  }
+  // Task 5 fills these in; stubs keep onLoadFile/onClose callable meanwhile.
+  _noteChanged() {}
+  async _saveNow() {}
+  async _flushSave() {}
+}
+
 // ===========================================================================
 // doc-container icon helpers — render minimalist Lucide SVGs (via setIcon)
 // in place of the former emoji/dingbat glyphs. Icons inherit currentColor,
@@ -3427,6 +3512,16 @@ class DocumentBrowserView extends obsidian.ItemView {
       row.onclick = () => { this.plugin.openDocDetail(node); this.markSelected(row); };
       return true;
     }
+    if (node.kind === 'note') {
+      if (filtering && !this._noteMatches(node, terms)) return false;
+      const row = parent.createDiv('doc-container-node');
+      row.style.paddingLeft = (8 + depth * 16) + 'px';
+      row.addClass('is-doc');
+      docIcon(row, 'notebook-pen', 'doc-container-ico');
+      row.createSpan({ text: this._noteTitle(node) });
+      row.onclick = () => { this.plugin.openNoteInEditor(node); this.markSelected(row); };
+      return true;
+    }
     if (filtering && !this._subtreeMatches(node, terms)) return false;
     const row = parent.createDiv('doc-container-node');
     row.style.paddingLeft = (8 + depth * 16) + 'px';
@@ -3457,7 +3552,19 @@ class DocumentBrowserView extends obsidian.ItemView {
     const hay = (title + ' ' + tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ')).toLowerCase();
     return terms.every(t => hay.includes(t));
   }
+  _noteFront(node) {
+    const dm = this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.DOCUMENT_MD_NAME);
+    return (dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter) || {};
+  }
+  _noteTitle(node) { return this._noteFront(node).title || node.name; }
+  _noteMatches(node, terms) {
+    const fm = this._noteFront(node);
+    const tags = fm.tags || [];
+    const hay = ((fm.title || node.name) + ' ' + tags.map(t => '#' + String(t).replace(/^#/, '')).join(' ')).toLowerCase();
+    return terms.every(t => hay.includes(t));
+  }
   _subtreeMatches(node, terms) {
+    if (node.kind === 'note') return this._noteMatches(node, terms);
     if (node.kind === 'document') return this._docMatches(node, terms);
     return (node.children || []).some(ch => this._subtreeMatches(ch, terms));
   }
@@ -5878,6 +5985,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.registerView(VIEW_TYPE_DOC_BROWSER,   (leaf) => new DocumentBrowserView(leaf, this));
     this.registerView(VIEW_TYPE_DOC_DETAIL,    (leaf) => new DocumentDetailView(leaf, this));
     this.registerView(VIEW_TYPE_DOC_CONTAINER, (leaf) => new ContainerOverviewView(leaf, this));
+    this.registerView(VIEW_TYPE_NOTE, (leaf) => new ContainerNoteView(leaf, this));
 
     if (this.settings.docBrowserEnabled) {
       this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
@@ -5912,6 +6020,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
     try { this.registerExtensions(["xlsx"], VIEW_TYPE_XLSX); } catch (e) {
       elog("registerExtensions for xlsx failed:", e.message);
+    }
+    // Container-notes: .cnote always routes to our view (same mechanism as docx).
+    try { this.registerExtensions([docContainer.NOTE_EXT], VIEW_TYPE_NOTE); } catch (e) {
+      elog('registerExtensions for cnote failed:', e.message);
     }
 
     // (Settings tab registered earlier â€” see comment near assetBaseUrl.)
@@ -6125,6 +6237,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 
     // Sidecar metadata: hide *.docx.md from file explorer
     this._injectSidecarCSS();
+    this._injectNoteCSS();
 
     // Phase 9 — Print Layout chooser modal styles
     this._injectPrintLayoutCSS();
@@ -7109,6 +7222,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.nav-folder-title[data-path$="/_forks"] { display: none !important; }';
   }
 
+  _injectNoteCSS() {
+    const styleId = 'obsidi-office-note-editor';
+    let style = document.getElementById(styleId);
+    if (!style) { style = document.createElement('style'); style.id = styleId; document.head.appendChild(style); }
+    style.textContent =
+      '.obsidi-note-editor { height: 100%; }' +
+      '.obsidi-note-editor .cm-editor { height: 100%; font-family: var(--font-text); font-size: var(--font-text-size); }' +
+      '.obsidi-note-editor .cm-editor.cm-focused { outline: none; }' +
+      '.obsidi-note-editor .cm-scroller { overflow: auto; padding: 16px 24px; }' +
+      '.obsidi-note-locked { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 1.2em; }' +
+      '.obsidi-note-preview { padding: 16px 24px; overflow: auto; height: 100%; }';
+  }
+
   _injectPrintLayoutCSS() {
     // Phase 9 — PrintLayoutModal scoped styling.
     const styleId = "obsidi-office-print-layout";
@@ -7709,12 +7835,24 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.appendLog(noteFolder, 'created');
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
       dlog('note container created:', noteFolder);
+      await this.openNoteInEditor({ path: noteFolder });
       new obsidian.Notice('Created note "' + cleanTitle + '"');
       return noteFolder;
     } catch (e) {
       elog('createNoteContainer failed:', e && e.stack || e);
       new obsidian.Notice('Could not create note: ' + (e && e.message ? e.message : e));
     }
+  }
+
+  // Open a note container's body in our editor view (notes skip the detail page).
+  async openNoteInEditor(node) {
+    const bodyPath = node.path + '/' + (node.noteBody || docContainer.NOTE_BODY_NAME);
+    const file = this.app.vault.getAbstractFileByPath(bodyPath);
+    if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('Note body not found: ' + bodyPath); return; }
+    const leaf = this.app.workspace.getLeaf('tab');
+    await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
+    this.app.workspace.revealLeaf(leaf);
+    this._appendActivity(bodyPath, 'Opened in editor', 'open');
   }
 
   // Resolve once the sidecar at scPath is parsed into metadataCache (frontmatter
