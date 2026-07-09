@@ -3347,6 +3347,7 @@ class ContainerNoteView extends obsidian.FileView {
     this.plugin = plugin;
     this._cm = null;
     this._saveTimer = null;
+    this._savePromise = null;
     this._dirty = false;
     this._locked = false;
     this._editorHostEl = null;
@@ -3407,9 +3408,18 @@ class ContainerNoteView extends obsidian.FileView {
     if (this._saveTimer) clearTimeout(this._saveTimer);
     this._saveTimer = setTimeout(() => { this._saveNow(); }, 5000);   // Paul decision: 5 s after typing stops
   }
+  // Serialized: a caller that arrives while a write is in flight waits it out,
+  // then runs one more pass only if newer edits landed meanwhile. Prevents a
+  // slow older write from racing (and clobbering) a newer one — the window
+  // widens once the writes go through encryption.
   async _saveNow() {
     if (this._saveTimer) { clearTimeout(this._saveTimer); this._saveTimer = null; }
+    while (this._savePromise) await this._savePromise;   // settle any in-flight write first
     if (!this._dirty || !this._cm || !this.file) return;
+    this._savePromise = this._writeCurrent();
+    try { await this._savePromise; } finally { this._savePromise = null; }
+  }
+  async _writeCurrent() {
     const text = this._cm.state.doc.toString();
     this._dirty = false;   // optimistic; a failed write re-marks dirty below
     try {
@@ -3424,7 +3434,10 @@ class ContainerNoteView extends obsidian.FileView {
       new obsidian.Notice('Note save failed: ' + (e && e.message ? e.message : e));
     }
   }
-  async _flushSave() { if (this._dirty) await this._saveNow(); }
+  async _flushSave() {
+    while (this._savePromise) await this._savePromise;   // flush = fully settled, not just "no dirty flag"
+    if (this._dirty) await this._saveNow();
+  }
 }
 
 // ===========================================================================
