@@ -1112,6 +1112,10 @@ const DEFAULT_SETTINGS = {
   authorLabel: '',          // mobile author display name (no system user on mobile)
   checkoutTimeoutHours: 0,  // 0 = no stale-lock timeout
   docCategoryTypeMap: { Projects: 'project' },   // category → container type (else 'grouping')
+  // Container-notes: tag-pane clicks on tags that exist ONLY in container
+  // notes open the Document Browser filtered to the tag (core search would
+  // label every hit "_document"). Mixed/ordinary tags stay native.
+  noteTagPaneRedirect: true,
 };
 
 // ===========================================================================
@@ -5353,6 +5357,11 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .addText(t => t.setValue(this.plugin.settings.docGlossaryRoot)
         .onChange(async v => { this.plugin.settings.docGlossaryRoot = v.trim() || 'Definitions'; this.plugin._glossaryCache = null; await this.plugin.saveSettings(); }));
     new obsidian.Setting(containerEl)
+      .setName('Tag pane opens Document Browser for note tags')
+      .setDesc('When a clicked tag exists only in container notes, open the Document Browser filtered to it (core search labels those hits "_document"). Mixed or ordinary tags keep the native search behavior.')
+      .addToggle(t => t.setValue(this.plugin.settings.noteTagPaneRedirect !== false)
+        .onChange(async v => { this.plugin.settings.noteTagPaneRedirect = v; await this.plugin.saveSettings(); }));
+    new obsidian.Setting(containerEl)
       .setName('Project-type categories')
       .setDesc('Comma-separated categories whose containers are Projects (Project view instead of the Collection page). Each project folder may also carry a `_project.md` with `type: project`.')
       .addText(t => t.setValue(Object.keys(this.plugin.settings.docCategoryTypeMap || {}).filter(k => this.plugin.settings.docCategoryTypeMap[k] === 'project').join(', '))
@@ -6345,6 +6354,25 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         }), 0);
       })
     );
+
+    // Container-notes: tag-pane click routing. When a clicked tag exists ONLY
+    // in container-note skeletons, core search would just show "_document"
+    // rows — open the Document Browser filtered to the tag instead (real
+    // titles). Mixed/ordinary tags keep native behavior. Capture phase so we
+    // run before the core tag pane's own click handler. Settings-toggleable.
+    this.registerDomEvent(document, 'click', (evt) => {
+      if (this.settings.noteTagPaneRedirect === false) return;
+      if (!this.settings.docBrowserEnabled) return;
+      const rowSelf = evt.target instanceof Element ? evt.target.closest('.tag-pane-tag') : null;
+      if (!rowSelf) return;
+      if (evt.target.closest('.collapse-icon')) return;   // expanding a nested tag stays native
+      const tag = this._tagFromPaneRow(rowSelf);
+      if (!tag || !this._tagOnlyInContainerNotes(tag)) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      dlog('tag pane redirect: #' + tag, '-> Document Browser filter');
+      this._openDocBrowserFiltered('#' + tag).catch((e) => elog('tag pane redirect failed:', e && e.message));
+    }, true);
 
     // Phase 7.6 — empty-tab landing button. When the user opens a new
     // tab (Ctrl+T), Obsidian creates a leaf with view type "empty"
@@ -7786,6 +7814,52 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER)[0];
     if (!leaf) { leaf = this.app.workspace.getLeftLeaf(false); await leaf.setViewState({ type: VIEW_TYPE_DOC_BROWSER, active: true }); }
     this.app.workspace.revealLeaf(leaf);
+  }
+
+  // ── Container-notes: tag-pane → Document Browser routing helpers ────────────
+
+  // Full tag name for a clicked tag-pane row (walks .tree-item ancestors so a
+  // nested tag like a/b resolves to the full path, not just the leaf segment).
+  _tagFromPaneRow(rowSelf) {
+    const seg = (item) => {
+      const t = item.querySelector(':scope > .tree-item-self .tag-pane-tag-text, :scope > .tree-item-self .tree-item-inner-text, :scope > .tree-item-self .tree-item-inner');
+      return t ? t.textContent.replace(/^#/, '').trim() : null;
+    };
+    const parts = [];
+    let item = rowSelf.closest('.tree-item');
+    while (item) {
+      const s = seg(item);
+      if (s) parts.unshift(s);
+      item = item.parentElement ? item.parentElement.closest('.tree-item') : null;
+    }
+    return parts.join('/');
+  }
+
+  // True when the tag (with or without leading #) appears ONLY in container-
+  // note skeletons (docClass: Note _document.md). The exclusivity rule keeps
+  // native search behavior for ordinary and mixed tags — suppressing core
+  // search for those would hide their ordinary-note results.
+  _tagOnlyInContainerNotes(tag) {
+    const want = String(tag || '').replace(/^#/, '').toLowerCase();
+    if (!want) return false;
+    let inNotes = false;
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(f);
+      if (!cache) continue;
+      const all = obsidian.getAllTags(cache) || [];
+      if (!all.some((x) => String(x).replace(/^#/, '').toLowerCase() === want)) continue;
+      const fm = cache.frontmatter || {};
+      if (f.name === docContainer.DOCUMENT_MD_NAME && fm.docClass === 'Note') inNotes = true;
+      else return false;   // tag lives outside container notes → stay native
+    }
+    return inNotes;
+  }
+
+  // Open (or reveal) the Document Browser with its filter pre-set.
+  async _openDocBrowserFiltered(query) {
+    await this.activateDocBrowser();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER)[0];
+    if (leaf && leaf.view) { leaf.view._q = query; if (leaf.view.render) leaf.view.render(); }
   }
 
   // Move a document/container folder (and everything inside it — versions, hidden
