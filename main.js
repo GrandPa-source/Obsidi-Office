@@ -6297,6 +6297,55 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       })
     );
 
+    // Container-notes: a note's _document.md is the machine-written skeleton —
+    // the surface every native feature (tag pane, search, backlinks, graph)
+    // resolves to, since the body is invisible to the native index. Clicking
+    // through must land in the NOTE EDITOR, never a native md view of the
+    // skeleton. Same redirect shape (and hard-won hf3-hf6 ordering) as the
+    // office-sidecar listener above.
+    const _inFlightNoteSkels = new Set();
+    this.registerEvent(
+      this.app.workspace.on("file-open", (file) => {
+        if (!file || !file.parent || file.name !== docContainer.DOCUMENT_MD_NAME) return;
+        const folder = file.parent;
+        const body = (folder.children || []).find(
+          (c) => c instanceof obsidian.TFile && docContainer.isNoteBody(c.name));
+        if (!body) return;   // office/other _document.md — not a note container, leave it alone
+        if (_inFlightNoteSkels.has(file.path)) {
+          dlog("note skeleton redirect: dedup skip", file.path);
+          return;
+        }
+        _inFlightNoteSkels.add(file.path);
+        setTimeout(() => _inFlightNoteSkels.delete(file.path), 1500);
+        dlog("note skeleton redirect:", file.path, "->", body.path);
+        const doRedirect = async () => {
+          let mdLeaf = null;
+          this.app.workspace.iterateAllLeaves((leaf) => {
+            if (leaf.view && leaf.view.file && leaf.view.file.path === file.path) mdLeaf = leaf;
+          });
+          // Opens (or focuses) the note editor WHILE the .md leaf still
+          // anchors its tab group (hf4 lesson); openNoteInEditor also dedups
+          // to an already-open editor on the same body.
+          await this.openNoteInEditor({ path: folder.path, noteBody: body.name });
+          // Detach only if the leaf still shows the skeleton — if getLeaf
+          // reused it for the note view (hf3 fingerprint), its file is now
+          // the body and detaching would kill the editor we just opened.
+          if (mdLeaf && mdLeaf.view && mdLeaf.view.file && mdLeaf.view.file.path === file.path) {
+            try {
+              mdLeaf.detach();
+              dlog("note skeleton redirect: detached .md leaf");
+            } catch (detachErr) {
+              dlog("note skeleton redirect: detach threw (non-fatal):",
+                   detachErr && detachErr.message);
+            }
+          }
+        };
+        setTimeout(() => doRedirect().catch((err) => {
+          elog("note skeleton redirect failed:", err && err.message);
+        }), 0);
+      })
+    );
+
     // Phase 7.6 — empty-tab landing button. When the user opens a new
     // tab (Ctrl+T), Obsidian creates a leaf with view type "empty"
     // showing the "Create new note / Go to file / Close" button stack.
