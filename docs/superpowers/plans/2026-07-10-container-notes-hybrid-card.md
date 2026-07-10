@@ -484,9 +484,12 @@ Add these overrides to the class (they don't exist yet — place them right afte
   }
   _cardEditing() { return !!(this._cardEl && this._cardEl.contains(document.activeElement)); }
 
-  _renderCard() {
+  _renderCard(fmOverride, peopleOverride) {
     if (!this.file || this._locked) return;
-    const fm = this._noteFront();
+    // Optimistic override: a caller that just wrote a field passes the new
+    // value instead of re-reading metadataCache, which stays stale until the
+    // re-parse 'changed' event (documented gotcha in the detail/overview views).
+    const fm = Object.assign({}, this._noteFront(), fmOverride || {});
     const type = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
     const parents = Array.isArray(fm.relatedParents) ? fm.relatedParents : [];
     const el = createDiv({ cls: 'obsidi-note-card' });
@@ -499,18 +502,17 @@ Add these overrides to the class (they don't exist yet — place them right afte
     head.onclick = () => { this._cardCollapsed = !this._cardCollapsed; this._renderCard(); };
     if (!this._cardCollapsed) {
       const body = el.createDiv('obsidi-note-card-body');
-      body.onclick = (e) => e.stopPropagation();
       const row1 = body.createDiv('obsidi-note-card-row');
       row1.createSpan({ text: 'Type', cls: 'obsidi-note-card-lbl' });
       const sel = row1.createEl('select');
       for (const t of docContainer.NOTE_TYPES) sel.createEl('option', { text: t, value: t });
       sel.value = type;
-      sel.onchange = async () => { await this._setNoteField('noteType', sel.value); this._renderCard(); };
+      sel.onchange = async () => { await this._setNoteField('noteType', sel.value); this._renderCard({ noteType: sel.value }); };
       const row2 = body.createDiv('obsidi-note-card-row');
       row2.createSpan({ text: 'Date', cls: 'obsidi-note-card-lbl' });
       const date = row2.createEl('input', { type: 'date' });
       date.value = fm.noteDate || '';
-      date.onchange = async () => { await this._setNoteField('noteDate', date.value); this._renderCard(); };
+      date.onchange = async () => { await this._setNoteField('noteDate', date.value); this._renderCard({ noteDate: date.value }); };
       const prow = body.createDiv('obsidi-note-card-row');
       prow.createSpan({ text: 'Parents', cls: 'obsidi-note-card-lbl' });
       const plist = prow.createDiv('obsidi-note-card-plist');
@@ -521,10 +523,14 @@ Add these overrides to the class (they don't exist yet — place them right afte
         a.onclick = () => this.plugin.openDocDetail({ path: p });
         const x = r.createSpan({ cls: 'obsidi-note-card-rm' });
         obsidian.setIcon(x, 'x');
-        x.onclick = async () => { await this.plugin._removeNoteParent(this._noteFolderPath(), p); this._renderCard(); };
+        x.onclick = async () => {
+          const next = parents.filter((q) => q !== p);
+          await this.plugin._removeNoteParent(this._noteFolderPath(), p);
+          this._renderCard({ relatedParents: next });
+        };
       });
       this._renderAddParent(plist);
-      this._renderPeopleSection(body, fm, type);
+      this._renderPeopleSection(body, fm, type, peopleOverride);
     }
     if (this._cardEl && this._cardEl.parentElement) this._cardEl.replaceWith(el);
     else this.contentEl.insertBefore(el, this.contentEl.firstChild);
@@ -538,16 +544,23 @@ Add these overrides to the class (they don't exist yet — place them right afte
     const wrap = plist.createDiv('obsidi-note-card-addparent');
     const input = wrap.createEl('input', { attr: { placeholder: 'Add parent document…' } });
     const sug = wrap.createDiv('obsidi-note-card-sug');
-    const docs = [];
-    const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
-    walk(docContainer.buildTaxonomy(this.app.vault.getFiles().map((f) => f.path), this.plugin.settings.docRoot));
+    // Lazy: the full-vault taxonomy walk runs on first focus of the input,
+    // not on every card render (a field edit re-renders the card).
+    let docs = null;
+    const ensureDocs = () => {
+      if (docs) return docs;
+      docs = [];
+      const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
+      walk(docContainer.buildTaxonomy(this.app.vault.getFiles().map((f) => f.path), this.plugin.settings.docRoot));
+      return docs;
+    };
     const hide = () => { sug.removeClass('visible'); sug.empty(); };
     const show = () => {
       const q = input.value.toLowerCase();
       sug.empty();
       const cur = new Set(Array.isArray(this._noteFront().relatedParents) ? this._noteFront().relatedParents : []);
       const rootPrefix = (this.plugin.settings.docRoot || 'Documents') + '/';
-      docs.filter((d) => !cur.has(d.path) && (!q || d.path.toLowerCase().includes(q)))
+      ensureDocs().filter((d) => !cur.has(d.path) && (!q || d.path.toLowerCase().includes(q)))
         .slice(0, 8)
         .forEach((d) => {
           const it = sug.createDiv('obsidi-note-card-sugitem');
@@ -559,7 +572,7 @@ Add these overrides to the class (they don't exist yet — place them right afte
             await this._setNoteField('relatedParents', cur2);
             await this.plugin._writeNoteRelation(d.path, this._noteFolderPath());
             hide();
-            this._renderCard();
+            this._renderCard({ relatedParents: cur2 });
           };
         });
       sug.toggleClass('visible', !!sug.children.length);
@@ -570,7 +583,7 @@ Add these overrides to the class (they don't exist yet — place them right afte
   }
 
   // Task 5 replaces this stub with the People section.
-  _renderPeopleSection(bodyEl, fm, type) {}
+  _renderPeopleSection(bodyEl, fm, type, peopleOverride) {}
 ```
 
 - [ ] **Step 4: CSS** — append to the `style.textContent` string in `_injectNoteCSS` (before the closing `;`):
@@ -626,10 +639,13 @@ git commit -m "feat(note-card): collapsible metadata card - type/date/parents + 
 - [ ] **Step 1: Replace the stub** with:
 
 ```js
-  _renderPeopleSection(bodyEl, fm, type) {
+  _renderPeopleSection(bodyEl, fm, type, peopleOverride) {
     if (!docContainer.noteShowsPeople(type)) return;   // hidden ≠ deleted: fm.people persists
     const folder = this._noteFolderPath();
-    const people = this.plugin.readNotePeople(folder);
+    // Optimistic override (same rationale as _renderCard's fmOverride): a
+    // handler that just wrote people passes the array it wrote — the accessor
+    // reads metadataCache, which is stale until the re-parse event.
+    const people = peopleOverride || this.plugin.readNotePeople(folder);
     const key = (p) => (p.name || '') + '|' + (p.title || '');   // aggregateStakeholders composite key
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
@@ -655,7 +671,7 @@ git commit -m "feat(note-card): collapsible metadata card - type/date/parents + 
                : cur.concat([Object.assign({ name: s.name || '', type: 'Attendee' }, s.title ? { title: s.title } : {})]))
             : cur.filter((p) => key(p) !== k);
           await this.plugin.writeNotePeople(folder, next);
-          this._renderCard();
+          this._renderCard(undefined, next);
         };
       });
     }
@@ -678,7 +694,7 @@ git commit -m "feat(note-card): collapsible metadata card - type/date/parents + 
       x.onclick = async () => {
         const cur = this.plugin.readNotePeople(folder).filter((q) => key(q) !== key(p));
         await this.plugin.writeNotePeople(folder, cur);
-        this._renderCard();
+        this._renderCard(undefined, cur);
       };
     });
     // Ad-hoc add: name + person type + optional title.
@@ -697,7 +713,7 @@ git commit -m "feat(note-card): collapsible metadata card - type/date/parents + 
       if (ti.value.trim()) entry.title = ti.value.trim();
       cur.push(entry);
       await this.plugin.writeNotePeople(folder, cur);
-      this._renderCard();
+      this._renderCard(undefined, cur);
     };
   }
 ```
