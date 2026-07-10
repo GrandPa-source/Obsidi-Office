@@ -4383,6 +4383,17 @@ class DocumentDetailView extends obsidian.ItemView {
           },
         }).open();
       };
+      const newNoteBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New note' });
+      newNoteBtn.style.cssText = 'margin-bottom:8px;margin-left:6px;';
+      newNoteBtn.onclick = () => {
+        const parentDocPath = this.node.path;
+        new NoteCreateModal(this.app, 'Meeting', async (title, noteType) => {
+          // createNoteContainer stamps relatedParents, writes the parent-side
+          // relation, and opens the note editor with the card expanded; the
+          // sidecar write triggers this pane's own re-render.
+          await this.plugin.createNoteContainer({ title, noteType, parentDocPath });
+        }).open();
+      };
       const dz = p.createDiv('doc-detail-dropzone');
       dz.createSpan({ text: 'Drag a file here to attach as a reference, or use Add link below' });
       dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
@@ -4469,7 +4480,20 @@ class DocumentDetailView extends obsidian.ItemView {
     const listEl = p.createDiv('doc-detail-rellist');
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
-      { const fl = row.createDiv('doc-detail-fl doc-detail-rellink'); docIcon(fl, r.kind === 'link' ? 'link' : 'paperclip', 'doc-detail-fico'); fl.createSpan({ text: r.label || r.target });
+      { const fl = row.createDiv('doc-detail-fl doc-detail-rellink');
+        // A note target = the note's _document.md inside a folder that holds a
+        // body.cnote. Label notes by their LIVE title (spec: read from the
+        // skeleton), fall back to the stored label.
+        const noteFolder = r.target && r.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
+          ? r.target.slice(0, r.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
+        const noteBody = noteFolder ? this.plugin._noteBodyIn(noteFolder) : null;
+        let liveTitle = null;
+        if (noteBody) {
+          const dmf = this.app.vault.getAbstractFileByPath(r.target);
+          liveTitle = dmf ? (((this.app.metadataCache.getFileCache(dmf) || {}).frontmatter || {}).title || null) : null;
+        }
+        docIcon(fl, noteBody ? 'notebook-pen' : (r.kind === 'link' ? 'link' : 'paperclip'), 'doc-detail-fico');
+        fl.createSpan({ text: liveTitle || r.label || r.target });
         fl.setAttr('title', 'Open ' + (r.label || r.target));
         // Click to open the linked file (Ctrl/Cmd-click → new tab). A managed target that
         // is the CURRENT version of its own document folder (e.g. a broken-away sibling, or
@@ -4483,6 +4507,8 @@ class DocumentDetailView extends obsidian.ItemView {
             const container = this._relatedDocContainer(r.target);
             if (container) { this.plugin.openDocDetail({ path: container }); return; }
             this.plugin.openDocInEditor(r.target, this.node.path, newPane, this.leaf, 'reldocs');   // Return → Related tab
+          } else if (noteBody) {
+            this.plugin.openNoteInEditor({ path: noteFolder, noteBody: noteBody.name });
           } else {
             this.app.workspace.openLinkText(r.target, this.node.path, newPane);
           }
@@ -4500,6 +4526,12 @@ class DocumentDetailView extends obsidian.ItemView {
             front.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (see add handler)
             if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
           }, { action: 'Related document removed', type: 'meta' });
+          // Note-relation self-heal: dropping a note link also removes THIS
+          // document from the note's relatedParents (the note's reciprocal
+          // wikilink is dropped immediately; the next autosave re-derives).
+          const nf = removed && removed.target && removed.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
+            ? removed.target.slice(0, removed.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
+          if (nf && this.plugin._noteBodyIn(nf)) await this.plugin._removeNoteParent(nf, this.node.path);
         };
         if (r.kind === 'link' && this._isLooseDoc(r.target)) {
           const ba = right.createSpan({ text: 'Break away', cls: 'doc-detail-fbtn' });
