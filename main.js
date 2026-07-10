@@ -2168,11 +2168,30 @@ function docLogIcon(action) {
 }
 
 // R3: split a formatted log action into base text + a trailing "(detail)" group.
-// Mirrors formatLogEntry's ' (' + detail + ')' suffix as a regex on the already
-// -parsed action string (parseLogBody itself is untouched — old lib tests stay green).
+// Mirrors formatLogEntry's ' (' + detail + ')' suffix. Balance-scans from the
+// trailing ')' back to its matching '(' rather than using a regex, so a detail
+// that itself contains parens (e.g. the " (2)" dedupe suffix in a filename)
+// doesn't truncate the match (parseLogBody itself is untouched — old lib tests
+// stay green).
 function splitLogDetail(action) {
-  const m = /^(.+?) \(([^()]+)\)$/.exec(String(action || ''));
-  return m ? { text: m[1], detail: m[2] } : { text: action || '', detail: null };
+  const s = String(action || '');
+  if (!s.endsWith(')')) return { text: s, detail: null };
+  let depth = 0;
+  for (let i = s.length - 1; i >= 0; i--) {
+    const c = s[i];
+    if (c === ')') depth++;
+    else if (c === '(') {
+      depth--;
+      if (depth === 0) {
+        if (i > 0 && s[i - 1] === ' ') {
+          const detail = s.slice(i + 1, -1);
+          if (detail) return { text: s.slice(0, i - 1), detail: detail };
+        }
+        break;
+      }
+    }
+  }
+  return { text: s, detail: null };
 }
 
 // R3: route a click on a Log-tab file reference the same way the Related
@@ -2201,11 +2220,23 @@ function renderLogRow(view, list, returnNode, l) {
   docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
   const main = row.createDiv();
   const { text, detail } = splitLogDetail(l.action);
-  const target = detail && view.app.vault.getAbstractFileByPath(detail);
+  // Only ever try to resolve a detail that lives under the managed docRoot —
+  // legacy bare labels ("Minutes.docx") or non-path details ("base 1.2") must
+  // never coincidentally resolve to an unrelated vault file outside docRoot.
+  const docRootPrefix = (view.plugin.settings.docRoot || 'Documents') + '/';
+  const target = detail && detail.startsWith(docRootPrefix) && view.app.vault.getAbstractFileByPath(detail);
   if (target instanceof obsidian.TFile) {
     main.createDiv({ text, cls: 'doc-detail-logaction' });
     const refRow = main.createDiv({ cls: 'doc-detail-logaction' });
-    const link = refRow.createSpan({ text: target.name, cls: 'doc-log-fileref' });
+    // A note reference (folder-note's _document.md) displays the note's title
+    // (falling back to the parent folder's basename), not the constant
+    // "_document.md". Office/other refs keep basename+ext as-is.
+    let refText = target.name;
+    if (target.name === docContainer.DOCUMENT_MD_NAME && view.plugin._noteBodyIn(target.parent.path)) {
+      const fm = (view.app.metadataCache.getFileCache(target) || {}).frontmatter;
+      refText = (fm && fm.title) || target.parent.name;
+    }
+    const link = refRow.createSpan({ text: refText, cls: 'doc-log-fileref' });
     link.onclick = () => openLogFileRef(view.plugin, view.app, view.leaf, returnNode && returnNode.path, target.path);
   } else {
     main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
