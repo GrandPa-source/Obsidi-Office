@@ -3679,8 +3679,80 @@ class ContainerNoteView extends obsidian.FileView {
     input.onblur = () => setTimeout(hide, 150);
   }
 
-  // Task 5 replaces this stub with the People section.
-  _renderPeopleSection(bodyEl, fm, type) {}
+  _renderPeopleSection(bodyEl, fm, type) {
+    if (!docContainer.noteShowsPeople(type)) return;   // hidden ≠ deleted: fm.people persists
+    const folder = this._noteFolderPath();
+    const people = this.plugin.readNotePeople(folder);
+    const key = (p) => (p.name || '') + '|' + (p.title || '');   // aggregateStakeholders composite key
+    const have = new Set(people.map(key));
+    const sec = bodyEl.createDiv('obsidi-note-card-people');
+    sec.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
+    // Roster checkboxes, sourced LIVE from each parent's current sidecar.
+    const parents = Array.isArray(fm.relatedParents) ? fm.relatedParents : [];
+    for (const par of parents) {
+      const sc = this.plugin._parentCurrentSidecar(par);
+      const sfm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
+      const roster = (sfm && Array.isArray(sfm.stakeholders)) ? sfm.stakeholders : [];
+      if (!roster.length) continue;
+      sec.createDiv({ text: this._parentTitle(par) + ' — stakeholders', cls: 'obsidi-note-card-rosterhead' });
+      roster.forEach((s) => {
+        const k = (s.name || '') + '|' + (s.title || '');
+        const row = sec.createDiv('obsidi-note-card-personrow');
+        const cb = row.createEl('input', { type: 'checkbox' });
+        cb.checked = have.has(k);
+        row.createSpan({ text: (s.name || '') + (s.title ? ' — ' + s.title : '') });
+        cb.onchange = async () => {
+          const cur = this.plugin.readNotePeople(folder);
+          const next = cb.checked
+            ? (cur.some((p) => key(p) === k) ? cur
+               : cur.concat([Object.assign({ name: s.name || '', type: 'Attendee' }, s.title ? { title: s.title } : {})]))
+            : cur.filter((p) => key(p) !== k);
+          await this.plugin.writeNotePeople(folder, next);
+          this._renderCard();
+        };
+      });
+    }
+    // Current people (picked + ad-hoc): per-row type dropdown + remove.
+    people.forEach((p, idx) => {
+      const row = sec.createDiv('obsidi-note-card-personrow obsidi-note-card-personset');
+      row.createSpan({ text: p.name + (p.title ? ' — ' + p.title : ''), cls: 'obsidi-note-card-pname' });
+      const sel = row.createEl('select');
+      for (const t of docContainer.PERSON_TYPES) sel.createEl('option', { text: t, value: t });
+      sel.value = docContainer.PERSON_TYPES.includes(p.type) ? p.type : 'Attendee';
+      sel.onchange = async () => {
+        const cur = this.plugin.readNotePeople(folder);
+        if (cur[idx] && key(cur[idx]) === key(p)) {
+          cur[idx].type = sel.value;
+          await this.plugin.writeNotePeople(folder, cur);
+        }
+      };
+      const x = row.createSpan({ cls: 'obsidi-note-card-rm' });
+      obsidian.setIcon(x, 'x');
+      x.onclick = async () => {
+        const cur = this.plugin.readNotePeople(folder).filter((q) => key(q) !== key(p));
+        await this.plugin.writeNotePeople(folder, cur);
+        this._renderCard();
+      };
+    });
+    // Ad-hoc add: name + person type + optional title.
+    const add = sec.createDiv('obsidi-note-card-addperson');
+    const nm = add.createEl('input', { attr: { placeholder: 'Name' } });
+    const ti = add.createEl('input', { attr: { placeholder: 'Title (optional)' } });
+    const ty = add.createEl('select');
+    for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
+    ty.value = 'Attendee';
+    const btn = add.createEl('button', { text: 'Add' });
+    btn.onclick = async () => {
+      const name = nm.value.trim();
+      if (!name) return;
+      const cur = this.plugin.readNotePeople(folder);
+      const entry = { name, type: ty.value };
+      if (ti.value.trim()) entry.title = ti.value.trim();
+      cur.push(entry);
+      await this.plugin.writeNotePeople(folder, cur);
+      this._renderCard();
+    };
+  }
 
   // ── Locked-state seams (INERT — the key/autolock layer calls these later;
   // nothing in this build triggers them). lock = discard buffer, no save.
@@ -7641,7 +7713,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sug { display: none; position: absolute; z-index: 30; left: 0; right: 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 6px; box-shadow: var(--shadow-s); max-height: 180px; overflow-y: auto; }'
       + '.obsidi-note-card-sug.visible { display: block; }'
       + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
-      + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }';
+      + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }'
+      + '.obsidi-note-card-people { margin-top: 8px; border-top: 1px dashed var(--background-modifier-border); padding-top: 6px; }'
+      + '.obsidi-note-card-peoplehead { flex: none; font-weight: 600; margin-bottom: 2px; }'
+      + '.obsidi-note-card-rosterhead { color: var(--text-muted); font-size: var(--font-ui-smaller); margin: 4px 0 2px; }'
+      + '.obsidi-note-card-personrow { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }'
+      + '.obsidi-note-card-personset .obsidi-note-card-pname { flex: 1; }'
+      + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-top: 6px; }'
+      + '.obsidi-note-card-addperson input { flex: 1; min-width: 0; }';
   }
 
   _injectPrintLayoutCSS() {
