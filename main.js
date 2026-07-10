@@ -3631,7 +3631,10 @@ class ContainerNoteView extends obsidian.FileView {
         x.onclick = async () => {
           await this.plugin._removeNoteParent(this._noteFolderPath(), parent0);
           await this.plugin._removeNoteRelation(parent0, this._noteFolderPath());   // both sides, or the parent strands the entry
-          this._renderCard({ relatedParents: [] });
+          // Override with the true remainder (legacy notes may hold >1 parent):
+          // a hardcoded [] would show the picker while parents remain on disk,
+          // and an add in that window would silently drop them.
+          this._renderCard({ relatedParents: parents.filter((q) => q !== parent0) });
         };
       } else {
         this._renderAddParent(plist);
