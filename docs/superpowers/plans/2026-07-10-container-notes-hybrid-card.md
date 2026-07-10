@@ -222,7 +222,7 @@ git commit -m "feat(note-card): pure core - note types, noteShowsPeople, mergeNo
   // re-added by the next autosave's body extraction — acceptable).
   async _removeNoteParent(noteFolderPath, parentDocPath) {
     const dm = this.app.vault.getAbstractFileByPath(noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME);
-    if (!(dm instanceof obsidian.TFile)) return;
+    if (!(dm instanceof obsidian.TFile)) { elog('_removeNoteParent: no _document.md in', noteFolderPath); return; }
     const drop = this._noteParentLinks([parentDocPath], dm.path);
     await this.app.fileManager.processFrontMatter(dm, (fm) => {
       const rp = (Array.isArray(fm.relatedParents) ? fm.relatedParents : []).filter((p) => p !== parentDocPath);
