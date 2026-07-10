@@ -6161,7 +6161,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         callback: () => this.dryRunMetadataMigration() });
       // Container-notes: create a plugin-owned note (folder + skeleton + body).
       this.addCommand({ id: 'create-container-note', name: 'Create container note',
-        callback: () => new NoteTitleModal(this.app, (title) => this.createNoteContainer({ title })).open() });
+        callback: () => new NoteCreateModal(this.app, 'General',
+          (title, noteType) => this.createNoteContainer({ title, noteType })).open() });
     }
 
     this.addCommand({
@@ -8082,7 +8083,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // an H1) + a machine-written _document.md skeleton with a docId from day one.
   // Notes land straight in the editor (no detail page) — single-author quick
   // capture, outside the check-out gate by construction (.cnote ∉ MANAGED_EXTS).
-  async createNoteContainer({ containerPath, title }) {
+  async createNoteContainer({ containerPath, title, noteType, parentDocPath }) {
     const cleanTitle = (title || '').trim();
     if (!cleanTitle) { new obsidian.Notice('Enter a note title'); return; }
     if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
@@ -8098,12 +8099,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       await this.app.vault.createFolder(noteFolder);
       await this.writeNoteBody(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');   // seed through the choke point
       const nowIso = new Date().toISOString();
+      const today = new Date().toISOString().slice(0, 10);
+      const cleanType = docContainer.NOTE_TYPES.includes(noteType) ? noteType : 'General';
       const yaml = '---\n'
         + 'docId: ' + this.generateDocId() + '\n'
         + 'docClass: Note\n'
         + 'title: ' + JSON.stringify(cleanTitle) + '\n'
         + 'created: "' + nowIso + '"\n'
         + 'modified: "' + nowIso + '"\n'
+        + 'noteType: ' + cleanType + '\n'
+        + 'noteDate: ' + today + '\n'
+        + (parentDocPath ? 'relatedParents:\n  - ' + JSON.stringify(parentDocPath) + '\n' : '')
         + 'tags: []\n'
         + 'links: []\n'
         + '---\n';
@@ -8113,6 +8119,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // activity entry follows immediately and would otherwise race this one
       // for the log.md create — the loser threw "File already exists".
       await this.appendLog(noteFolder, 'created');
+      if (parentDocPath) {
+        await this._writeNoteRelation(parentDocPath, noteFolder);
+        // One skeleton pass so the note→parent wikilink exists BEFORE the
+        // first autosave (mergeNoteLinks derives it from relatedParents).
+        await this.updateNoteSkeleton(noteFolder, '# ' + cleanTitle + '\n\n');
+      }
+      this._expandCardOnce = noteFolder;   // the view expands the card once on first open
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
       dlog('note container created:', noteFolder);
       await this.openNoteInEditor({ path: noteFolder });
@@ -8221,6 +8234,34 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (Array.isArray(fm.links) && drop.length) fm.links = fm.links.filter((l) => !drop.includes(l));
     });
     dlog('note parent removed:', noteFolderPath, '-x-', parentDocPath);
+  }
+
+  // Parent side of the relation: a relatedDocuments entry (EXACT shape the
+  // Related Documents tab writes: kind/target/label/added) + the links[]
+  // wikilink targeting the note's _document.md. The note side needs no write
+  // here — relatedParents is already stamped and the skeleton writer derives
+  // the reciprocal wikilink.
+  async _writeNoteRelation(parentDocPath, noteFolderPath) {
+    const sc = this._parentCurrentSidecar(parentDocPath);
+    if (!sc) { elog('note relation: parent current sidecar not found for', parentDocPath); return; }
+    const dmPath = noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME;
+    const dm = this.app.vault.getAbstractFileByPath(dmPath);
+    if (!(dm instanceof obsidian.TFile)) { elog('note relation: note skeleton missing:', dmPath); return; }
+    const noteFm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
+    const label = noteFm.title || (noteFolderPath.split('/').pop() || noteFolderPath);
+    const wl = '[[' + this.app.metadataCache.fileToLinktext(dm, sc.path, false) + ']]';
+    await this.app.fileManager.processFrontMatter(sc, (fm) => {
+      const rel = Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.slice() : [];
+      if (!rel.some((r) => r && r.target === dmPath)) {
+        rel.push({ kind: 'link', target: dmPath, label: label, added: docToday() });
+      }
+      fm.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (house rule)
+      const links = Array.isArray(fm.links) ? fm.links.slice() : [];
+      if (!links.includes(wl)) links.push(wl);
+      fm.links = links;
+    });
+    this.appendLog(parentDocPath, 'related note added', label);
+    dlog('note relation written:', parentDocPath, '<->', noteFolderPath);
   }
 
   // Container-notes titles provider — the pluggable seam behind [[ completion
@@ -8788,14 +8829,23 @@ class FileNameModal extends obsidian.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-// Container-notes: minimal title prompt for Create container note.
-class NoteTitleModal extends obsidian.Modal {
-  constructor(app, onSubmit) { super(app); this.onSubmit = onSubmit; }
+// Hybrid card: create-note dialog — title + note type only (spec decision);
+// everything else is set on the card after the editor opens.
+class NoteCreateModal extends obsidian.Modal {
+  constructor(app, defaultType, onSubmit) {
+    super(app);
+    this.defaultType = docContainer.NOTE_TYPES.includes(defaultType) ? defaultType : 'General';
+    this.onSubmit = onSubmit;
+  }
   onOpen() {
     this.titleEl.setText('New note');
     const input = this.contentEl.createEl('input', { type: 'text', attr: { placeholder: 'Note title' } });
     input.style.width = '100%';
-    const go = () => { const v = input.value.trim(); if (v) { this.close(); this.onSubmit(v); } };
+    const sel = this.contentEl.createEl('select');
+    sel.style.cssText = 'width:100%;margin-top:8px;';
+    for (const t of docContainer.NOTE_TYPES) sel.createEl('option', { text: t, value: t });
+    sel.value = this.defaultType;
+    const go = () => { const v = input.value.trim(); if (v) { this.close(); this.onSubmit(v, sel.value); } };
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     const btn = this.contentEl.createEl('button', { text: 'Create' });
     btn.style.marginTop = '8px';
