@@ -3599,36 +3599,53 @@ class ContainerNoteView extends obsidian.FileView {
     head.onclick = () => { this._cardCollapsed = !this._cardCollapsed; this._renderCard(); };
     if (!this._cardCollapsed) {
       const body = el.createDiv('obsidi-note-card-body');
-      const row1 = body.createDiv('obsidi-note-card-row');
-      row1.createSpan({ text: 'Type', cls: 'obsidi-note-card-lbl' });
-      const sel = row1.createEl('select');
+      const left = body.createDiv('obsidi-note-card-col obsidi-note-card-col-left');
+      const right = body.createDiv('obsidi-note-card-col obsidi-note-card-col-right');
+
+      // (a) Type + Date side by side.
+      const tdRow = left.createDiv('obsidi-note-card-tdrow');
+      const typeField = tdRow.createDiv('obsidi-note-card-field');
+      typeField.createSpan({ text: 'Type', cls: 'obsidi-note-card-lbl' });
+      const sel = typeField.createEl('select');
       for (const t of docContainer.NOTE_TYPES) sel.createEl('option', { text: t, value: t });
       sel.value = type;
       sel.onchange = async () => { await this._setNoteField('noteType', sel.value); this._renderCard({ noteType: sel.value }); };
-      const row2 = body.createDiv('obsidi-note-card-row');
-      row2.createSpan({ text: 'Date', cls: 'obsidi-note-card-lbl' });
-      const date = row2.createEl('input', { type: 'date' });
+      const dateField = tdRow.createDiv('obsidi-note-card-field');
+      dateField.createSpan({ text: 'Date', cls: 'obsidi-note-card-lbl' });
+      const date = dateField.createEl('input', { type: 'date' });
       date.value = fm.noteDate || '';
       date.onchange = async () => { await this._setNoteField('noteDate', date.value); this._renderCard({ noteDate: date.value }); };
-      const prow = body.createDiv('obsidi-note-card-row');
-      prow.createSpan({ text: 'Parents', cls: 'obsidi-note-card-lbl' });
+
+      // (b) Single parent slot — render only relatedParents[0]; picker only when empty.
+      const prow = left.createDiv('obsidi-note-card-row obsidi-note-card-parentrow');
+      prow.createSpan({ text: 'Parent', cls: 'obsidi-note-card-lbl' });
       const plist = prow.createDiv('obsidi-note-card-plist');
-      parents.forEach((p) => {
+      const parent0 = parents[0];
+      if (parent0) {
         const r = plist.createDiv('obsidi-note-card-prow');
-        const a = r.createSpan({ text: this._parentTitle(p), cls: 'obsidi-note-card-plink' });
-        a.setAttr('title', p);
-        a.onclick = () => this.plugin.openDocDetail({ path: p });
+        const a = r.createSpan({ text: this._parentTitle(parent0), cls: 'obsidi-note-card-plink' });
+        a.setAttr('title', parent0);
+        a.onclick = () => this.plugin.openDocDetail({ path: parent0 });
         const x = r.createSpan({ cls: 'obsidi-note-card-rm' });
         obsidian.setIcon(x, 'x');
         x.onclick = async () => {
-          const next = parents.filter((q) => q !== p);
-          await this.plugin._removeNoteParent(this._noteFolderPath(), p);
-          await this.plugin._removeNoteRelation(p, this._noteFolderPath());   // both sides, or the parent strands the entry
-          this._renderCard({ relatedParents: next });
+          await this.plugin._removeNoteParent(this._noteFolderPath(), parent0);
+          await this.plugin._removeNoteRelation(parent0, this._noteFolderPath());   // both sides, or the parent strands the entry
+          this._renderCard({ relatedParents: [] });
         };
-      });
-      this._renderAddParent(plist);
-      this._renderPeopleSection(body, fm, type, peopleOverride);
+      } else {
+        this._renderAddParent(plist);
+      }
+
+      // (c) Tags — read-only pills from fm.tags (machine field, never written here).
+      const tagsRow = left.createDiv('obsidi-note-card-row obsidi-note-card-tagsrow');
+      tagsRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
+      const tagsWrap = tagsRow.createDiv('obsidi-note-card-tags');
+      const tags = Array.isArray(fm.tags) ? fm.tags : [];
+      if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
+      else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
+
+      this._renderPeopleSection(right, fm, type, peopleOverride);
     }
     if (this._cardEl && this._cardEl.parentElement) this._cardEl.replaceWith(el);
     else this.contentEl.insertBefore(el, this.contentEl.firstChild);
@@ -3669,11 +3686,9 @@ class ContainerNoteView extends obsidian.FileView {
             // is all-or-nothing (final-review recommendation).
             const ok = await this.plugin._writeNoteRelation(d.path, this._noteFolderPath());
             if (!ok) { new obsidian.Notice('Could not link parent — no current document version found.'); hide(); return; }
-            const cur2 = Array.isArray(this._noteFront().relatedParents) ? this._noteFront().relatedParents.slice() : [];
-            if (!cur2.includes(d.path)) cur2.push(d.path);
-            await this._setNoteField('relatedParents', cur2);
+            await this._setNoteField('relatedParents', [d.path]);
             hide();
-            this._renderCard({ relatedParents: cur2 });
+            this._renderCard({ relatedParents: [d.path] }, undefined);
           };
         });
       sug.toggleClass('visible', !!sug.children.length);
@@ -3694,6 +3709,11 @@ class ContainerNoteView extends obsidian.FileView {
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
     sec.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
+    // Stakeholders-table idiom (DocumentDetailView._renderStakeholdersPane): a
+    // header row + flat separator rows, reusing .doc-detail-tbl.
+    const table = sec.createEl('table', { cls: 'doc-detail-tbl obsidi-note-card-ptbl' });
+    const thead = table.createEl('tr');
+    ['', 'Name', 'Type', ''].forEach((h) => thead.createEl('th', { text: h }));
     // Roster checkboxes, sourced LIVE from each parent's current sidecar.
     const parents = Array.isArray(fm.relatedParents) ? fm.relatedParents : [];
     for (const par of parents) {
@@ -3701,13 +3721,16 @@ class ContainerNoteView extends obsidian.FileView {
       const sfm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
       const roster = (sfm && Array.isArray(sfm.stakeholders)) ? sfm.stakeholders : [];
       if (!roster.length) continue;
-      sec.createDiv({ text: this._parentTitle(par) + ' — stakeholders', cls: 'obsidi-note-card-rosterhead' });
+      const rh = table.createEl('tr');
+      rh.createEl('td', { text: this._parentTitle(par) + ' — stakeholders', cls: 'obsidi-note-card-rosterhead', attr: { colspan: 4 } });
       roster.forEach((s) => {
         const k = (s.name || '') + '|' + (s.title || '');
-        const row = sec.createDiv('obsidi-note-card-personrow');
-        const cb = row.createEl('input', { type: 'checkbox' });
+        const row = table.createEl('tr', { cls: 'obsidi-note-card-personrow' });
+        const cbTd = row.createEl('td');
+        const cb = cbTd.createEl('input', { type: 'checkbox' });
         cb.checked = have.has(k);
-        row.createSpan({ text: (s.name || '') + (s.title ? ' — ' + s.title : '') });
+        row.createEl('td', { text: (s.name || '') + (s.title ? ' — ' + s.title : ''), attr: { colspan: 2 } });
+        row.createEl('td');
         cb.onchange = async () => {
           const cur = this.plugin.readNotePeople(folder);
           const next = cb.checked
@@ -3721,9 +3744,11 @@ class ContainerNoteView extends obsidian.FileView {
     }
     // Current people (picked + ad-hoc): per-row type dropdown + remove.
     people.forEach((p, idx) => {
-      const row = sec.createDiv('obsidi-note-card-personrow obsidi-note-card-personset');
-      row.createSpan({ text: p.name + (p.title ? ' — ' + p.title : ''), cls: 'obsidi-note-card-pname' });
-      const sel = row.createEl('select');
+      const row = table.createEl('tr', { cls: 'obsidi-note-card-personrow obsidi-note-card-personset' });
+      row.createEl('td');
+      row.createEl('td', { text: p.name + (p.title ? ' — ' + p.title : ''), cls: 'obsidi-note-card-pname' });
+      const selTd = row.createEl('td');
+      const sel = selTd.createEl('select');
       for (const t of docContainer.PERSON_TYPES) sel.createEl('option', { text: t, value: t });
       sel.value = docContainer.PERSON_TYPES.includes(p.type) ? p.type : 'Attendee';
       sel.onchange = async () => {
@@ -3733,7 +3758,8 @@ class ContainerNoteView extends obsidian.FileView {
           await this.plugin.writeNotePeople(folder, cur);
         }
       };
-      const x = row.createSpan({ cls: 'obsidi-note-card-rm' });
+      const rmTd = row.createEl('td');
+      const x = rmTd.createSpan({ cls: 'obsidi-note-card-rm' });
       obsidian.setIcon(x, 'x');
       x.onclick = async () => {
         const cur = this.plugin.readNotePeople(folder).filter((q) => key(q) !== key(p));
@@ -3748,7 +3774,7 @@ class ContainerNoteView extends obsidian.FileView {
     const ty = add.createEl('select');
     for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
     ty.value = 'Attendee';
-    const btn = add.createEl('button', { text: 'Add' });
+    const btn = add.createEl('button', { text: '＋', attr: { 'aria-label': 'Add person' } });
     btn.onclick = async () => {
       const name = nm.value.trim();
       if (!name) return;
@@ -7731,13 +7757,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.obsidi-note-editor .cm-editor { height: 100%; font-family: var(--font-text); font-size: var(--font-text-size); }' +
       '.obsidi-note-editor .cm-editor.cm-focused { outline: none; }' +
       '.obsidi-note-editor .cm-scroller { overflow: auto; padding: 16px 24px; }' +
+      '.obsidi-note-editor .cm-cursor, .obsidi-note-editor .cm-dropCursor { border-left-color: var(--text-normal); }' +
       '.obsidi-note-locked { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 1.2em; }' +
       '.obsidi-note-preview { padding: 16px 24px; overflow: auto; height: 100%; }'
       + '.obsidi-note-card { margin: 8px 16px 0; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); font-size: var(--font-ui-small); }'
       + '.obsidi-note-card-head { display: flex; align-items: center; gap: 4px; padding: 6px 10px; cursor: pointer; color: var(--text-muted); }'
       + '.obsidi-note-card-head .obsidi-note-card-type { color: var(--text-normal); font-weight: 600; }'
       + '.obsidi-note-card-tw svg { width: 14px; height: 14px; }'
-      + '.obsidi-note-card-body { padding: 4px 10px 10px; border-top: 1px solid var(--background-modifier-border); cursor: default; }'
+      + '.obsidi-note-card-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 10px; border-top: 1px solid var(--background-modifier-border); cursor: default; }'
+      + '.obsidi-note-card-col { min-width: 0; }'
+      + '.obsidi-note-card-tdrow { display: flex; gap: 10px; }'
+      + '.obsidi-note-card-field { flex: 1; min-width: 0; }'
+      + '.obsidi-note-card-field .obsidi-note-card-lbl { display: block; flex: none; padding-top: 0; margin-bottom: 2px; }'
+      + '.obsidi-note-card-field select, .obsidi-note-card-field input[type="date"] { width: 100%; }'
       + '.obsidi-note-card-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; }'
       + '.obsidi-note-card-lbl { flex: 0 0 64px; color: var(--text-muted); padding-top: 3px; }'
       + '.obsidi-note-card-plist { flex: 1; }'
@@ -7753,12 +7785,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sug.visible { display: block; }'
       + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
       + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }'
-      + '.obsidi-note-card-people { margin-top: 8px; border-top: 1px dashed var(--background-modifier-border); padding-top: 6px; }'
-      + '.obsidi-note-card-peoplehead { flex: none; font-weight: 600; margin-bottom: 2px; }'
-      + '.obsidi-note-card-rosterhead { color: var(--text-muted); font-size: var(--font-ui-smaller); margin: 4px 0 2px; }'
-      + '.obsidi-note-card-personrow { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }'
-      + '.obsidi-note-card-personset .obsidi-note-card-pname { flex: 1; }'
-      + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-top: 6px; }'
+      + '.obsidi-note-card-tags { flex: 1; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px; }'
+      + '.obsidi-note-card-people { min-width: 0; }'
+      + '.obsidi-note-card-peoplehead { flex: none; font-weight: 600; margin-bottom: 4px; }'
+      + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
+      + '.obsidi-note-card-ptbl td { padding: 3px 6px; }'
+      + '.obsidi-note-card-rosterhead { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 500; padding-top: 8px !important; }'
+      + '.obsidi-note-card-personset .obsidi-note-card-pname { white-space: nowrap; }'
+      + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-top: 8px; }'
       + '.obsidi-note-card-addperson input { flex: 1; min-width: 0; }';
   }
 
