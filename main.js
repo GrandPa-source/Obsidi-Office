@@ -3574,11 +3574,7 @@ class ContainerNoteView extends obsidian.FileView {
     });
     dlog('note field set:', key, 'on', dm.path);
   }
-  _parentTitle(parentPath) {
-    const sc = this.plugin._parentCurrentSidecar(parentPath);
-    const fm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
-    return (fm && fm.title) || (parentPath.split('/').pop() || parentPath);
-  }
+  _parentTitle(parentPath) { return this.plugin._parentDisplayTitle(parentPath); }
   _cardEditing() { return !!(this._cardEl && this._cardEl.contains(document.activeElement)); }
 
   _renderCard(fmOverride, peopleOverride) {
@@ -3629,8 +3625,10 @@ class ContainerNoteView extends obsidian.FileView {
         const x = r.createSpan({ cls: 'obsidi-note-card-rm' });
         obsidian.setIcon(x, 'x');
         x.onclick = async () => {
-          await this.plugin._removeNoteParent(this._noteFolderPath(), parent0);
-          await this.plugin._removeNoteRelation(parent0, this._noteFolderPath());   // both sides, or the parent strands the entry
+          const noteFolder = this._noteFolderPath();
+          await this.plugin._removeNoteParent(noteFolder, parent0);
+          await this.plugin._removeNoteRelation(parent0, noteFolder);   // both sides, or the parent strands the entry
+          await this.plugin.maybePromptNoteRename(noteFolder, parent0);   // R2.3 break-away rename, if the auto-name still matches
           // Override with the true remainder (legacy notes may hold >1 parent):
           // a hardcoded [] would show the picker while parents remain on disk,
           // and an add in that window would silently drop them.
@@ -4420,11 +4418,14 @@ class DocumentDetailView extends obsidian.ItemView {
       newNoteBtn.style.cssText = 'margin-bottom:8px;margin-left:6px;';
       newNoteBtn.onclick = () => {
         const parentDocPath = this.node.path;
-        new NoteCreateModal(this.app, 'Meeting', async (title, noteType) => {
+        // Create-from-parent (R2): type only, no title — createNoteContainer
+        // auto-generates "<Type> - <ParentName>" when title is empty and a
+        // parentDocPath is given.
+        new NoteCreateModal(this.app, { defaultType: 'Meeting', types: ['Meeting', 'Decision', 'Incident'], askTitle: false }, async (title, noteType) => {
           // createNoteContainer stamps relatedParents, writes the parent-side
           // relation, and opens the note editor with the card expanded; the
           // sidecar write triggers this pane's own re-render.
-          await this.plugin.createNoteContainer({ title, noteType, parentDocPath });
+          await this.plugin.createNoteContainer({ noteType, parentDocPath });
         }).open();
       };
       const dz = p.createDiv('doc-detail-dropzone');
@@ -4564,7 +4565,10 @@ class DocumentDetailView extends obsidian.ItemView {
           // wikilink is dropped immediately; the next autosave re-derives).
           const nf = removed && removed.target && removed.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
             ? removed.target.slice(0, removed.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
-          if (nf && this.plugin._noteBodyIn(nf)) await this.plugin._removeNoteParent(nf, this.node.path);
+          if (nf && this.plugin._noteBodyIn(nf)) {
+            await this.plugin._removeNoteParent(nf, this.node.path);
+            await this.plugin.maybePromptNoteRename(nf, this.node.path);   // R2.3 break-away rename, if the auto-name still matches
+          }
         };
         if (r.kind === 'link' && this._isLooseDoc(r.target)) {
           const ba = right.createSpan({ text: 'Break away', cls: 'doc-detail-fbtn' });
@@ -6458,7 +6462,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         callback: () => this.dryRunMetadataMigration() });
       // Container-notes: create a plugin-owned note (folder + skeleton + body).
       this.addCommand({ id: 'create-container-note', name: 'Create container note',
-        callback: () => new NoteCreateModal(this.app, 'General',
+        callback: () => new NoteCreateModal(this.app, { defaultType: 'General', askTitle: true },
           (title, noteType) => this.createNoteContainer({ title, noteType })).open() });
     }
 
@@ -8416,13 +8420,27 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // Notes land straight in the editor (no detail page) — single-author quick
   // capture, outside the check-out gate by construction (.cnote ∉ MANAGED_EXTS).
   async createNoteContainer({ containerPath, title, noteType, parentDocPath }) {
-    const cleanTitle = (title || '').trim();
-    if (!cleanTitle) { new obsidian.Notice('Enter a note title'); return; }
-    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
     const parent = containerPath || (this.settings.docRoot + '/Notes');
     if (!this.app.vault.getAbstractFileByPath(parent)) {
       try { await this.app.vault.createFolder(parent); } catch (e) { /* exists or race — creation below will surface real failures */ }
     }
+    let cleanTitle = (title || '').trim();
+    // Create-from-parent (R2): no/empty title + a parent → auto-title
+    // "<Type> - <ParentName>", deduped against existing siblings in `parent`.
+    // Illegal folder-name characters (parent titles are free text) are
+    // stripped proactively so the validation below always passes on the
+    // generated form.
+    if (!cleanTitle && parentDocPath) {
+      const autoType = docContainer.NOTE_TYPES.includes(noteType) ? noteType : 'Meeting';
+      const parentTitle = this._parentDisplayTitle(parentDocPath);
+      const desired = (autoType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
+      const parentFolder = this.app.vault.getAbstractFileByPath(parent);
+      const taken = (parentFolder && parentFolder.children)
+        ? parentFolder.children.filter((c) => c instanceof obsidian.TFolder).map((c) => c.name) : [];
+      cleanTitle = docContainer.dedupeName(desired, taken);
+    }
+    if (!cleanTitle) { new obsidian.Notice('Enter a note title'); return; }
+    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
     const noteFolder = parent + '/' + cleanTitle;
     if (this.app.vault.getAbstractFileByPath(noteFolder)) {
       new obsidian.Notice('A note named "' + cleanTitle + '" already exists here.'); return;
@@ -8522,6 +8540,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     dlog('note people written:', folderPath, (people || []).length, 'entries');
   }
 
+  // Parent doc's current display title — its current sidecar fm.title,
+  // falling back to the folder basename. Shared by the note card's parent
+  // crumb/link (ContainerNoteView._parentTitle) and the create-from-parent
+  // auto-title + break-away rename flows (R2).
+  _parentDisplayTitle(parentDocPath) {
+    const sc = this._parentCurrentSidecar(parentDocPath);
+    const fm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
+    return (fm && fm.title) || (parentDocPath.split('/').pop() || parentDocPath);
+  }
+
   // Parent document folder → its CURRENT version's sidecar TFile. Resolved at
   // call time so parent version bumps self-heal on the next note save.
   _parentCurrentSidecar(parentFolderPath) {
@@ -8618,6 +8646,63 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     });
     this.appendLog(parentDocPath, 'related note removed');
     dlog('note relation removed:', parentDocPath, '-x-', noteFolderPath);
+  }
+
+  // ── Break-away rename (R2.3) ──────────────────────────────────────────────
+  // Called AFTER a parent relation has been removed from either side (card ✕
+  // or the parent's Related Documents remove). If the note's CURRENT title
+  // still matches the auto-generated "<noteType> - <removed parent's name>"
+  // form exactly, prompt for a new title. Awaits the modal outcome (submit or
+  // cancel) so callers can rely on the prompt having been offered before they
+  // move on — but any failure here is swallowed (logged only) so it can never
+  // undo the caller's already-completed relation removal.
+  async maybePromptNoteRename(noteFolderPath, removedParentDocPath) {
+    try {
+      const dm = this.app.vault.getAbstractFileByPath(noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME);
+      if (!(dm instanceof obsidian.TFile)) return;
+      const fm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
+      const noteType = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
+      const parentTitle = this._parentDisplayTitle(removedParentDocPath);
+      const autoTitle = (noteType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
+      const currentTitle = fm.title || '';
+      if (currentTitle !== autoTitle) return;   // user already renamed it, or it never had the auto form — leave alone
+      const bodyFile = this._noteBodyIn(noteFolderPath);
+      if (!(bodyFile instanceof obsidian.TFile)) return;
+      await new Promise((resolve) => {
+        const modal = new NoteRenameModal(this.app, currentTitle, async (newTitle) => {
+          try { await this._renameNoteTitle(noteFolderPath, bodyFile, newTitle); }
+          catch (e) { elog('note rename failed:', e && e.stack || e); new obsidian.Notice('Rename failed: ' + (e && e.message ? e.message : e)); }
+          resolve();
+        });
+        modal._onCancel = () => resolve();   // Esc/close without submit — no error, no rename
+        modal.open();
+      });
+    } catch (e) {
+      elog('maybePromptNoteRename failed:', e && e.stack || e);
+    }
+  }
+
+  // Rewrite the note body's first H1 to `newTitle` through the choke point,
+  // skeleton-before-body (same order as autosave — _writeCurrent). Does NOT
+  // rename the note folder: identity = docId, paths stay stable.
+  // Open-editor mitigation: if the body is currently loaded in a
+  // ContainerNoteView, flush its pending autosave first (so we rewrite from
+  // the latest buffer, not a stale disk read), then reload the view from the
+  // new on-disk text afterward so the open CM buffer never diverges from disk.
+  async _renameNoteTitle(noteFolderPath, bodyFile, newTitle) {
+    const cleanTitle = String(newTitle || '').trim();
+    if (!cleanTitle) return;
+    const openLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_NOTE)
+      .find((l) => l.view && l.view.file && l.view.file.path === bodyFile.path);
+    const openView = openLeaf && openLeaf.view;
+    if (openView && openView._flushSave) await openView._flushSave();
+    const text = await this.readNoteBody(bodyFile);
+    const h1Re = /^#\s+.+$/m;
+    const newText = h1Re.test(text) ? text.replace(h1Re, '# ' + cleanTitle) : ('# ' + cleanTitle + '\n\n' + text);
+    await this.updateNoteSkeleton(noteFolderPath, newText);   // skeleton BEFORE body — same order as autosave
+    await this.writeNoteBody(bodyFile, newText);
+    if (openView && openView.onLoadFile) await openView.onLoadFile(openView.file);   // reload the CM buffer from the new on-disk text
+    dlog('note renamed (break-away):', noteFolderPath, '->', cleanTitle);
   }
 
   // Container-notes titles provider — the pluggable seam behind [[ completion
@@ -9185,30 +9270,89 @@ class FileNameModal extends obsidian.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-// Hybrid card: create-note dialog — title + note type only (spec decision);
+// Hybrid card: create-note dialog. Two shapes (R2 2026-07-10):
+// - Standalone command: title + all four types (askTitle:true, default).
+// - Create-from-parent ("＋ New note"): type only, restricted type list,
+//   no title input — createNoteContainer auto-generates "<Type> - <Parent>".
 // everything else is set on the card after the editor opens.
 class NoteCreateModal extends obsidian.Modal {
-  constructor(app, defaultType, onSubmit) {
+  constructor(app, opts, onSubmit) {
     super(app);
-    this.defaultType = docContainer.NOTE_TYPES.includes(defaultType) ? defaultType : 'General';
+    opts = opts || {};
+    this.types = (Array.isArray(opts.types) && opts.types.length) ? opts.types : docContainer.NOTE_TYPES;
+    this.defaultType = this.types.includes(opts.defaultType) ? opts.defaultType : this.types[0];
+    this.askTitle = opts.askTitle !== false;   // default true (standalone command shape)
     this.onSubmit = onSubmit;
   }
   onOpen() {
     this.titleEl.setText('New note');
-    const input = this.contentEl.createEl('input', { type: 'text', attr: { placeholder: 'Note title' } });
-    input.style.width = '100%';
+    let input = null;
+    if (this.askTitle) {
+      input = this.contentEl.createEl('input', { type: 'text', attr: { placeholder: 'Note title' } });
+      input.style.width = '100%';
+    }
     const sel = this.contentEl.createEl('select');
     sel.style.cssText = 'width:100%;margin-top:8px;';
-    for (const t of docContainer.NOTE_TYPES) sel.createEl('option', { text: t, value: t });
+    for (const t of this.types) sel.createEl('option', { text: t, value: t });
     sel.value = this.defaultType;
-    const go = () => { const v = input.value.trim(); if (v) { this.close(); this.onSubmit(v, sel.value); } };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
+    const go = () => {
+      if (this.askTitle) {
+        const v = input.value.trim();
+        if (!v) return;
+        this.close(); this.onSubmit(v, sel.value);
+      } else {
+        this.close(); this.onSubmit(null, sel.value);
+      }
+    };
+    if (input) input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     const btn = this.contentEl.createEl('button', { text: 'Create' });
     btn.style.marginTop = '8px';
     btn.onclick = go;
-    setTimeout(() => input.focus(), 0);
+    setTimeout(() => (input || sel).focus(), 0);
   }
   onClose() { this.contentEl.empty(); }
+}
+
+// Break-away rename prompt (R2.3): offered when a note's auto-generated title
+// (matching its removed parent's name) loses its parent. Text input pre-filled
+// with the current title. Empty submit is a no-op (field stays, modal stays
+// open); Esc/close-without-submit cancels — the caller's optional _onCancel
+// hook (set post-construction, see maybePromptNoteRename) fires so the caller
+// can resolve without waiting forever.
+class NoteRenameModal extends obsidian.Modal {
+  constructor(app, currentTitle, onSubmit) {
+    super(app);
+    this.currentTitle = currentTitle || '';
+    this.onSubmit = onSubmit;
+    this._done = false;
+    this._onCancel = null;   // caller-assigned, optional
+  }
+  onOpen() {
+    this.titleEl.setText('Parent removed — rename this note?');
+    this.contentEl.createEl('div', {
+      cls: 'setting-item-description',
+      text: 'This note was auto-named after its parent document. Give it a new title, or close this dialog to keep the current name.',
+    });
+    const input = this.contentEl.createEl('input', { type: 'text' });
+    input.style.cssText = 'width:100%;margin-top:8px;';
+    input.value = this.currentTitle;
+    const go = () => {
+      const v = input.value.trim();
+      if (!v) return;
+      this._done = true;
+      this.close();
+      this.onSubmit(v);
+    };
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); if (e.key === 'Escape') this.close(); });
+    const btn = this.contentEl.createEl('button', { text: 'Rename' });
+    btn.style.marginTop = '8px';
+    btn.onclick = go;
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this._done && this._onCancel) this._onCancel();
+  }
 }
 
 // ===========================================================================
