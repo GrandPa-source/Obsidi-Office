@@ -6343,8 +6343,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.app.workspace.on("file-open", (file) => {
         if (!file || !file.parent || file.name !== docContainer.DOCUMENT_MD_NAME) return;
         const folder = file.parent;
-        const body = (folder.children || []).find(
-          (c) => c instanceof obsidian.TFile && docContainer.isNoteBody(c.name));
+        const body = this._noteBodyIn(folder.path);
         if (!body) return;   // office/other _document.md — not a note container, leave it alone
         if (_inFlightNoteSkels.has(file.path)) {
           dlog("note skeleton redirect: dedup skip", file.path);
@@ -8073,7 +8072,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await this.app.fileManager.processFrontMatter(dm, (fm) => {
       if (sk.title) fm.title = sk.title;
       fm.tags = sk.tags;
-      fm.links = sk.links;
+      fm.links = docContainer.mergeNoteLinks(sk.links, this._noteParentLinks(fm.relatedParents, dm.path));
       fm.modified = new Date().toISOString();
     });
     dlog('note skeleton updated:', folderPath, 'title:', sk.title, 'tags:', sk.tags.length, 'links:', sk.links.length);
@@ -8143,6 +8142,85 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
+  }
+
+  // ── Hybrid card plumbing (2026-07-10 design) ─────────────────────────────────
+
+  // People accessor pair — THE Phase D seam. People names (Complainant/Victim/…)
+  // are the most sensitive plaintext in the skeleton; the encryption phase
+  // relocates the field by changing ONLY these two methods. No other code may
+  // read or write fm.people.
+  readNotePeople(folderPath) {
+    const dm = this.app.vault.getAbstractFileByPath(folderPath + '/' + docContainer.DOCUMENT_MD_NAME);
+    const fm = dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter;
+    if (!fm || !Array.isArray(fm.people)) return [];
+    return fm.people.map((p) => {
+      const o = { name: (p && p.name) || '', type: (p && p.type) || 'Attendee' };
+      if (p && p.title) o.title = p.title;
+      return o;
+    });
+  }
+  async writeNotePeople(folderPath, people) {
+    const dm = this.app.vault.getAbstractFileByPath(folderPath + '/' + docContainer.DOCUMENT_MD_NAME);
+    if (!(dm instanceof obsidian.TFile)) { elog('writeNotePeople: no _document.md in', folderPath); return; }
+    await this.app.fileManager.processFrontMatter(dm, (fm) => {
+      if (people && people.length) {
+        fm.people = people.map((p) => {
+          const o = { name: p.name || '', type: p.type || 'Attendee' };
+          if (p.title) o.title = p.title;
+          return o;
+        });
+      } else {
+        delete fm.people;
+      }
+    });
+    dlog('note people written:', folderPath, (people || []).length, 'entries');
+  }
+
+  // Parent document folder → its CURRENT version's sidecar TFile. Resolved at
+  // call time so parent version bumps self-heal on the next note save.
+  _parentCurrentSidecar(parentFolderPath) {
+    const folder = this.app.vault.getAbstractFileByPath(parentFolderPath);
+    if (!folder || !folder.children) return null;
+    const names = folder.children.filter((c) => c instanceof obsidian.TFile).map((c) => c.name);
+    const g = docContainer.groupDocumentFiles(names);
+    if (!g.current) return null;
+    const sc = this.app.vault.getAbstractFileByPath(parentFolderPath + '/' + g.current + '.md');
+    return sc instanceof obsidian.TFile ? sc : null;
+  }
+
+  // Quoted wikilinks a note's relatedParents contribute to its machine links[]
+  // (target = each parent's current sidecar — the sidecar↔sidecar graph rule).
+  _noteParentLinks(relatedParents, fromPath) {
+    const out = [];
+    for (const p of (relatedParents || [])) {
+      const sc = this._parentCurrentSidecar(p);
+      if (sc) out.push('[[' + this.app.metadataCache.fileToLinktext(sc, fromPath, false) + ']]');
+    }
+    return out;
+  }
+
+  // The note body file inside a folder, or null when the folder isn't a note.
+  _noteBodyIn(folderPath) {
+    const folder = this.app.vault.getAbstractFileByPath(folderPath);
+    if (!folder || !folder.children) return null;
+    return folder.children.find((c) => c instanceof obsidian.TFile && docContainer.isNoteBody(c.name)) || null;
+  }
+
+  // Reciprocal self-heal when the parent drops the relation (or the card
+  // removes a parent): strip the parent from relatedParents and drop the
+  // wikilink it contributed NOW (a body [[link]] to the same target would be
+  // re-added by the next autosave's body extraction — acceptable).
+  async _removeNoteParent(noteFolderPath, parentDocPath) {
+    const dm = this.app.vault.getAbstractFileByPath(noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME);
+    if (!(dm instanceof obsidian.TFile)) return;
+    const drop = this._noteParentLinks([parentDocPath], dm.path);
+    await this.app.fileManager.processFrontMatter(dm, (fm) => {
+      const rp = (Array.isArray(fm.relatedParents) ? fm.relatedParents : []).filter((p) => p !== parentDocPath);
+      if (rp.length) fm.relatedParents = rp; else delete fm.relatedParents;
+      if (Array.isArray(fm.links) && drop.length) fm.links = fm.links.filter((l) => !drop.includes(l));
+    });
+    dlog('note parent removed:', noteFolderPath, '-x-', parentDocPath);
   }
 
   // Container-notes titles provider — the pluggable seam behind [[ completion
