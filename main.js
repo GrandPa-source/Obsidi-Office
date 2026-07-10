@@ -3581,7 +3581,7 @@ class ContainerNoteView extends obsidian.FileView {
   }
   _cardEditing() { return !!(this._cardEl && this._cardEl.contains(document.activeElement)); }
 
-  _renderCard(fmOverride) {
+  _renderCard(fmOverride, peopleOverride) {
     if (!this.file || this._locked) return;
     // Optimistic override: a caller that just wrote a field passes the new
     // value instead of re-reading metadataCache, which stays stale until the
@@ -3627,7 +3627,7 @@ class ContainerNoteView extends obsidian.FileView {
         };
       });
       this._renderAddParent(plist);
-      this._renderPeopleSection(body, fm, type);
+      this._renderPeopleSection(body, fm, type, peopleOverride);
     }
     if (this._cardEl && this._cardEl.parentElement) this._cardEl.replaceWith(el);
     else this.contentEl.insertBefore(el, this.contentEl.firstChild);
@@ -3679,10 +3679,13 @@ class ContainerNoteView extends obsidian.FileView {
     input.onblur = () => setTimeout(hide, 150);
   }
 
-  _renderPeopleSection(bodyEl, fm, type) {
+  _renderPeopleSection(bodyEl, fm, type, peopleOverride) {
     if (!docContainer.noteShowsPeople(type)) return;   // hidden ≠ deleted: fm.people persists
     const folder = this._noteFolderPath();
-    const people = this.plugin.readNotePeople(folder);
+    // Optimistic override (same rationale as _renderCard's fmOverride): a
+    // handler that just wrote people passes the array it wrote — the accessor
+    // reads metadataCache, which is stale until the re-parse event.
+    const people = peopleOverride || this.plugin.readNotePeople(folder);
     const key = (p) => (p.name || '') + '|' + (p.title || '');   // aggregateStakeholders composite key
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
@@ -3708,7 +3711,7 @@ class ContainerNoteView extends obsidian.FileView {
                : cur.concat([Object.assign({ name: s.name || '', type: 'Attendee' }, s.title ? { title: s.title } : {})]))
             : cur.filter((p) => key(p) !== k);
           await this.plugin.writeNotePeople(folder, next);
-          this._renderCard();
+          this._renderCard(undefined, next);
         };
       });
     }
@@ -3731,7 +3734,7 @@ class ContainerNoteView extends obsidian.FileView {
       x.onclick = async () => {
         const cur = this.plugin.readNotePeople(folder).filter((q) => key(q) !== key(p));
         await this.plugin.writeNotePeople(folder, cur);
-        this._renderCard();
+        this._renderCard(undefined, cur);
       };
     });
     // Ad-hoc add: name + person type + optional title.
@@ -3750,7 +3753,7 @@ class ContainerNoteView extends obsidian.FileView {
       if (ti.value.trim()) entry.title = ti.value.trim();
       cur.push(entry);
       await this.plugin.writeNotePeople(folder, cur);
-      this._renderCard();
+      this._renderCard(undefined, cur);
     };
   }
 
