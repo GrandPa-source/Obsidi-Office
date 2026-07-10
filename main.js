@@ -661,6 +661,11 @@ const DOC_CONTAINER_CSS = `
 .doc-container-act { cursor:pointer; font-size:13px; }
 .doc-container-act:hover { color: var(--text-normal); }
 .doc-container-filter { width: calc(100% - 16px); margin: 2px 8px 6px; padding:5px 8px; font-size: var(--font-ui-smaller); border:1px solid var(--background-modifier-border); border-radius:6px; background: var(--background-primary); color: var(--text-normal); }
+.doc-container-filterwrap { position: relative; }
+.doc-container-filterwrap .doc-container-filter { padding-right: 26px; }
+.doc-container-filterclear { position: absolute; right: 14px; top: calc(50% - 2px); transform: translateY(-50%); display: flex; align-items: center; cursor: pointer; color: var(--text-muted); padding: 2px; }
+.doc-container-filterclear:hover { color: var(--text-normal); }
+.doc-container-filterclear svg { width: 14px; height: 14px; }
 .doc-container-tree { padding-bottom: 8px; }
 .doc-container-node { display:flex; align-items:center; gap:4px; padding:4px 6px; border-radius:5px; white-space:nowrap; cursor:pointer; }
 .doc-container-node:hover { background: var(--background-modifier-hover); }
@@ -3474,6 +3479,10 @@ class ContainerNoteView extends obsidian.FileView {
   async _togglePreview() {
     if (this._locked || !this.file || !this._editorHostEl) return;
     this._previewing = !this._previewing;
+    if (this._previewAction) {
+      obsidian.setIcon(this._previewAction, this._previewing ? 'pencil' : 'book-open');
+      this._previewAction.setAttribute('aria-label', this._previewing ? 'Edit note' : 'Preview note');
+    }
     if (this._previewing) {
       await this._flushSave();
       const text = this._cm ? this._cm.state.doc.toString() : await this.plugin.readNoteBody(this.file);
@@ -3593,10 +3602,17 @@ class DocumentBrowserView extends obsidian.ItemView {
     const refresh = docIcon(toolbar, 'refresh-cw', 'doc-container-act');
     refresh.setAttr('aria-label', 'Refresh');
     refresh.onclick = () => this.render();
-    const filter = c.createEl('input', { cls: 'doc-container-filter', attr: { placeholder: 'Filter title or #tag…' } });
+    const fwrap = c.createDiv('doc-container-filterwrap');
+    const filter = fwrap.createEl('input', { cls: 'doc-container-filter', attr: { placeholder: 'Filter title or #tag…' } });
     filter.value = this._q || '';
+    const fclear = fwrap.createDiv('doc-container-filterclear');
+    obsidian.setIcon(fclear, 'x');
+    fclear.setAttr('aria-label', 'Clear filter');
     const tree = c.createDiv('doc-container-tree');
-    filter.oninput = () => { this._q = filter.value; this.renderTreeBody(tree); };
+    const syncClear = () => { fclear.style.display = filter.value ? '' : 'none'; };
+    filter.oninput = () => { this._q = filter.value; syncClear(); this.renderTreeBody(tree); };
+    fclear.onclick = () => { filter.value = ''; this._q = ''; syncClear(); this.renderTreeBody(tree); filter.focus(); };
+    syncClear();
     this.renderTreeBody(tree);
   }
 
@@ -6417,6 +6433,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         if (file.extension !== "md") return;
         if (/\.(docx|pptx|xlsx)\.md$/i.test(file.path)) return;  // office sidecar
         if (file.name === docContainer.DOCUMENT_MD_NAME) return;  // machine-written note/doc skeleton
+        if (file.name === docContainer.LOG_MD_NAME) return;       // machine-written activity log (parseLogBody owns its format)
         const root = this.settings.templatesRoot || "_obsidi-office-templates";
         if (file.path === root || file.path.startsWith(root + "/")) return;  // template file
         if (this.settings.autoNoteFrontmatter === false) return;
@@ -7944,7 +7961,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         + '---\n';
       await this.app.vault.create(noteFolder + '/' + docContainer.DOCUMENT_MD_NAME, yaml);
       this.buildDocIndex();                       // docId indexed from day one
-      this.appendLog(noteFolder, 'created');
+      // Awaited (unlike office flows): openNoteInEditor's "Opened in editor"
+      // activity entry follows immediately and would otherwise race this one
+      // for the log.md create — the loser threw "File already exists".
+      await this.appendLog(noteFolder, 'created');
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
       dlog('note container created:', noteFolder);
       await this.openNoteInEditor({ path: noteFolder });
