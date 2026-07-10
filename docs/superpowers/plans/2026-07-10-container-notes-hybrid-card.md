@@ -364,10 +364,10 @@ Then, directly after the existing `await this.appendLog(noteFolder, 'created');`
   // the reciprocal wikilink.
   async _writeNoteRelation(parentDocPath, noteFolderPath) {
     const sc = this._parentCurrentSidecar(parentDocPath);
-    if (!sc) { elog('note relation: parent current sidecar not found for', parentDocPath); return; }
+    if (!sc) { elog('note relation: parent current sidecar not found for', parentDocPath); return false; }
     const dmPath = noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME;
     const dm = this.app.vault.getAbstractFileByPath(dmPath);
-    if (!(dm instanceof obsidian.TFile)) { elog('note relation: note skeleton missing:', dmPath); return; }
+    if (!(dm instanceof obsidian.TFile)) { elog('note relation: note skeleton missing:', dmPath); return false; }
     const noteFm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
     const label = noteFm.title || (noteFolderPath.split('/').pop() || noteFolderPath);
     const wl = '[[' + this.app.metadataCache.fileToLinktext(dm, sc.path, false) + ']]';
@@ -383,6 +383,30 @@ Then, directly after the existing `await this.appendLog(noteFolder, 'created');`
     });
     this.appendLog(parentDocPath, 'related note added', label);
     dlog('note relation written:', parentDocPath, '<->', noteFolderPath);
+    return true;
+  }
+
+  // Parent-side removal — the mirror of _writeNoteRelation (final-review fix:
+  // without it, removing a parent from the CARD stranded the parent's
+  // relatedDocuments entry + wikilink forever). Drops the entry targeting the
+  // note's _document.md and the matching links[] wikilink.
+  async _removeNoteRelation(parentDocPath, noteFolderPath) {
+    const sc = this._parentCurrentSidecar(parentDocPath);
+    if (!sc) { elog('_removeNoteRelation: parent current sidecar not found for', parentDocPath); return; }
+    const dmPath = noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME;
+    const dm = this.app.vault.getAbstractFileByPath(dmPath);
+    const wl = dm instanceof obsidian.TFile
+      ? '[[' + this.app.metadataCache.fileToLinktext(dm, sc.path, false) + ']]' : null;
+    await this.app.fileManager.processFrontMatter(sc, (fm) => {
+      if (Array.isArray(fm.relatedDocuments)) {
+        fm.relatedDocuments = fm.relatedDocuments
+          .filter((r) => !(r && r.target === dmPath))
+          .map(({ link, ...r }) => r);   // house rule: strip legacy link field
+      }
+      if (wl && Array.isArray(fm.links)) fm.links = fm.links.filter((l) => l !== wl);
+    });
+    this.appendLog(parentDocPath, 'related note removed');
+    dlog('note relation removed:', parentDocPath, '-x-', noteFolderPath);
   }
 ```
 
@@ -526,6 +550,7 @@ Add these overrides to the class (they don't exist yet — place them right afte
         x.onclick = async () => {
           const next = parents.filter((q) => q !== p);
           await this.plugin._removeNoteParent(this._noteFolderPath(), p);
+          await this.plugin._removeNoteRelation(p, this._noteFolderPath());   // both sides, or the parent strands the entry
           this._renderCard({ relatedParents: next });
         };
       });
@@ -567,10 +592,13 @@ Add these overrides to the class (they don't exist yet — place them right afte
           it.setText(d.path.startsWith(rootPrefix) ? d.path.slice(rootPrefix.length) : d.path);
           it.onmousedown = async (e) => {
             e.preventDefault();
+            // Parent side FIRST; stamp relatedParents only on success so add
+            // is all-or-nothing (final-review recommendation).
+            const ok = await this.plugin._writeNoteRelation(d.path, this._noteFolderPath());
+            if (!ok) { new obsidian.Notice('Could not link parent — no current document version found.'); hide(); return; }
             const cur2 = Array.isArray(this._noteFront().relatedParents) ? this._noteFront().relatedParents.slice() : [];
             if (!cur2.includes(d.path)) cur2.push(d.path);
             await this._setNoteField('relatedParents', cur2);
-            await this.plugin._writeNoteRelation(d.path, this._noteFolderPath());
             hide();
             this._renderCard({ relatedParents: cur2 });
           };
