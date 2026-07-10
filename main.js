@@ -896,6 +896,8 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-logico { font-size:13px; width:18px; text-align:center; opacity:.85; flex:0 0 auto; }
 .doc-detail-logaction { font-size:12.5px; line-height:1.35; color: var(--text-normal); }
 .doc-detail-logmeta { font-size:10px; color: var(--text-faint); margin-top:2px; }
+.doc-log-fileref { color: var(--text-accent); cursor:pointer; }
+.doc-log-fileref:hover { text-decoration:underline; }
 .doc-detail-tabb.right { position:absolute; top:0; right:0; }   /* pinned to the upper row, right edge, even when the bar wraps */
 .doc-detail-tabs.has-right { padding-right:64px; }              /* reserve the pinned tab's footprint so row-1 tabs never underlap it */
 /* ── v0.3 Project view ── */
@@ -2163,6 +2165,52 @@ function docLogIcon(action) {
   if (a.includes('team') || a.includes('member')) return 'user';
   if (a.includes('note')) return 'sticky-note';
   return 'circle';
+}
+
+// R3: split a formatted log action into base text + a trailing "(detail)" group.
+// Mirrors formatLogEntry's ' (' + detail + ')' suffix as a regex on the already
+// -parsed action string (parseLogBody itself is untouched — old lib tests stay green).
+function splitLogDetail(action) {
+  const m = /^(.+?) \(([^()]+)\)$/.exec(String(action || ''));
+  return m ? { text: m[1], detail: m[2] } : { text: action || '', detail: null };
+}
+
+// R3: route a click on a Log-tab file reference the same way the Related
+// Documents tab does — managed office ext -> our editor; a note's body/_document.md
+// -> the note editor; anything else -> Obsidian's default link handler.
+function openLogFileRef(plugin, app, leaf, returnDocPath, path) {
+  const ext = (path.split('.').pop() || '').toLowerCase();
+  if (docContainer.MANAGED_EXTS.includes(ext)) { plugin.openDocInEditor(path, returnDocPath, false, leaf); return; }
+  const name = path.split('/').pop();
+  const isNoteTarget = docContainer.isNoteBody(name) || name === docContainer.DOCUMENT_MD_NAME;
+  if (isNoteTarget) {
+    const folder = path.slice(0, path.lastIndexOf('/'));
+    const body = plugin._noteBodyIn(folder);
+    if (body) { plugin.openNoteInEditor({ path: folder, noteBody: body.name }); return; }
+  }
+  app.workspace.openLinkText(path, returnDocPath || '', false);
+}
+
+// R3: one Log-tab row. A detail that resolves to an existing vault file renders as
+// an accent, clickable file reference (basename+ext) between the action text and
+// the actor/timestamp meta line. A detail that doesn't resolve (legacy bare
+// labels, or non-path details like "base 1.2") renders exactly as before — a
+// plain "action (detail)" line, no link (backward compatibility, REQUIRED).
+function renderLogRow(view, list, returnNode, l) {
+  const row = list.createDiv('doc-detail-logrow');
+  docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
+  const main = row.createDiv();
+  const { text, detail } = splitLogDetail(l.action);
+  const target = detail && view.app.vault.getAbstractFileByPath(detail);
+  if (target instanceof obsidian.TFile) {
+    main.createDiv({ text, cls: 'doc-detail-logaction' });
+    const refRow = main.createDiv({ cls: 'doc-detail-logaction' });
+    const link = refRow.createSpan({ text: target.name, cls: 'doc-log-fileref' });
+    link.onclick = () => openLogFileRef(view.plugin, view.app, view.leaf, returnNode && returnNode.path, target.path);
+  } else {
+    main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
+  }
+  main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
 }
 
 // pdf-lib's StandardFonts.Helvetica uses WinAnsi (cp1252) encoding which only
@@ -4874,13 +4922,7 @@ class DocumentDetailView extends obsidian.ItemView {
       entries = fm.activityLog.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
     }
     if (!entries.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    for (const l of entries) {
-      const row = list.createDiv('doc-detail-logrow');
-      docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
-      const main = row.createDiv();
-      main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
-      main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
-    }
+    for (const l of entries) renderLogRow(this, list, this.node, l);
   }
 
   // Outlier forks awaiting reconciliation, derived by scanning the doc's _forks/
@@ -5437,13 +5479,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       entries = log.slice().sort((a, b) => String(b.datetime).localeCompare(String(a.datetime)));
     }
     if (!entries.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
-    for (const l of entries) {
-      const row = list.createDiv('doc-detail-logrow');
-      docIcon(row, docLogIcon(l.action), 'doc-detail-logico');
-      const main = row.createDiv();
-      main.createDiv({ text: l.action || '', cls: 'doc-detail-logaction' });
-      main.createDiv({ text: (l.actor || '') + ' · ' + (l.datetime || ''), cls: 'doc-detail-logmeta' });
-    }
+    for (const l of entries) renderLogRow(this, list, node, l);
   }
 
   renderContainers(c, node) {
@@ -8621,7 +8657,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (!links.includes(wl)) links.push(wl);
       fm.links = links;
     });
-    this.appendLog(parentDocPath, 'related note added', label);
+    this.appendLog(parentDocPath, 'related note added', dmPath);   // R3: path detail (not label) so the Log tab can link it
     dlog('note relation written:', parentDocPath, '<->', noteFolderPath);
     return true;
   }
@@ -8645,7 +8681,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       }
       if (wl && Array.isArray(fm.links)) fm.links = fm.links.filter((l) => l !== wl);
     });
-    this.appendLog(parentDocPath, 'related note removed');
+    this.appendLog(parentDocPath, 'related note removed', dmPath);   // R3: path detail so the Log tab can link it
     dlog('note relation removed:', parentDocPath, '-x-', noteFolderPath);
   }
 
@@ -8834,8 +8870,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   async _appendActivity(officePath, action, type) {
     if (!officePath || !officePath.startsWith(this.settings.docRoot + '/')) return;
     const folder = officePath.slice(0, officePath.lastIndexOf('/'));
-    const name = officePath.slice(officePath.lastIndexOf('/') + 1);   // name the file in the log
-    return this.appendLog(folder, action, name);                       // → "Opened in editor (Minutes.docx)"
+    // R3: detail carries the full vault path (not just the basename) so the Log
+    // tab can resolve + link it — e.g. "Opened in editor
+    // (Documents/.../Minutes.docx)"; the renderer shows only the basename+ext.
+    return this.appendLog(folder, action, officePath);
   }
 
   // ── Task 19: New version action (copy + increment + carry sidecar metadata) ─
