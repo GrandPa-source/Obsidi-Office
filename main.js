@@ -3411,6 +3411,9 @@ class ContainerNoteView extends obsidian.FileView {
     this._previewing = false;
     this._previewEl = null;
     this._previewAction = null;
+    this._cardEl = null;
+    this._cardCollapsed = true;
+    this._cardWatchWired = false;
   }
   getViewType() { return VIEW_TYPE_NOTE; }
   getIcon() { return 'notebook-pen'; }
@@ -3424,10 +3427,21 @@ class ContainerNoteView extends obsidian.FileView {
     }
     return folder ? folder.name : 'Note';
   }
+  // Card collapse state survives restart (same pattern as returnDocPath).
+  getState() {
+    const s = super.getState();
+    s.cardCollapsed = !!this._cardCollapsed;
+    return s;
+  }
+  async setState(state, result) {
+    if (state && typeof state.cardCollapsed === 'boolean') this._cardCollapsed = state.cardCollapsed;
+    return super.setState(state, result);
+  }
   async onLoadFile(file) {
     dlog('ContainerNoteView onLoadFile:', file && file.path);
     await this._flushSave();   // defensive only: onUnloadFile already flushed + destroyed CM before this runs; no-ops unless Obsidian's unload-before-load ordering ever changes
     this.contentEl.empty();
+    this._cardEl = null;
     this._editorHostEl = null;   // else a failed load leaves a stale host and _togglePreview's guard passes
     this._previewing = false;
     this._previewEl = null;
@@ -3441,6 +3455,20 @@ class ContainerNoteView extends obsidian.FileView {
       elog('note body read failed:', e && e.stack || e);
       this.contentEl.createEl('div', { text: 'Could not read note body.' });
       return;
+    }
+    if (this.plugin._expandCardOnce && file.parent && this.plugin._expandCardOnce === file.parent.path) {
+      this._cardCollapsed = false;
+      this.plugin._expandCardOnce = null;
+    }
+    this._renderCard();
+    if (!this._cardWatchWired) {
+      this._cardWatchWired = true;
+      // Re-render on external skeleton changes (Sync), but never clobber an
+      // in-progress card edit (focus-based guard).
+      this.registerEvent(this.app.metadataCache.on('changed', (f) => {
+        const dm = this._noteDm();
+        if (dm && f && f.path === dm.path && !this._cardEditing()) this._renderCard();
+      }));
     }
     this._editorHostEl = this.contentEl.createEl('div', { cls: 'obsidi-note-editor' });
     this._cm = new cm.view.EditorView({
@@ -3526,6 +3554,121 @@ class ContainerNoteView extends obsidian.FileView {
       dlog('note preview off:', this.file.path);
     }
   }
+  // ── Metadata card (hybrid design 2026-07-10) ────────────────────────────────
+  _noteFolderPath() { return this.file && this.file.parent ? this.file.parent.path : null; }
+  _noteDm() {
+    const p = this._noteFolderPath();
+    return p ? this.app.vault.getAbstractFileByPath(p + '/' + docContainer.DOCUMENT_MD_NAME) : null;
+  }
+  _noteFront() {
+    const dm = this._noteDm();
+    return (dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter) || {};
+  }
+  async _setNoteField(key, value) {
+    const dm = this._noteDm();
+    if (!(dm instanceof obsidian.TFile)) { elog('_setNoteField: no _document.md for', this.file && this.file.path); return; }
+    await this.app.fileManager.processFrontMatter(dm, (fm) => {
+      const empty = value === undefined || value === null || value === ''
+        || (Array.isArray(value) && !value.length);
+      if (empty) delete fm[key]; else fm[key] = value;
+    });
+    dlog('note field set:', key, 'on', dm.path);
+  }
+  _parentTitle(parentPath) {
+    const sc = this.plugin._parentCurrentSidecar(parentPath);
+    const fm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
+    return (fm && fm.title) || (parentPath.split('/').pop() || parentPath);
+  }
+  _cardEditing() { return !!(this._cardEl && this._cardEl.contains(document.activeElement)); }
+
+  _renderCard() {
+    if (!this.file || this._locked) return;
+    const fm = this._noteFront();
+    const type = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
+    const parents = Array.isArray(fm.relatedParents) ? fm.relatedParents : [];
+    const el = createDiv({ cls: 'obsidi-note-card' });
+    const head = el.createDiv('obsidi-note-card-head');
+    const tw = head.createSpan('obsidi-note-card-tw');
+    obsidian.setIcon(tw, this._cardCollapsed ? 'chevron-right' : 'chevron-down');
+    head.createSpan({ text: type, cls: 'obsidi-note-card-type' });
+    if (parents[0]) head.createSpan({ text: ' · ' + this._parentTitle(parents[0]), cls: 'obsidi-note-card-crumb' });
+    if (fm.noteDate) head.createSpan({ text: ' · ' + fm.noteDate, cls: 'obsidi-note-card-crumb' });
+    head.onclick = () => { this._cardCollapsed = !this._cardCollapsed; this._renderCard(); };
+    if (!this._cardCollapsed) {
+      const body = el.createDiv('obsidi-note-card-body');
+      body.onclick = (e) => e.stopPropagation();
+      const row1 = body.createDiv('obsidi-note-card-row');
+      row1.createSpan({ text: 'Type', cls: 'obsidi-note-card-lbl' });
+      const sel = row1.createEl('select');
+      for (const t of docContainer.NOTE_TYPES) sel.createEl('option', { text: t, value: t });
+      sel.value = type;
+      sel.onchange = async () => { await this._setNoteField('noteType', sel.value); this._renderCard(); };
+      const row2 = body.createDiv('obsidi-note-card-row');
+      row2.createSpan({ text: 'Date', cls: 'obsidi-note-card-lbl' });
+      const date = row2.createEl('input', { type: 'date' });
+      date.value = fm.noteDate || '';
+      date.onchange = async () => { await this._setNoteField('noteDate', date.value); this._renderCard(); };
+      const prow = body.createDiv('obsidi-note-card-row');
+      prow.createSpan({ text: 'Parents', cls: 'obsidi-note-card-lbl' });
+      const plist = prow.createDiv('obsidi-note-card-plist');
+      parents.forEach((p) => {
+        const r = plist.createDiv('obsidi-note-card-prow');
+        const a = r.createSpan({ text: this._parentTitle(p), cls: 'obsidi-note-card-plink' });
+        a.setAttr('title', p);
+        a.onclick = () => this.plugin.openDocDetail({ path: p });
+        const x = r.createSpan({ cls: 'obsidi-note-card-rm' });
+        obsidian.setIcon(x, 'x');
+        x.onclick = async () => { await this.plugin._removeNoteParent(this._noteFolderPath(), p); this._renderCard(); };
+      });
+      this._renderAddParent(plist);
+      this._renderPeopleSection(body, fm, type);
+    }
+    if (this._cardEl && this._cardEl.parentElement) this._cardEl.replaceWith(el);
+    else this.contentEl.insertBefore(el, this.contentEl.firstChild);
+    this._cardEl = el;
+  }
+
+  // Add-parent picker: flat filtered list of document containers, shown with
+  // their docRoot-relative paths (the navigator's display without drill-in —
+  // conscious simplification, noted in the plan).
+  _renderAddParent(plist) {
+    const wrap = plist.createDiv('obsidi-note-card-addparent');
+    const input = wrap.createEl('input', { attr: { placeholder: 'Add parent document…' } });
+    const sug = wrap.createDiv('obsidi-note-card-sug');
+    const docs = [];
+    const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
+    walk(docContainer.buildTaxonomy(this.app.vault.getFiles().map((f) => f.path), this.plugin.settings.docRoot));
+    const hide = () => { sug.removeClass('visible'); sug.empty(); };
+    const show = () => {
+      const q = input.value.toLowerCase();
+      sug.empty();
+      const cur = new Set(Array.isArray(this._noteFront().relatedParents) ? this._noteFront().relatedParents : []);
+      const rootPrefix = (this.plugin.settings.docRoot || 'Documents') + '/';
+      docs.filter((d) => !cur.has(d.path) && (!q || d.path.toLowerCase().includes(q)))
+        .slice(0, 8)
+        .forEach((d) => {
+          const it = sug.createDiv('obsidi-note-card-sugitem');
+          it.setText(d.path.startsWith(rootPrefix) ? d.path.slice(rootPrefix.length) : d.path);
+          it.onmousedown = async (e) => {
+            e.preventDefault();
+            const cur2 = Array.isArray(this._noteFront().relatedParents) ? this._noteFront().relatedParents.slice() : [];
+            if (!cur2.includes(d.path)) cur2.push(d.path);
+            await this._setNoteField('relatedParents', cur2);
+            await this.plugin._writeNoteRelation(d.path, this._noteFolderPath());
+            hide();
+            this._renderCard();
+          };
+        });
+      sug.toggleClass('visible', !!sug.children.length);
+    };
+    input.oninput = show;
+    input.onfocus = show;
+    input.onblur = () => setTimeout(hide, 150);
+  }
+
+  // Task 5 replaces this stub with the People section.
+  _renderPeopleSection(bodyEl, fm, type) {}
+
   // ── Locked-state seams (INERT — the key/autolock layer calls these later;
   // nothing in this build triggers them). lock = discard buffer, no save.
   setLocked(locked) {
@@ -3536,6 +3679,7 @@ class ContainerNoteView extends obsidian.FileView {
       this._destroyCm();
       this.contentEl.empty();
       this._previewing = false; this._previewEl = null;
+      this._cardEl = null;
       if (this._previewAction) { this._previewAction.remove(); this._previewAction = null; }   // header icon lives outside contentEl — must be removed, or unlock re-adds a duplicate
       this._renderLockedPlaceholder();
       dlog('note view locked:', this.file && this.file.path);
@@ -7464,7 +7608,27 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.obsidi-note-editor .cm-editor.cm-focused { outline: none; }' +
       '.obsidi-note-editor .cm-scroller { overflow: auto; padding: 16px 24px; }' +
       '.obsidi-note-locked { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 1.2em; }' +
-      '.obsidi-note-preview { padding: 16px 24px; overflow: auto; height: 100%; }';
+      '.obsidi-note-preview { padding: 16px 24px; overflow: auto; height: 100%; }'
+      + '.obsidi-note-card { margin: 8px 16px 0; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); font-size: var(--font-ui-small); }'
+      + '.obsidi-note-card-head { display: flex; align-items: center; gap: 4px; padding: 6px 10px; cursor: pointer; color: var(--text-muted); }'
+      + '.obsidi-note-card-head .obsidi-note-card-type { color: var(--text-normal); font-weight: 600; }'
+      + '.obsidi-note-card-tw svg { width: 14px; height: 14px; }'
+      + '.obsidi-note-card-body { padding: 4px 10px 10px; border-top: 1px solid var(--background-modifier-border); cursor: default; }'
+      + '.obsidi-note-card-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; }'
+      + '.obsidi-note-card-lbl { flex: 0 0 64px; color: var(--text-muted); padding-top: 3px; }'
+      + '.obsidi-note-card-plist { flex: 1; }'
+      + '.obsidi-note-card-prow { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }'
+      + '.obsidi-note-card-plink { color: var(--text-accent); cursor: pointer; }'
+      + '.obsidi-note-card-plink:hover { text-decoration: underline; }'
+      + '.obsidi-note-card-rm { display: flex; cursor: pointer; color: var(--text-muted); }'
+      + '.obsidi-note-card-rm:hover { color: var(--text-normal); }'
+      + '.obsidi-note-card-rm svg { width: 13px; height: 13px; }'
+      + '.obsidi-note-card-addparent { position: relative; margin-top: 2px; }'
+      + '.obsidi-note-card-addparent input { width: 100%; }'
+      + '.obsidi-note-card-sug { display: none; position: absolute; z-index: 30; left: 0; right: 0; background: var(--background-primary); border: 1px solid var(--background-modifier-border); border-radius: 6px; box-shadow: var(--shadow-s); max-height: 180px; overflow-y: auto; }'
+      + '.obsidi-note-card-sug.visible { display: block; }'
+      + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
+      + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }';
   }
 
   _injectPrintLayoutCSS() {
