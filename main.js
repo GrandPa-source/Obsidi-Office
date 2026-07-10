@@ -8425,15 +8425,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       try { await this.app.vault.createFolder(parent); } catch (e) { /* exists or race — creation below will surface real failures */ }
     }
     let cleanTitle = (title || '').trim();
+    // Validated once, up front, so the auto-generated title and the stored
+    // fm.noteType below never diverge (both fall back to 'General').
+    const cleanType = docContainer.NOTE_TYPES.includes(noteType) ? noteType : 'General';
     // Create-from-parent (R2): no/empty title + a parent → auto-title
     // "<Type> - <ParentName>", deduped against existing siblings in `parent`.
     // Illegal folder-name characters (parent titles are free text) are
     // stripped proactively so the validation below always passes on the
     // generated form.
     if (!cleanTitle && parentDocPath) {
-      const autoType = docContainer.NOTE_TYPES.includes(noteType) ? noteType : 'Meeting';
       const parentTitle = this._parentDisplayTitle(parentDocPath);
-      const desired = (autoType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
+      const desired = (cleanType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
       const parentFolder = this.app.vault.getAbstractFileByPath(parent);
       const taken = (parentFolder && parentFolder.children)
         ? parentFolder.children.filter((c) => c instanceof obsidian.TFolder).map((c) => c.name) : [];
@@ -8450,7 +8452,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       await this.writeNoteBody(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');   // seed through the choke point
       const nowIso = new Date().toISOString();
       const today = new Date().toISOString().slice(0, 10);
-      const cleanType = docContainer.NOTE_TYPES.includes(noteType) ? noteType : 'General';
       const yaml = '---\n'
         + 'docId: ' + this.generateDocId() + '\n'
         + 'docClass: Note\n'
@@ -8665,7 +8666,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const parentTitle = this._parentDisplayTitle(removedParentDocPath);
       const autoTitle = (noteType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
       const currentTitle = fm.title || '';
-      if (currentTitle !== autoTitle) return;   // user already renamed it, or it never had the auto form — leave alone
+      // Auto-titles may carry a dedupeName suffix (" (2)", " (3)", …) from
+      // createNoteContainer's collision handling — match that optional form too.
+      const esc = autoTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const isAutoName = new RegExp('^' + esc + '( \\(\\d+\\))?$').test(currentTitle);
+      if (!isAutoName) return;   // user already renamed it, or it never had the auto form — leave alone
       const bodyFile = this._noteBodyIn(noteFolderPath);
       if (!(bodyFile instanceof obsidian.TFile)) return;
       await new Promise((resolve) => {
@@ -8696,6 +8701,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       .find((l) => l.view && l.view.file && l.view.file.path === bodyFile.path);
     const openView = openLeaf && openLeaf.view;
     if (openView && openView._flushSave) await openView._flushSave();
+    // Stale-buffer clobber race: between this flush and the reload below the CM
+    // instance stays live — a keystroke here re-arms _dirty, and onLoadFile's
+    // own defensive _flushSave() would then write that stale buffer back over
+    // the body we're about to rename. Destroy the CM now so _saveNow (which
+    // no-ops on !this._cm) can't fire; onLoadFile rebuilds it from disk after.
+    if (openView && openView._destroyCm) openView._destroyCm();
     const text = await this.readNoteBody(bodyFile);
     const h1Re = /^#\s+.+$/m;
     const newText = h1Re.test(text) ? text.replace(h1Re, '# ' + cleanTitle) : ('# ' + cleanTitle + '\n\n' + text);
