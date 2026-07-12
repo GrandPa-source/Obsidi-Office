@@ -30,3 +30,27 @@ Encryption; iPad smoke; merge; migrating existing notes' titles/log entries.
 
 ## Verification
 `node --check main.js`; `node --test lib/doc-container.test.js` (70/70 or updated count if lib log helpers change); deploy OB_Testing; consolidated Paul drill at the end.
+
+---
+
+# Round 4 (2026-07-12 drill findings)
+
+## R4.1 Caret (real fix)
+The `.cm-cursor` border rule did not work because the editor uses the NATIVE browser caret (no `drawSelection` extension). Fix: `caret-color: var(--text-normal);` on `.obsidi-note-editor .cm-content` (keep the existing rules; do not add drawSelection).
+
+## R4.2 Card layout pass 2
+- Consistent field alignment: ALL left-column entries use the same label-above-control pattern — Type and Date stay side by side; Parent and Tags become label-above blocks beneath them, aligned to the same grid.
+- People column: order = "People" heading, then the ADD-PERSON input row (Name / Title / type select / ＋), then roster checkboxes (when a parent has stakeholders), then the people TABLE below.
+- Vertical divider between the two card columns (border-left on the right column, `var(--background-modifier-border)`).
+
+## R4.3 Tag quick-add (architecture-safe)
+The Tags row gains a small input + ＋: submitting inserts ` #<tag>` at the END of the note body via the OPEN EDITOR BUFFER (`this._cm.dispatch` append; the updateListener then marks dirty and the normal autosave/extraction pipeline owns it — the card NEVER writes `fm.tags`). Optimistic pill render via `_renderCard({ tags: [...current, tag] })`. Sanitize input to `[A-Za-z][\w/-]*` (strip a leading #). If `_cm` is null (locked/failed load), Notice and no-op. Pills stay display-only (tags are removed by editing the body).
+
+## R4.4 Auto-title numbering position
+Collision numbering moves BEFORE the type: "Meeting - Parent", then "(2) Meeting - Parent", "(3) …" (custom collision loop, not dedupeName's trailing suffix). The rename-prompt auto-name matcher accepts BOTH the new prefixed form `^(\(\d+\) )?<Type> - <Parent>$` AND the legacy trailing form `<Type> - <Parent>( \(\d+\))?` (notes created before this change exist with the old form).
+
+## R4.5 Rename flow inversion (prompt BEFORE removal)
+The rename gate runs BEFORE any relation removal at both trigger sites (card ✕ and parent-tab remove): when the note is auto-named, open the rename modal FIRST; X/Esc/close = ABORT the entire removal (parent association retained, nothing written anywhere); submit = perform the removal (both sides) then rewrite the H1 (skip the rewrite when the submitted name equals the current one). When not auto-named, removal proceeds directly as today. The parent-tab remove handler defers its splice/_mutateSidecar until the gate resolves true.
+
+## R4.6 Log-ref naming after rename — no code change
+Verified by design: log details store immutable paths; the renderer resolves the CURRENT title at render time, so renamed notes update retroactively in all log entries. Drill item only.
