@@ -3737,7 +3737,7 @@ class ContainerNoteView extends obsidian.FileView {
       const tagInput = tagMorph.createEl('input', { attr: { placeholder: 'Add tag…' } });
       const tagsWrap = tagsRow.createDiv('obsidi-note-card-tags');
       const tags = Array.isArray(fm.tags) ? fm.tags : [];
-      if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
+      if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: '#' + t, cls: 'doc-detail-tagpill' }));
       else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
       const submitTag = () => {
         const raw = tagInput.value.trim();
