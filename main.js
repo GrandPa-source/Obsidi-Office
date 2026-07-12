@@ -3728,14 +3728,17 @@ class ContainerNoteView extends obsidian.FileView {
       // marks dirty and the normal autosave/extraction pipeline owns the field; the
       // card itself never writes fm.tags.
       const tagsRow = left.createDiv('obsidi-note-card-field obsidi-note-card-tagsrow');
-      tagsRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
+      // R5.3: label row carries a morphing ＋ that expands into the quick-add
+      // input in place (no permanent input row — see Task 5 brief).
+      const tagsLblRow = tagsRow.createDiv('obsidi-note-card-tagslblrow');
+      tagsLblRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
+      const tagMorph = tagsLblRow.createDiv('obsidi-note-card-tagmorph');
+      const tagPlus = tagMorph.createEl('button', { text: '＋', cls: 'obsidi-note-card-tagplus', attr: { 'aria-label': 'Add tag' } });
+      const tagInput = tagMorph.createEl('input', { attr: { placeholder: 'Add tag…' } });
       const tagsWrap = tagsRow.createDiv('obsidi-note-card-tags');
       const tags = Array.isArray(fm.tags) ? fm.tags : [];
       if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
       else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
-      const tagAdd = tagsRow.createDiv('obsidi-note-card-tagadd');
-      const tagInput = tagAdd.createEl('input', { attr: { placeholder: 'Add tag…' } });
-      const tagBtn = tagAdd.createEl('button', { text: '＋', attr: { 'aria-label': 'Add tag' } });
       const submitTag = () => {
         const raw = tagInput.value.trim();
         if (!raw) return;
@@ -3747,8 +3750,9 @@ class ContainerNoteView extends obsidian.FileView {
         tagInput.value = '';
         this._renderCard({ tags: tags.concat([tagName]) });   // optimistic pill; card never writes fm.tags
       };
-      tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); });
-      tagBtn.onclick = submitTag;
+      tagPlus.onclick = () => { tagMorph.addClass('is-open'); tagInput.focus(); };
+      tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); if (e.key === 'Escape') { tagInput.value = ''; tagMorph.removeClass('is-open'); } });
+      tagInput.addEventListener('blur', () => { if (!tagInput.value.trim()) tagMorph.removeClass('is-open'); });
 
       this._renderPeopleSection(right, fm, type, peopleOverride);
     }
@@ -3813,11 +3817,15 @@ class ContainerNoteView extends obsidian.FileView {
     const key = (p) => (p.name || '') + '|' + (p.title || '');   // aggregateStakeholders composite key
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
-    sec.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
+    // R5.3: heading row with a reveal ＋ that swipes the add-person row into view.
+    const headRow = sec.createDiv('obsidi-note-card-peoplehr');
+    headRow.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
+    const revealBtn = docIconLabel(headRow, 'plus', 'Add', { cls: 'doc-detail-hbtn' });
+    revealBtn.setAttr('aria-label', 'Add person');
 
     // R4.2 order: heading, ADD-PERSON row, roster checkboxes, then the people
     // table last. Ad-hoc add: name + person type + optional title.
-    const add = sec.createDiv('obsidi-note-card-addperson');
+    const add = sec.createDiv('obsidi-note-card-addperson obsidi-note-card-reveal');
     const nm = add.createEl('input', { attr: { placeholder: 'Name' } });
     const ti = add.createEl('input', { attr: { placeholder: 'Title (optional)' } });
     const ty = add.createEl('select');
@@ -3835,6 +3843,7 @@ class ContainerNoteView extends obsidian.FileView {
       await this.plugin.writeNotePeople(folder, cur);
       this._renderCard(undefined, cur);
     };
+    revealBtn.onclick = () => { add.toggleClass('is-open', !add.hasClass('is-open')); if (add.hasClass('is-open')) nm.focus(); };
 
     // Roster checkboxes, sourced LIVE from each parent's current sidecar — own
     // table (Stakeholders-table idiom, no header row of its own; the person
@@ -7986,9 +7995,18 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
       + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }'
       + '.obsidi-note-card-tags { flex: 1; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px; }'
-      + '.obsidi-note-card-tagadd { display: flex; gap: 6px; margin-top: 4px; }'   // R4.3 tag quick-add
-      + '.obsidi-note-card-tagadd input { flex: 1; min-width: 0; }'
+      // R5.3: Tags label row + morphing ＋→input (replaces the old permanent tagadd row).
+      + '.obsidi-note-card-tagslblrow { display: flex; align-items: center; gap: 8px; }'
+      + '.obsidi-note-card-tagmorph { position: relative; display: flex; }'
+      + '.obsidi-note-card-tagmorph input { width: 0; opacity: 0; padding: 0; border-width: 0; transform: translateX(16px); transition: width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
+      + '.obsidi-note-card-tagmorph.is-open input { width: 140px; opacity: 1; padding: 0 8px; border-width: 1px; transform: translateX(0); }'
+      + '.obsidi-note-card-tagmorph.is-open .obsidi-note-card-tagplus { display: none; }'
       + '.obsidi-note-card-people { min-width: 0; }'
+      + '.obsidi-note-card-peoplehr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }'
+      + '.obsidi-note-card-reveal { overflow: hidden; max-width: 0; opacity: 0; transform: translateX(24px); transition: max-width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
+      + '.obsidi-note-card-reveal:not(.is-open) { margin-bottom: 0; }'   // closed sliver still has row height; kill the trailing gap it would otherwise leak
+      + '.obsidi-note-card-reveal.is-open { max-width: 100%; opacity: 1; transform: translateX(0); }'
+      + '@media (prefers-reduced-motion: reduce) { .obsidi-note-card-reveal, .obsidi-note-card-tagmorph input { transition: none; } }'
       + '.obsidi-note-card-peoplehead { flex: none; margin-bottom: 4px; }'
       + '.obsidi-note-card-ptbl { width: 100%; }'
       + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
