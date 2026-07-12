@@ -3754,6 +3754,18 @@ class ContainerNoteView extends obsidian.FileView {
       tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); if (e.key === 'Escape') { tagInput.value = ''; tagMorph.removeClass('is-open'); } });
       tagInput.addEventListener('blur', () => { if (!tagInput.value.trim()) tagMorph.removeClass('is-open'); });
 
+      // (d) Executive Summary — human-owned free text, stored as fm.summary
+      // (doc-level key; never touched by updateNoteSkeleton's title/tags/links/modified writes).
+      const sumRow = left.createDiv('obsidi-note-card-field obsidi-note-card-sumrow');
+      sumRow.createSpan({ text: 'Executive Summary', cls: 'obsidi-note-card-lbl' });
+      const sum = sumRow.createEl('textarea', { cls: 'obsidi-note-card-summary', attr: { rows: '3', placeholder: 'Short summary…' } });
+      sum.value = fm.summary || '';
+      sum.onchange = async () => {   // fires on blur-after-edit — same cadence as the date field
+        const v = sum.value.trim();
+        await this._setNoteField('summary', v || undefined);   // _setNoteField deletes the key when value is undefined (verified)
+        this._renderCard({ summary: v });
+      };
+
       this._renderPeopleSection(right, fm, type, peopleOverride);
     }
     if (this._cardEl && this._cardEl.parentElement) this._cardEl.replaceWith(el);
@@ -8001,6 +8013,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-tagmorph input { width: 0; opacity: 0; padding: 0; border-width: 0; transform: translateX(16px); transition: width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
       + '.obsidi-note-card-tagmorph.is-open input { width: 140px; opacity: 1; padding: 0 8px; border-width: 1px; transform: translateX(0); }'
       + '.obsidi-note-card-tagmorph.is-open .obsidi-note-card-tagplus { display: none; }'
+      + '.obsidi-note-card-sumrow { margin-top: 10px; }'
+      + '.obsidi-note-card-summary { width: 100%; resize: vertical; font-family: var(--font-text); }'
       + '.obsidi-note-card-people { min-width: 0; }'
       + '.obsidi-note-card-peoplehr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }'
       + '.obsidi-note-card-reveal { overflow: hidden; max-width: 0; opacity: 0; transform: translateX(24px); transition: max-width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
