@@ -3823,7 +3823,8 @@ class ContainerNoteView extends obsidian.FileView {
     const ty = add.createEl('select');
     for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
     ty.value = 'Attendee';
-    const btn = add.createEl('button', { text: '＋', attr: { 'aria-label': 'Add person' } });
+    const btn = docIconLabel(add, 'plus', 'Add', { cls: 'doc-detail-hbtn' });
+    btn.setAttr('aria-label', 'Add person');
     btn.onclick = async () => {
       const name = nm.value.trim();
       if (!name) return;
@@ -7966,7 +7967,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-tdrow { display: flex; gap: 10px; }'
       + '.obsidi-note-card-field { flex: 1; min-width: 0; }'
       + '.obsidi-note-card-field .obsidi-note-card-lbl { display: block; flex: none; padding-top: 0; margin-bottom: 2px; }'
-      + '.obsidi-note-card-field select, .obsidi-note-card-field input[type="date"] { width: 100%; }'
+      + '.obsidi-note-card-field select, .obsidi-note-card-field input[type="date"] { width: 100%; height: var(--input-height); }'
       // R4.2: Parent + Tags are now label-above blocks (same idiom as Type/Date via
       // .obsidi-note-card-field), stacked beneath the Type/Date row on one alignment grid.
       + '.obsidi-note-card-parentrow, .obsidi-note-card-tagsrow { margin-top: 10px; }'
@@ -7988,14 +7989,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-tagadd { display: flex; gap: 6px; margin-top: 4px; }'   // R4.3 tag quick-add
       + '.obsidi-note-card-tagadd input { flex: 1; min-width: 0; }'
       + '.obsidi-note-card-people { min-width: 0; }'
-      + '.obsidi-note-card-peoplehead { flex: none; font-weight: 600; margin-bottom: 4px; }'
+      + '.obsidi-note-card-peoplehead { flex: none; margin-bottom: 4px; }'
       + '.obsidi-note-card-ptbl { width: 100%; }'
       + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
       + '.obsidi-note-card-ptbl td { padding: 3px 6px; }'
       + '.obsidi-note-card-rosterhead { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 500; padding-top: 8px !important; }'
       + '.obsidi-note-card-personset .obsidi-note-card-pname { white-space: nowrap; }'
       + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-bottom: 8px; }'   // R4.2: moved above the roster/table, spacing flipped to margin-bottom
-      + '.obsidi-note-card-addperson input { flex: 1; min-width: 0; }';
+      + '.obsidi-note-card-addperson input { flex: 1; min-width: 0; }'
+      + '.obsidi-note-card-addperson input, .obsidi-note-card-addperson select { height: var(--input-height); }';
   }
 
   _injectPrintLayoutCSS() {
