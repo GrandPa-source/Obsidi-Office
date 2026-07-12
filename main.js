@@ -3844,7 +3844,7 @@ class ContainerNoteView extends obsidian.FileView {
     for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
     ty.value = 'Attendee';
     const btn = docIconLabel(add, 'plus', 'Add', { cls: 'doc-detail-hbtn' });
-    btn.setAttr('aria-label', 'Add person');
+    btn.setAttr('aria-label', 'Save person');   // distinct from the reveal toggle's "Add person" (review: duplicate accessible names)
     btn.onclick = async () => {
       const name = nm.value.trim();
       if (!name) return;
