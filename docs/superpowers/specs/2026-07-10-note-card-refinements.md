@@ -54,3 +54,36 @@ The rename gate runs BEFORE any relation removal at both trigger sites (card ✕
 
 ## R4.6 Log-ref naming after rename — no code change
 Verified by design: log details store immutable paths; the renderer resolves the CURRENT title at render time, so renamed notes update retroactively in all log entries. Drill item only.
+
+---
+
+# Round 5 (2026-07-12 round-4 drill findings) — TO BUILD (handover for fresh-context session)
+
+Round-4 drill: caret PASS, numbering PASS, layout applied. Items below are Paul's round-5 asks + one open BUG. Baseline `30a69e3`, manifest 0.1.18.
+
+## R5.1 BUG (blocking, investigate FIRST): re-associated note missing from parent's Related Documents tab
+Repro (Paul, console captured 2026-07-12): on "Test Note Beta" (manually named — the rename gate correctly does NOT prompt for it; expectation gap only, see R5.7), card ✕ removed the parent (logs `note parent removed` + `note relation removed`), then re-added via the card picker — logs show `note relation written … <-> … Test Note Beta` + `note field set: relatedParents` — but the note does NOT appear in the parent's (`Documents/Projects/Accreditation 2026/test 3`) Related Documents tab. Repeated remove/re-add cycles logged identically. Investigate with DISK inspection: read the parent's CURRENT sidecar frontmatter (`relatedDocuments` + `links`) after a re-add — did the entry land (then it's a RENDER bug in the tab: check how `rel` is built and whether a stale `fm` snapshot/re-render guard eats it) or not land (then `_writeNoteRelation`'s dedup `rel.some(r => r.target === dmPath)` may be matching a stale/ghost entry, or processFrontMatter is writing a different sidecar than the tab reads — check whether "test 3" has multiple versions and both sides resolve the same current sidecar). Also check the note-side: `relatedParents` on the note's `_document.md` after re-add. Fix + regression-check the whole add/remove cycle from BOTH surfaces.
+
+## R5.2 People column styling/alignment
+- "People" heading label CSS = same class/look as the "Type"/"Date" field labels.
+- Add-person inputs (Name, Title) and the person-type dropdown get the SAME control height as the date-picker input so the row aligns.
+- The add-person "＋" button styled like the parent doc-container's "New Version" button (find its class on the detail page and reuse).
+
+## R5.3 Progressive-disclosure animations (People + Tags)
+- People: the add-person input row is HIDDEN by default; pressing "＋" reveals it with a horizontal right-to-left swipe animation (CSS transition, no JS animation lib; respect `prefers-reduced-motion`).
+- Tags: a "＋" button sits to the RIGHT of the Tags label; pressing it TRANSFORMS (right-to-left transition) into the tag input field. The tag input no longer sits permanently in the left column.
+
+## R5.4 Executive Summary field
+Where the tag input currently sits: a small multi-line text box labelled "Executive Summary". Human-owned card field → store as `summary` in the note's `_document.md` (already in DOC_LEVEL_KEYS; skeleton writer never touches it — verify). Write via `_setNoteField('summary', …)` on blur/change; optimistic render like the other fields.
+
+## R5.5 Tag pills show the #
+Pills render `#yourtag` (leading hash) instead of `yourtag`.
+
+## R5.6 Related Documents tab restructure
+Move "＋ New document", "＋ New note", the drag-drop zone, and the Browse/add-link navigator OUT of edit mode → always visible in the tab's normal view. The Edit button becomes the gate for DESTRUCTIVE/lifecycle actions only: per-row remove ✕, and BREAK AWAY — which must now also exist for NOTE rows (initiates the parent-removal/rename gate from the parent side; office looseDoc break-away already exists). Keep read-mode rows clickable as today.
+
+## R5.7 Expectation note (communicate, not code)
+The rename prompt fires ONLY for auto-named notes (`(n) <Type> - <Parent>` / legacy suffixed). Manually named notes remove silently by design (decided R4.5). If Paul wants a confirm on every removal, that is a new decision — ask before building.
+
+## Status
+Paul holding at drill step 6 (log-rename verification) pending R5.1 fix; full regression sweep deferred until round 5 lands.
