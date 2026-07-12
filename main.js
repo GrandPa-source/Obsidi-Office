@@ -4159,6 +4159,7 @@ class DocumentDetailView extends obsidian.ItemView {
       this.node = this.findDoc(tree, state.docPath);
       this._editMode = !!state.edit; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode (unless edit requested, e.g. a just-created doc)
       this._fresh = !!state.fresh;   // a just-created doc: Cancel discards it (see Cancel handler)
+      this._composerDraft = null; this._composerDirty = false;   // draft is per-document; navigation discards it (pre-fix behavior)
       this._activeTab = state.tab ? { left: state.tab } : {};   // tab hint (e.g. Return from a related doc → Related Documents); else default tabs
       this._wantScrollTop = true;   // scroll to top for a different document (preserved otherwise)
       this.render();
@@ -4191,16 +4192,17 @@ class DocumentDetailView extends obsidian.ItemView {
     const prevScroll = this._wantScrollTop ? 0 : (prevScrollEl ? prevScrollEl.scrollTop : 0);
     this._wantScrollTop = false;
     c.empty(); c.addClass('doc-detail');
-    if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
-    const fm = this.frontmatter();
     // Step 0: recompute (don't just clear) — a preserved composer draft (Recent
     // Notes) keeps its guard alive across this render instead of losing it, so a
     // re-render on leaf-switch/blur/catch-up can no longer silently wipe an
     // abandoned draft. The 'changed' listener's guard still exists solely to
-    // avoid yanking focus mid-typing.
+    // avoid yanking focus mid-typing. Runs BEFORE the null-node early return so a
+    // null-node render still resets these flags (matches the old unconditional reset).
     const d = this._composerDraft;
     this._composerDirty = !!(d && ((d.text || '').trim() || d.tags.length || d.files.length));
     this._staleWhileGuarded = false;   // any full render clears the refresh debt
+    if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
+    const fm = this.frontmatter();
     dlog('doc detail render:', this.node.path, 'current:', this.node.current,
       'reldocs:', Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.length : 0,
       'guards:', !!this._composerDirty, !!this._editMode, !!this._stakeEdit, 'relEdit:', !!this._relEdit);
@@ -4726,7 +4728,7 @@ class DocumentDetailView extends obsidian.ItemView {
           let armedBA = false;   // two-click confirm (iPad-safe; no window.confirm)
           ba.onclick = async () => {
             if (!armedBA) { armedBA = true; ba.setText('Confirm break away'); return; }
-            await this._breakAway(r.target, rel);
+            await this._breakAway(r.target);
           };
         }
       }
@@ -4801,7 +4803,7 @@ class DocumentDetailView extends obsidian.ItemView {
 
   // Promote a loose related file into a first-class sibling document under the same
   // container. Keeps metadata, re-points the parent link, adds a reciprocal back-link.
-  async _breakAway(looseFilePath, rel) {
+  async _breakAway(looseFilePath) {
     const looseFile = this.app.vault.getAbstractFileByPath(looseFilePath);
     if (!looseFile) { new obsidian.Notice('That file no longer exists.'); return; }
     const ext = looseFile.extension;
@@ -4838,10 +4840,16 @@ class DocumentDetailView extends obsidian.ItemView {
       // the graph wikilink. The links[] swap is idempotent, so it is correct whether or
       // not Obsidian auto-rewrote the frontmatter wikilink for the moved .docx.
       const newWl = this._relWikilink(newFilePath);   // file now at new path → resolves correctly
-      const idx = rel.findIndex(r => r.target === looseFilePath);
-      if (idx >= 0) rel[idx] = { kind: 'link', target: newFilePath, label: title };
       await this._mutateSidecar((front) => {
-        front.relatedDocuments = rel.map(({ link, ...r }) => r);
+        // Re-derive from front (NOT the render-time `rel` snapshot) — mirrors the
+        // remove ✕ handler and _writeNoteRelation; row identity (looseFilePath, the
+        // ORIGINAL target being broken away) still comes from the render/caller,
+        // only the WRITE re-derives.
+        const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+        const idx = cur.findIndex((r) => r && r.target === looseFilePath);
+        if (idx >= 0) cur[idx] = { kind: 'link', target: newFilePath, label: title };
+        else cur.push({ kind: 'link', target: newFilePath, label: title });
+        front.relatedDocuments = cur.map(({ link, ...r }) => r);
         let links = Array.isArray(front.links) ? front.links.slice() : [];
         links = links.filter((x) => x !== oldWl);
         if (newWl && !links.includes(newWl)) links.push(newWl);
@@ -4946,7 +4954,7 @@ class DocumentDetailView extends obsidian.ItemView {
     };
     input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
     input.addEventListener('blur', () => {
-      if (this._staleWhileGuarded && !this._editMode && !this._stakeEdit) setTimeout(() => this.render(), 100);
+      if (this._staleWhileGuarded) setTimeout(() => { if (!this._editMode && !this._stakeEdit) this.render(); }, 100);
     });
     drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
     drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
