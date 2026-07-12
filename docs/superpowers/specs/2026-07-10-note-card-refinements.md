@@ -82,8 +82,8 @@ Pills render `#yourtag` (leading hash) instead of `yourtag`.
 ## R5.6 Related Documents tab restructure
 Move "＋ New document", "＋ New note", the drag-drop zone, and the Browse/add-link navigator OUT of edit mode → always visible in the tab's normal view. The Edit button becomes the gate for DESTRUCTIVE/lifecycle actions only: per-row remove ✕, and BREAK AWAY — which must now also exist for NOTE rows (initiates the parent-removal/rename gate from the parent side; office looseDoc break-away already exists). Keep read-mode rows clickable as today.
 
-## R5.7 Expectation note (communicate, not code)
-The rename prompt fires ONLY for auto-named notes (`(n) <Type> - <Parent>` / legacy suffixed). Manually named notes remove silently by design (decided R4.5). If Paul wants a confirm on every removal, that is a new decision — ask before building.
+## R5.7 Confirm on EVERY removal (DECIDED 2026-07-12 — build it)
+Paul chose: every note↔parent removal (card ✕ AND parent-tab remove/break-away) shows a confirmation dialog first. For auto-named notes the same dialog additionally carries the rename field (existing R4.5 gate behavior folds in). Abort (Esc/close/X/Cancel) = nothing removed, nothing written — same abort contract as R4.5. This supersedes "manually named notes remove silently".
 
 ## Status
 Paul holding at drill step 6 (log-rename verification) pending R5.1 fix; full regression sweep deferred until round 5 lands.

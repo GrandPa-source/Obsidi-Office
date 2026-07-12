@@ -8772,61 +8772,84 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     dlog('note relation removed:', parentDocPath, '-x-', noteFolderPath);
   }
 
-  // ── Break-away rename — gate BEFORE removal (R4.5 inversion of R2.3) ────────
+  // ── Confirm gate BEFORE removal (R4.5 inversion of R2.3; R5.7 — ALWAYS gates) ─
   // Runs BEFORE any relation removal at both trigger sites (card ✕ and the
   // parent's Related Documents remove). `performRemoval` is an async callback
   // that owns ALL removal work (both sides) — it is only ever invoked from
   // inside this function, so an abort (Esc/close/X) leaves it uncalled: nothing
   // removed, nothing written, the association retained exactly as it was.
   //
-  // Decision:
+  // Decision (2026-07-12): every removal is now gated by a confirm modal — the
+  // question is only WHICH modal:
   //  - note skeleton missing, OR the note's CURRENT title does not match the
   //    auto-generated "<noteType> - <removed parent's name>" form (new prefixed
   //    "(2) Type - Parent" or legacy trailing "Type - Parent (2)") → not an
-  //    auto-named note; removal proceeds directly, same as today.
-  //  - auto-named → open NoteRenameModal FIRST. Submit → performRemoval(), then
-  //    rewrite the H1 via _renameNoteTitle ONLY when the submitted name differs
-  //    from the current title. Close/X/Esc → resolve without ever calling
+  //    auto-named note; open the plain NoteRemoveConfirmModal. Confirm →
+  //    performRemoval(). Close/X/Esc/Cancel → resolve without ever calling
   //    performRemoval.
+  //  - auto-named → open NoteRenameModal instead (it already doubles as the
+  //    confirmation). Submit → performRemoval(), then rewrite the H1 via
+  //    _renameNoteTitle ONLY when the submitted name differs from the current
+  //    title. Close/X/Esc → resolve without ever calling performRemoval.
   //
   // The gate-decision try/catch is the fail-safe boundary: if anything throws
-  // while determining auto-name status, we return WITHOUT calling
-  // performRemoval — a gate failure can never silently remove a relation.
+  // while determining auto-name status (including computing the parent's
+  // display title for the confirm copy), we return WITHOUT calling
+  // performRemoval and WITHOUT opening any modal — a gate failure can never
+  // silently remove a relation.
   async confirmNoteParentRemoval(noteFolderPath, removedParentDocPath, performRemoval) {
-    let isAutoName = false, currentTitle = '', bodyFile = null;
+    let isAutoName = false, currentTitle = '', bodyFile = null, parentTitle = '';
     try {
+      parentTitle = this._parentDisplayTitle(removedParentDocPath);
       const dm = this.app.vault.getAbstractFileByPath(noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME);
-      if (!(dm instanceof obsidian.TFile)) { await performRemoval(); return; }   // no skeleton to judge auto-name against — proceed as non-auto-named
-      const fm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
-      const noteType = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
-      const parentTitle = this._parentDisplayTitle(removedParentDocPath);
-      const autoTitle = (noteType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
-      currentTitle = fm.title || '';
-      const esc = autoTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      // R4.4: accept both the new prefixed form "(2) Type - Parent" and the
-      // legacy trailing form "Type - Parent (2)" (notes created before R4.4).
-      const reNew = new RegExp('^(\\(\\d+\\) )?' + esc + '$');
-      const reLegacy = new RegExp('^' + esc + '( \\(\\d+\\))?$');
-      isAutoName = reNew.test(currentTitle) || reLegacy.test(currentTitle);
-      bodyFile = this._noteBodyIn(noteFolderPath);
+      if (dm instanceof obsidian.TFile) {   // has a skeleton — judge auto-name against it
+        const fm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
+        const noteType = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
+        const autoTitle = (noteType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
+        currentTitle = fm.title || '';
+        const esc = autoTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        // R4.4: accept both the new prefixed form "(2) Type - Parent" and the
+        // legacy trailing form "Type - Parent (2)" (notes created before R4.4).
+        const reNew = new RegExp('^(\\(\\d+\\) )?' + esc + '$');
+        const reLegacy = new RegExp('^' + esc + '( \\(\\d+\\))?$');
+        isAutoName = reNew.test(currentTitle) || reLegacy.test(currentTitle);
+        bodyFile = this._noteBodyIn(noteFolderPath);
+      }
     } catch (e) {
       elog('confirmNoteParentRemoval: gate check failed — failing safe, removal NOT performed:', e && e.stack || e);
       return;
     }
-    if (!isAutoName || !(bodyFile instanceof obsidian.TFile)) { await performRemoval(); return; }   // not auto-named — proceed directly
+    if (isAutoName && bodyFile instanceof obsidian.TFile) {
+      await new Promise((resolve) => {
+        const modal = new NoteRenameModal(this.app, currentTitle, async (newTitle) => {
+          try {
+            await performRemoval();
+            const trimmed = String(newTitle || '').trim();
+            if (trimmed && trimmed !== currentTitle) await this._renameNoteTitle(noteFolderPath, bodyFile, trimmed);
+          } catch (e) {
+            elog('note removal/rename failed:', e && e.stack || e);
+            new obsidian.Notice('Failed: ' + (e && e.message ? e.message : e));
+          }
+          resolve();
+        });
+        modal._onCancel = () => resolve();   // Esc/close/X — ABORT: performRemoval() never called, relation retained, nothing written
+        modal.open();
+      });
+      return;
+    }
+    // Not auto-named (or no skeleton/body to judge auto-name against) — plain confirm.
+    const noteTitle = currentTitle || noteFolderPath.split('/').pop();
     await new Promise((resolve) => {
-      const modal = new NoteRenameModal(this.app, currentTitle, async (newTitle) => {
+      const modal = new NoteRemoveConfirmModal(this.app, noteTitle, parentTitle, async () => {
         try {
           await performRemoval();
-          const trimmed = String(newTitle || '').trim();
-          if (trimmed && trimmed !== currentTitle) await this._renameNoteTitle(noteFolderPath, bodyFile, trimmed);
         } catch (e) {
-          elog('note removal/rename failed:', e && e.stack || e);
+          elog('note removal failed:', e && e.stack || e);
           new obsidian.Notice('Failed: ' + (e && e.message ? e.message : e));
         }
         resolve();
       });
-      modal._onCancel = () => resolve();   // Esc/close/X — ABORT: performRemoval() never called, relation retained, nothing written
+      modal._onCancel = () => resolve();   // Esc/close/X/Cancel — ABORT: performRemoval() never called, relation retained, nothing written
       modal.open();
     });
   }
@@ -9507,6 +9530,37 @@ class NoteRenameModal extends obsidian.Modal {
     btn.style.marginTop = '8px';
     btn.onclick = go;
     setTimeout(() => { input.focus(); input.select(); }, 0);
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this._done && this._onCancel) this._onCancel();
+  }
+}
+
+// Plain remove-confirm prompt (R5.7): gates every note<->parent removal that
+// does NOT already go through NoteRenameModal above (non-auto-named notes, or
+// notes with no skeleton/body to judge auto-name against). Same _done/_onCancel
+// idiom as NoteRenameModal — submit sets _done=true before close() so a
+// submitted close never fires _onCancel; Esc/close/X leaves _done false so
+// onClose's caller-assigned _onCancel hook fires and the caller resolves
+// WITHOUT ever invoking performRemoval.
+class NoteRemoveConfirmModal extends obsidian.Modal {
+  constructor(app, noteTitle, parentTitle, onConfirm) {
+    super(app);
+    this._onConfirm = onConfirm;
+    this._noteTitle = noteTitle || '';
+    this._parentTitle = parentTitle || '';
+    this._done = false;
+    this._onCancel = null;   // caller-assigned, optional
+  }
+  onOpen() {
+    this.titleEl.setText('Remove association?');
+    this.contentEl.createEl('p', { text: 'Remove the link between “' + this._noteTitle + '” and “' + this._parentTitle + '”? The note itself is kept.' });
+    const row = this.contentEl.createDiv({ cls: 'modal-button-container' });
+    const ok = row.createEl('button', { text: 'Remove', cls: 'mod-warning' });
+    ok.onclick = () => { this._done = true; this.close(); this._onConfirm(); };
+    const cancel = row.createEl('button', { text: 'Cancel' });
+    cancel.onclick = () => this.close();
   }
   onClose() {
     this.contentEl.empty();
