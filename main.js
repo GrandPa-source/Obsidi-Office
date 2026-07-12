@@ -4130,14 +4130,24 @@ class DocumentDetailView extends obsidian.ItemView {
       // don't blow away an in-progress note draft, metadata edit, or stakeholder-row edit.
       // (Related-docs edit is NOT guarded — its add/remove are atomic writes and rely on this
       //  listener to repaint the fresh list; only a half-typed search box is transient.)
-      if (this._composerDirty || this._editMode || this._stakeEdit) return;
-      if (this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md') this.render();
+      const relevant = this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md';
+      if (this._composerDirty || this._editMode || this._stakeEdit) {
+        if (relevant) this._staleWhileGuarded = true;   // catch-up: consumed by blur/leaf-switch below
+        return;
+      }
+      if (relevant) this.render();
     }));
     // Refresh when returning to this tab (e.g. after editing in the Obsidi-Office editor) so the Log picks up
     // log.md writes made while we were on another tab. Guarded against in-progress edits.
     this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf) => {
       if (leaf !== this.leaf) return;
-      if (this._composerDirty || this._editMode || this._stakeEdit) return;
+      // _composerDirty no longer freezes this path — Step 0 preserves the draft
+      // across renders, so repainting on leaf return is lossless. _editMode and
+      // _stakeEdit still guard (their in-DOM row edits are not draft-preserved).
+      if (this._editMode || this._stakeEdit) {
+        if (this._staleWhileGuarded) dlog('doc detail: refresh suppressed by edit guard (stale view):', this.node && this.node.path);
+        return;
+      }
       if (this.node) this.render();
     }));
   }
@@ -4181,9 +4191,19 @@ class DocumentDetailView extends obsidian.ItemView {
     const prevScroll = this._wantScrollTop ? 0 : (prevScrollEl ? prevScrollEl.scrollTop : 0);
     this._wantScrollTop = false;
     c.empty(); c.addClass('doc-detail');
-    this._composerDirty = false;   // a fresh render means the composer is empty again
     if (!this.node) { c.createDiv({ text: 'Select a document.', cls: 'doc-detail-empty' }); return; }
     const fm = this.frontmatter();
+    // Step 0: recompute (don't just clear) — a preserved composer draft (Recent
+    // Notes) keeps its guard alive across this render instead of losing it, so a
+    // re-render on leaf-switch/blur/catch-up can no longer silently wipe an
+    // abandoned draft. The 'changed' listener's guard still exists solely to
+    // avoid yanking focus mid-typing.
+    const d = this._composerDraft;
+    this._composerDirty = !!(d && ((d.text || '').trim() || d.tags.length || d.files.length));
+    this._staleWhileGuarded = false;   // any full render clears the refresh debt
+    dlog('doc detail render:', this.node.path, 'current:', this.node.current,
+      'reldocs:', Array.isArray(fm.relatedDocuments) ? fm.relatedDocuments.length : 0,
+      'guards:', !!this._composerDirty, !!this._editMode, !!this._stakeEdit, 'relEdit:', !!this._relEdit);
 
     const scroll = c.createDiv('doc-detail-scroll');
     const wrap = scroll.createDiv('doc-detail-wrap');
@@ -4514,9 +4534,13 @@ class DocumentDetailView extends obsidian.ItemView {
             const filePath = await this.plugin.createLooseRelatedDoc({ parentDocPath, title, ext, templatePath });
             if (!filePath) return null;
             const wl = this._relWikilink(filePath);
-            rel.push({ kind: 'link', target: filePath, label: title.trim(), added: docToday() });
+            const entry = { kind: 'link', target: filePath, label: title.trim(), added: docToday() };
             await this._mutateSidecar((front) => {
-              front.relatedDocuments = rel.map(({ link, ...r }) => r);
+              // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
+              // must never clobber entries written elsewhere (e.g. note-card relation writes).
+              const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+              if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
+              front.relatedDocuments = cur.map(({ link, ...r }) => r);
               if (wl) {
                 const links = Array.isArray(front.links) ? front.links.slice() : [];
                 if (!links.includes(wl)) links.push(wl);
@@ -4565,12 +4589,16 @@ class DocumentDetailView extends obsidian.ItemView {
       let activeIdx = -1;
       const chooseFile = async (f) => {
         const wl = this._relWikilink(f.path);
-        rel.push({ kind: 'link', target: f.path, label: f.basename, added: docToday() });
+        const entry = { kind: 'link', target: f.path, label: f.basename, added: docToday() };
         await this._mutateSidecar((front) => {
+          // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
+          // must never clobber entries written elsewhere (e.g. note-card relation writes).
           // Strip any legacy `link` field off entries — a wikilink inside the
           // relatedDocuments objects makes Obsidian render it as "[object Object]"
           // in backlinks. The graph wikilink lives ONLY in the `links` array.
-          front.relatedDocuments = rel.map(({ link, ...r }) => r);
+          const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+          if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
+          front.relatedDocuments = cur.map(({ link, ...r }) => r);
           if (wl) {
             const links = Array.isArray(front.links) ? front.links.slice() : [];
             if (!links.includes(wl)) links.push(wl);
@@ -4674,15 +4702,18 @@ class DocumentDetailView extends obsidian.ItemView {
           const nf = removed && removed.target && removed.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
             ? removed.target.slice(0, removed.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
           const isNoteTarget = !!(nf && this.plugin._noteBodyIn(nf));
-          // R4.5: the splice/_mutateSidecar/_removeNoteParent sequence lives INSIDE
-          // this callback so an abort at the gate (Esc/close/X) leaves `rel` and the
+          // R4.5: the _mutateSidecar/_removeNoteParent sequence lives INSIDE
+          // this callback so an abort at the gate (Esc/close/X) leaves the
           // sidecar untouched — the pane stays exactly as-is, no re-render fires
           // (metadataCache 'changed' only fires from a real _mutateSidecar write).
           const performRemoval = async () => {
-            rel.splice(i, 1);
             const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
             await this._mutateSidecar((front) => {
-              front.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (see add handler)
+              // Re-derive from front and filter by target (NOT the render-time `rel`
+              // snapshot) — mirrors _removeNoteRelation; row identity (`removed = rel[i]`)
+              // still comes from the render, only the WRITE re-derives.
+              const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+              front.relatedDocuments = cur.filter((r) => !(r && r.target === removed.target)).map(({ link, ...r }) => r);
               if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
             }, { action: 'Related document removed', type: 'meta' });
             if (isNoteTarget) await this.plugin._removeNoteParent(nf, this.node.path);
@@ -4705,16 +4736,28 @@ class DocumentDetailView extends obsidian.ItemView {
   async _dropRelatedRefs(fm, rel, e) {
     const files = [...((e.dataTransfer && e.dataTransfer.files) || [])];
     if (!files.length) return;
+    const entries = [];
     for (const f of files) {
       try {
         const buf = await f.arrayBuffer();
         let dest = this.node.path + '/' + f.name;
         if (this.app.vault.getAbstractFileByPath(dest)) dest = this.node.path + '/' + Date.now() + '-' + f.name;
         await this.app.vault.createBinary(dest, buf);
-        rel.push({ kind: 'ref', target: dest, label: f.name, added: docToday() });
+        entries.push({ kind: 'ref', target: dest, label: f.name, added: docToday() });
       } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
     }
-    await this._saveSidecar('relatedDocuments', rel, { action: 'Reference attached', type: 'attach' });
+    if (!entries.length) return;
+    await this._mutateSidecar((front) => {
+      // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
+      // must never clobber entries written elsewhere (e.g. note-card relation writes).
+      // kind:'ref' attachments never had a `links` graph edge (unlike kind:'link'
+      // entries elsewhere in this pane) — nothing to merge into front.links here.
+      const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+      for (const entry of entries) {
+        if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
+      }
+      front.relatedDocuments = cur.map(({ link, ...r }) => r);
+    }, { action: 'Reference attached', type: 'attach' });
   }
 
   // Canonical Obsidian wikilink for a related-doc target, so adding/removing a
@@ -4862,22 +4905,33 @@ class DocumentDetailView extends obsidian.ItemView {
   // ── T25: Recent Notes (structured noteLog + inline-tag composer + gated attach)
   _renderRecentNotesPane(p, fm) {
     const noteLog = Array.isArray(fm.noteLog) ? fm.noteLog : [];
-    let stagedTags = [], stagedFiles = [];   // stagedFiles: {name, data}
+    // Step 0: seed from a preserved draft (if one exists) instead of always starting
+    // empty — an abandoned draft now survives a re-render instead of latching
+    // `_composerDirty` forever (see render()'s recompute + this pane's syncDraft below).
+    let stagedTags = (this._composerDraft && this._composerDraft.tags.slice()) || [], stagedFiles = (this._composerDraft && this._composerDraft.files) || [];   // stagedFiles: {name, data}
 
     const comp = p.createDiv('doc-detail-composer');
     const top = comp.createDiv('doc-detail-composer-top');
     const input = top.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Add a note…  (type #tag to add a tag)' } });
+    input.value = (this._composerDraft && this._composerDraft.text) || '';
     const addBtn = top.createEl('button', { text: 'Add note', cls: 'doc-detail-addnote' });
     const stagedTagsEl = comp.createDiv('doc-detail-staged');
     const drop = comp.createDiv('doc-detail-notedrop disabled');
     drop.setText('Enter note text first to attach files');
     const stagedFilesEl = comp.createDiv('doc-detail-staged');
 
+    // Step 0: keep this.instance draft (text/tags/files) in sync so a re-render
+    // (e.g. a stale-view catch-up, or leaf switch) can restore the in-progress
+    // composer instead of wiping it — see render()'s recompute of _composerDirty.
+    const syncDraft = () => {
+      this._composerDraft = { text: input.value, tags: stagedTags.slice(), files: stagedFiles };
+      this._composerDirty = input.value.trim().length > 0 || stagedTags.length > 0 || stagedFiles.length > 0;
+    };
     const renderStaged = () => {
       stagedTagsEl.empty();
-      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedTags.splice(i, 1); syncDraft(); renderStaged(); }; });
       stagedFilesEl.empty();
-      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); docIcon(s, 'paperclip', 'doc-chip-ico'); s.createSpan({ text: f.name }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); docIcon(s, 'paperclip', 'doc-chip-ico'); s.createSpan({ text: f.name }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedFiles.splice(i, 1); syncDraft(); renderStaged(); }; });
     };
     const updateDropState = () => {
       const has = input.value.trim().length > 0;
@@ -4885,12 +4939,15 @@ class DocumentDetailView extends obsidian.ItemView {
       if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
     };
     input.oninput = () => {
-      this._composerDirty = input.value.trim().length > 0 || stagedTags.length > 0 || stagedFiles.length > 0;
       const r = docContainer.extractInlineTags(input.value, false);
       if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); }
+      syncDraft();
       updateDropState();
     };
     input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    input.addEventListener('blur', () => {
+      if (this._staleWhileGuarded && !this._editMode && !this._stakeEdit) setTimeout(() => this.render(), 100);
+    });
     drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
     drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
     drop.ondrop = async (e) => {
@@ -4898,7 +4955,7 @@ class DocumentDetailView extends obsidian.ItemView {
       e.preventDefault(); drop.removeClass('drag');
       const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])];
       for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } }
-      this._composerDirty = true;
+      syncDraft();
       renderStaged(); updateDropState();
     };
 
@@ -4920,6 +4977,7 @@ class DocumentDetailView extends obsidian.ItemView {
       }
       const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments, version: this.node.current };
+      this._composerDraft = null;
       this._composerDirty = false;   // committing — allow the post-save re-render to rebuild a fresh composer
       await this._saveSidecar('noteLog', noteLog.concat([entry]), { action: 'Note added', type: 'note' });   // one write, one re-render
     };
