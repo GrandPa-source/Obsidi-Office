@@ -3692,7 +3692,8 @@ class ContainerNoteView extends obsidian.FileView {
       date.onchange = async () => { await this._setNoteField('noteDate', date.value); this._renderCard({ noteDate: date.value }); };
 
       // (b) Single parent slot — render only relatedParents[0]; picker only when empty.
-      const prow = left.createDiv('obsidi-note-card-row obsidi-note-card-parentrow');
+      // R4.2: label-above block (same idiom as Type/Date), stacked on the same grid.
+      const prow = left.createDiv('obsidi-note-card-field obsidi-note-card-parentrow');
       prow.createSpan({ text: 'Parent', cls: 'obsidi-note-card-lbl' });
       const plist = prow.createDiv('obsidi-note-card-plist');
       const parent0 = parents[0];
@@ -3705,25 +3706,49 @@ class ContainerNoteView extends obsidian.FileView {
         obsidian.setIcon(x, 'x');
         x.onclick = async () => {
           const noteFolder = this._noteFolderPath();
-          await this.plugin._removeNoteParent(noteFolder, parent0);
-          await this.plugin._removeNoteRelation(parent0, noteFolder);   // both sides, or the parent strands the entry
-          await this.plugin.maybePromptNoteRename(noteFolder, parent0);   // R2.3 break-away rename, if the auto-name still matches
-          // Override with the true remainder (legacy notes may hold >1 parent):
-          // a hardcoded [] would show the picker while parents remain on disk,
-          // and an add in that window would silently drop them.
-          this._renderCard({ relatedParents: parents.filter((q) => q !== parent0) });
+          // R4.5: gate FIRST — performRemoval (both-side removal + re-render) only
+          // ever runs from inside confirmNoteParentRemoval; an abort (Esc/close/X)
+          // never calls it, so the card stays exactly as-is (no re-render on abort).
+          await this.plugin.confirmNoteParentRemoval(noteFolder, parent0, async () => {
+            await this.plugin._removeNoteParent(noteFolder, parent0);
+            await this.plugin._removeNoteRelation(parent0, noteFolder);   // both sides, or the parent strands the entry
+            // Override with the true remainder (legacy notes may hold >1 parent):
+            // a hardcoded [] would show the picker while parents remain on disk,
+            // and an add in that window would silently drop them.
+            this._renderCard({ relatedParents: parents.filter((q) => q !== parent0) });
+          });
         };
       } else {
         this._renderAddParent(plist);
       }
 
-      // (c) Tags — read-only pills from fm.tags (machine field, never written here).
-      const tagsRow = left.createDiv('obsidi-note-card-row obsidi-note-card-tagsrow');
+      // (c) Tags — read-only pills from fm.tags (machine field, never written here);
+      // R4.2 label-above block, same grid as Parent. R4.3: quick-add input appends
+      // " #tag" to the OPEN EDITOR BUFFER — the updateListener's own docChanged path
+      // marks dirty and the normal autosave/extraction pipeline owns the field; the
+      // card itself never writes fm.tags.
+      const tagsRow = left.createDiv('obsidi-note-card-field obsidi-note-card-tagsrow');
       tagsRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
       const tagsWrap = tagsRow.createDiv('obsidi-note-card-tags');
       const tags = Array.isArray(fm.tags) ? fm.tags : [];
       if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
       else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
+      const tagAdd = tagsRow.createDiv('obsidi-note-card-tagadd');
+      const tagInput = tagAdd.createEl('input', { attr: { placeholder: 'Add tag…' } });
+      const tagBtn = tagAdd.createEl('button', { text: '＋', attr: { 'aria-label': 'Add tag' } });
+      const submitTag = () => {
+        const raw = tagInput.value.trim();
+        if (!raw) return;
+        const m = /^#?([A-Za-z][\w/-]*)$/.exec(raw);
+        if (!m) { new obsidian.Notice('Tag must start with a letter (letters, digits, _ / - only).'); return; }
+        const tagName = m[1];
+        if (!this._cm) { new obsidian.Notice('Open the note editor to add tags.'); return; }
+        this._cm.dispatch({ changes: { from: this._cm.state.doc.length, insert: ' #' + tagName } });   // updateListener fires _noteChanged() — do not call it here
+        tagInput.value = '';
+        this._renderCard({ tags: tags.concat([tagName]) });   // optimistic pill; card never writes fm.tags
+      };
+      tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); });
+      tagBtn.onclick = submitTag;
 
       this._renderPeopleSection(right, fm, type, peopleOverride);
     }
@@ -3789,23 +3814,44 @@ class ContainerNoteView extends obsidian.FileView {
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
     sec.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
-    // Stakeholders-table idiom (DocumentDetailView._renderStakeholdersPane): a
-    // header row + flat separator rows, reusing .doc-detail-tbl.
-    const table = sec.createEl('table', { cls: 'doc-detail-tbl obsidi-note-card-ptbl' });
-    const thead = table.createEl('tr');
-    ['', 'Name', 'Type', ''].forEach((h) => thead.createEl('th', { text: h }));
-    // Roster checkboxes, sourced LIVE from each parent's current sidecar.
+
+    // R4.2 order: heading, ADD-PERSON row, roster checkboxes, then the people
+    // table last. Ad-hoc add: name + person type + optional title.
+    const add = sec.createDiv('obsidi-note-card-addperson');
+    const nm = add.createEl('input', { attr: { placeholder: 'Name' } });
+    const ti = add.createEl('input', { attr: { placeholder: 'Title (optional)' } });
+    const ty = add.createEl('select');
+    for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
+    ty.value = 'Attendee';
+    const btn = add.createEl('button', { text: '＋', attr: { 'aria-label': 'Add person' } });
+    btn.onclick = async () => {
+      const name = nm.value.trim();
+      if (!name) return;
+      const cur = this.plugin.readNotePeople(folder);
+      const entry = { name, type: ty.value };
+      if (ti.value.trim()) entry.title = ti.value.trim();
+      cur.push(entry);
+      await this.plugin.writeNotePeople(folder, cur);
+      this._renderCard(undefined, cur);
+    };
+
+    // Roster checkboxes, sourced LIVE from each parent's current sidecar — own
+    // table (Stakeholders-table idiom, no header row of its own; the person
+    // table below carries the '', Name, Type, '' header).
     const parents = Array.isArray(fm.relatedParents) ? fm.relatedParents : [];
+    const rosterTable = sec.createEl('table', { cls: 'doc-detail-tbl obsidi-note-card-ptbl obsidi-note-card-rostertbl' });
+    let hasRoster = false;
     for (const par of parents) {
       const sc = this.plugin._parentCurrentSidecar(par);
       const sfm = sc && (this.app.metadataCache.getFileCache(sc) || {}).frontmatter;
       const roster = (sfm && Array.isArray(sfm.stakeholders)) ? sfm.stakeholders : [];
       if (!roster.length) continue;
-      const rh = table.createEl('tr');
+      hasRoster = true;
+      const rh = rosterTable.createEl('tr');
       rh.createEl('td', { text: this._parentTitle(par) + ' — stakeholders', cls: 'obsidi-note-card-rosterhead', attr: { colspan: 4 } });
       roster.forEach((s) => {
         const k = (s.name || '') + '|' + (s.title || '');
-        const row = table.createEl('tr', { cls: 'obsidi-note-card-personrow' });
+        const row = rosterTable.createEl('tr', { cls: 'obsidi-note-card-personrow' });
         const cbTd = row.createEl('td');
         const cb = cbTd.createEl('input', { type: 'checkbox' });
         cb.checked = have.has(k);
@@ -3822,7 +3868,14 @@ class ContainerNoteView extends obsidian.FileView {
         };
       });
     }
-    // Current people (picked + ad-hoc): per-row type dropdown + remove.
+    if (!hasRoster) rosterTable.remove();
+
+    // Current people (picked + ad-hoc) TABLE — last. Stakeholders-table idiom
+    // (DocumentDetailView._renderStakeholdersPane): a header row + flat rows.
+    const table = sec.createEl('table', { cls: 'doc-detail-tbl obsidi-note-card-ptbl' });
+    const thead = table.createEl('tr');
+    ['', 'Name', 'Type', ''].forEach((h) => thead.createEl('th', { text: h }));
+    // Per-row type dropdown + remove.
     people.forEach((p, idx) => {
       const row = table.createEl('tr', { cls: 'obsidi-note-card-personrow obsidi-note-card-personset' });
       row.createEl('td');
@@ -3847,24 +3900,6 @@ class ContainerNoteView extends obsidian.FileView {
         this._renderCard(undefined, cur);
       };
     });
-    // Ad-hoc add: name + person type + optional title.
-    const add = sec.createDiv('obsidi-note-card-addperson');
-    const nm = add.createEl('input', { attr: { placeholder: 'Name' } });
-    const ti = add.createEl('input', { attr: { placeholder: 'Title (optional)' } });
-    const ty = add.createEl('select');
-    for (const t of docContainer.PERSON_TYPES) ty.createEl('option', { text: t, value: t });
-    ty.value = 'Attendee';
-    const btn = add.createEl('button', { text: '＋', attr: { 'aria-label': 'Add person' } });
-    btn.onclick = async () => {
-      const name = nm.value.trim();
-      if (!name) return;
-      const cur = this.plugin.readNotePeople(folder);
-      const entry = { name, type: ty.value };
-      if (ti.value.trim()) entry.title = ti.value.trim();
-      cur.push(entry);
-      await this.plugin.writeNotePeople(folder, cur);
-      this._renderCard(undefined, cur);
-    };
   }
 
   // ── Locked-state seams (INERT — the key/autolock layer calls these later;
@@ -4633,21 +4668,27 @@ class DocumentDetailView extends obsidian.ItemView {
         const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
         rm.onclick = async () => {
           const removed = rel[i];
-          rel.splice(i, 1);
-          const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
-          await this._mutateSidecar((front) => {
-            front.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (see add handler)
-            if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
-          }, { action: 'Related document removed', type: 'meta' });
           // Note-relation self-heal: dropping a note link also removes THIS
           // document from the note's relatedParents (the note's reciprocal
           // wikilink is dropped immediately; the next autosave re-derives).
           const nf = removed && removed.target && removed.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
             ? removed.target.slice(0, removed.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
-          if (nf && this.plugin._noteBodyIn(nf)) {
-            await this.plugin._removeNoteParent(nf, this.node.path);
-            await this.plugin.maybePromptNoteRename(nf, this.node.path);   // R2.3 break-away rename, if the auto-name still matches
-          }
+          const isNoteTarget = !!(nf && this.plugin._noteBodyIn(nf));
+          // R4.5: the splice/_mutateSidecar/_removeNoteParent sequence lives INSIDE
+          // this callback so an abort at the gate (Esc/close/X) leaves `rel` and the
+          // sidecar untouched — the pane stays exactly as-is, no re-render fires
+          // (metadataCache 'changed' only fires from a real _mutateSidecar write).
+          const performRemoval = async () => {
+            rel.splice(i, 1);
+            const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
+            await this._mutateSidecar((front) => {
+              front.relatedDocuments = rel.map(({ link, ...r }) => r);   // strip legacy link field (see add handler)
+              if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
+            }, { action: 'Related document removed', type: 'meta' });
+            if (isNoteTarget) await this.plugin._removeNoteParent(nf, this.node.path);
+          };
+          if (isNoteTarget) await this.plugin.confirmNoteParentRemoval(nf, this.node.path, performRemoval);
+          else await performRemoval();
         };
         if (r.kind === 'link' && this._isLooseDoc(r.target)) {
           const ba = right.createSpan({ text: 'Break away', cls: 'doc-detail-fbtn' });
@@ -7832,6 +7873,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.obsidi-note-editor .cm-editor.cm-focused { outline: none; }' +
       '.obsidi-note-editor .cm-scroller { overflow: auto; padding: 16px 24px; }' +
       '.obsidi-note-editor .cm-cursor, .obsidi-note-editor .cm-dropCursor { border-left-color: var(--text-normal); }' +
+      '.obsidi-note-editor .cm-content { caret-color: var(--text-normal); }' +   // R4.1: native caret (no drawSelection ext) — the cm-cursor rule above never fired
       '.obsidi-note-locked { display: flex; align-items: center; justify-content: center; height: 100%; color: var(--text-muted); font-size: 1.2em; }' +
       '.obsidi-note-preview { padding: 16px 24px; overflow: auto; height: 100%; }'
       + '.obsidi-note-card { margin: 8px 16px 0; border: 1px solid var(--background-modifier-border); border-radius: 8px; background: var(--background-secondary); font-size: var(--font-ui-small); }'
@@ -7840,12 +7882,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-tw svg { width: 14px; height: 14px; }'
       + '.obsidi-note-card-body { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; padding: 10px; border-top: 1px solid var(--background-modifier-border); cursor: default; }'
       + '.obsidi-note-card-col { min-width: 0; }'
+      + '.obsidi-note-card-col-right { border-left: 1px solid var(--background-modifier-border); padding-left: 16px; }'   // R4.2 divider (grid gap unchanged)
       + '.obsidi-note-card-tdrow { display: flex; gap: 10px; }'
       + '.obsidi-note-card-field { flex: 1; min-width: 0; }'
       + '.obsidi-note-card-field .obsidi-note-card-lbl { display: block; flex: none; padding-top: 0; margin-bottom: 2px; }'
       + '.obsidi-note-card-field select, .obsidi-note-card-field input[type="date"] { width: 100%; }'
-      + '.obsidi-note-card-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 6px; }'
-      + '.obsidi-note-card-lbl { flex: 0 0 64px; color: var(--text-muted); padding-top: 3px; }'
+      // R4.2: Parent + Tags are now label-above blocks (same idiom as Type/Date via
+      // .obsidi-note-card-field), stacked beneath the Type/Date row on one alignment grid.
+      + '.obsidi-note-card-parentrow, .obsidi-note-card-tagsrow { margin-top: 10px; }'
+      + '.obsidi-note-card-lbl { color: var(--text-muted); padding-top: 3px; }'
       + '.obsidi-note-card-plist { flex: 1; }'
       + '.obsidi-note-card-prow { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }'
       + '.obsidi-note-card-plink { color: var(--text-accent); cursor: pointer; }'
@@ -7860,13 +7905,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
       + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }'
       + '.obsidi-note-card-tags { flex: 1; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px; }'
+      + '.obsidi-note-card-tagadd { display: flex; gap: 6px; margin-top: 4px; }'   // R4.3 tag quick-add
+      + '.obsidi-note-card-tagadd input { flex: 1; min-width: 0; }'
       + '.obsidi-note-card-people { min-width: 0; }'
       + '.obsidi-note-card-peoplehead { flex: none; font-weight: 600; margin-bottom: 4px; }'
+      + '.obsidi-note-card-ptbl { width: 100%; }'
       + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
       + '.obsidi-note-card-ptbl td { padding: 3px 6px; }'
       + '.obsidi-note-card-rosterhead { color: var(--text-muted); font-size: var(--font-ui-smaller); font-weight: 500; padding-top: 8px !important; }'
       + '.obsidi-note-card-personset .obsidi-note-card-pname { white-space: nowrap; }'
-      + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-top: 8px; }'
+      + '.obsidi-note-card-addperson { display: flex; gap: 6px; margin-bottom: 8px; }'   // R4.2: moved above the roster/table, spacing flipped to margin-bottom
       + '.obsidi-note-card-addperson input { flex: 1; min-width: 0; }';
   }
 
@@ -8506,7 +8554,15 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const parentFolder = this.app.vault.getAbstractFileByPath(parent);
       const taken = (parentFolder && parentFolder.children)
         ? parentFolder.children.filter((c) => c instanceof obsidian.TFolder).map((c) => c.name) : [];
-      cleanTitle = docContainer.dedupeName(desired, taken);
+      // R4.4: collision numbering moves BEFORE the type — "(2) Meeting - Parent",
+      // not dedupeName's trailing "Meeting - Parent (2)" — custom loop, not dedupeName.
+      const takenSet = new Set(taken);
+      if (!takenSet.has(desired)) cleanTitle = desired;
+      else {
+        let n = 2;
+        while (takenSet.has('(' + n + ') ' + desired)) n++;
+        cleanTitle = '(' + n + ') ' + desired;
+      }
     }
     if (!cleanTitle) { new obsidian.Notice('Enter a note title'); return; }
     if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
@@ -8716,42 +8772,63 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     dlog('note relation removed:', parentDocPath, '-x-', noteFolderPath);
   }
 
-  // ── Break-away rename (R2.3) ──────────────────────────────────────────────
-  // Called AFTER a parent relation has been removed from either side (card ✕
-  // or the parent's Related Documents remove). If the note's CURRENT title
-  // still matches the auto-generated "<noteType> - <removed parent's name>"
-  // form exactly, prompt for a new title. Awaits the modal outcome (submit or
-  // cancel) so callers can rely on the prompt having been offered before they
-  // move on — but any failure here is swallowed (logged only) so it can never
-  // undo the caller's already-completed relation removal.
-  async maybePromptNoteRename(noteFolderPath, removedParentDocPath) {
+  // ── Break-away rename — gate BEFORE removal (R4.5 inversion of R2.3) ────────
+  // Runs BEFORE any relation removal at both trigger sites (card ✕ and the
+  // parent's Related Documents remove). `performRemoval` is an async callback
+  // that owns ALL removal work (both sides) — it is only ever invoked from
+  // inside this function, so an abort (Esc/close/X) leaves it uncalled: nothing
+  // removed, nothing written, the association retained exactly as it was.
+  //
+  // Decision:
+  //  - note skeleton missing, OR the note's CURRENT title does not match the
+  //    auto-generated "<noteType> - <removed parent's name>" form (new prefixed
+  //    "(2) Type - Parent" or legacy trailing "Type - Parent (2)") → not an
+  //    auto-named note; removal proceeds directly, same as today.
+  //  - auto-named → open NoteRenameModal FIRST. Submit → performRemoval(), then
+  //    rewrite the H1 via _renameNoteTitle ONLY when the submitted name differs
+  //    from the current title. Close/X/Esc → resolve without ever calling
+  //    performRemoval.
+  //
+  // The gate-decision try/catch is the fail-safe boundary: if anything throws
+  // while determining auto-name status, we return WITHOUT calling
+  // performRemoval — a gate failure can never silently remove a relation.
+  async confirmNoteParentRemoval(noteFolderPath, removedParentDocPath, performRemoval) {
+    let isAutoName = false, currentTitle = '', bodyFile = null;
     try {
       const dm = this.app.vault.getAbstractFileByPath(noteFolderPath + '/' + docContainer.DOCUMENT_MD_NAME);
-      if (!(dm instanceof obsidian.TFile)) return;
+      if (!(dm instanceof obsidian.TFile)) { await performRemoval(); return; }   // no skeleton to judge auto-name against — proceed as non-auto-named
       const fm = (this.app.metadataCache.getFileCache(dm) || {}).frontmatter || {};
       const noteType = docContainer.NOTE_TYPES.includes(fm.noteType) ? fm.noteType : 'General';
       const parentTitle = this._parentDisplayTitle(removedParentDocPath);
       const autoTitle = (noteType + ' - ' + parentTitle).replace(/[\\/:*?"<>|]/g, '-');
-      const currentTitle = fm.title || '';
-      // Auto-titles may carry a dedupeName suffix (" (2)", " (3)", …) from
-      // createNoteContainer's collision handling — match that optional form too.
+      currentTitle = fm.title || '';
       const esc = autoTitle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const isAutoName = new RegExp('^' + esc + '( \\(\\d+\\))?$').test(currentTitle);
-      if (!isAutoName) return;   // user already renamed it, or it never had the auto form — leave alone
-      const bodyFile = this._noteBodyIn(noteFolderPath);
-      if (!(bodyFile instanceof obsidian.TFile)) return;
-      await new Promise((resolve) => {
-        const modal = new NoteRenameModal(this.app, currentTitle, async (newTitle) => {
-          try { await this._renameNoteTitle(noteFolderPath, bodyFile, newTitle); }
-          catch (e) { elog('note rename failed:', e && e.stack || e); new obsidian.Notice('Rename failed: ' + (e && e.message ? e.message : e)); }
-          resolve();
-        });
-        modal._onCancel = () => resolve();   // Esc/close without submit — no error, no rename
-        modal.open();
-      });
+      // R4.4: accept both the new prefixed form "(2) Type - Parent" and the
+      // legacy trailing form "Type - Parent (2)" (notes created before R4.4).
+      const reNew = new RegExp('^(\\(\\d+\\) )?' + esc + '$');
+      const reLegacy = new RegExp('^' + esc + '( \\(\\d+\\))?$');
+      isAutoName = reNew.test(currentTitle) || reLegacy.test(currentTitle);
+      bodyFile = this._noteBodyIn(noteFolderPath);
     } catch (e) {
-      elog('maybePromptNoteRename failed:', e && e.stack || e);
+      elog('confirmNoteParentRemoval: gate check failed — failing safe, removal NOT performed:', e && e.stack || e);
+      return;
     }
+    if (!isAutoName || !(bodyFile instanceof obsidian.TFile)) { await performRemoval(); return; }   // not auto-named — proceed directly
+    await new Promise((resolve) => {
+      const modal = new NoteRenameModal(this.app, currentTitle, async (newTitle) => {
+        try {
+          await performRemoval();
+          const trimmed = String(newTitle || '').trim();
+          if (trimmed && trimmed !== currentTitle) await this._renameNoteTitle(noteFolderPath, bodyFile, trimmed);
+        } catch (e) {
+          elog('note removal/rename failed:', e && e.stack || e);
+          new obsidian.Notice('Failed: ' + (e && e.message ? e.message : e));
+        }
+        resolve();
+      });
+      modal._onCancel = () => resolve();   // Esc/close/X — ABORT: performRemoval() never called, relation retained, nothing written
+      modal.open();
+    });
   }
 
   // Rewrite the note body's first H1 to `newTitle` through the choke point,
@@ -9393,12 +9470,14 @@ class NoteCreateModal extends obsidian.Modal {
   onClose() { this.contentEl.empty(); }
 }
 
-// Break-away rename prompt (R2.3): offered when a note's auto-generated title
-// (matching its removed parent's name) loses its parent. Text input pre-filled
-// with the current title. Empty submit is a no-op (field stays, modal stays
-// open); Esc/close-without-submit cancels — the caller's optional _onCancel
-// hook (set post-construction, see maybePromptNoteRename) fires so the caller
-// can resolve without waiting forever.
+// Break-away rename prompt (R2.3; gate inverted to run BEFORE removal in R4.5):
+// offered when a note's auto-generated title (matching its removed parent's
+// name) is about to lose its parent. Text input pre-filled with the current
+// title. Empty submit is a no-op (field stays, modal stays open); Esc/close
+// without submit cancels — _done stays false, so onClose's optional _onCancel
+// hook (set post-construction, see confirmNoteParentRemoval) fires and the
+// caller resolves WITHOUT ever invoking performRemoval (submit sets _done=true
+// before close(), so a submitted close never fires _onCancel).
 class NoteRenameModal extends obsidian.Modal {
   constructor(app, currentTitle, onSubmit) {
     super(app);
