@@ -4525,130 +4525,132 @@ class DocumentDetailView extends obsidian.ItemView {
     if (editing) { toggle.setText('Done'); } else { docIcon(toggle, 'pencil', 'doc-btn-ico'); toggle.createSpan({ text: 'Edit' }); }
     toggle.onclick = () => { this._relEdit = !this._relEdit; this.render(); };
 
-    if (editing) {
-      const newBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New document' });
-      newBtn.style.cssText = 'margin-bottom:8px;';
-      newBtn.onclick = () => {
-        const parentDocPath = this.node.path;
-        new NewDocumentModal(this.app, this.plugin, parentDocPath, this.node.name, {
-          heading: 'New related document',
-          onSubmit: async ({ title, ext, templatePath }) => {
-            const filePath = await this.plugin.createLooseRelatedDoc({ parentDocPath, title, ext, templatePath });
-            if (!filePath) return null;
-            const wl = this._relWikilink(filePath);
-            const entry = { kind: 'link', target: filePath, label: title.trim(), added: docToday() };
-            await this._mutateSidecar((front) => {
-              // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
-              // must never clobber entries written elsewhere (e.g. note-card relation writes).
-              const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
-              if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
-              front.relatedDocuments = cur.map(({ link, ...r }) => r);
-              if (wl) {
-                const links = Array.isArray(front.links) ? front.links.slice() : [];
-                if (!links.includes(wl)) links.push(wl);
-                front.links = links;
-              }
-            }, { action: 'Related document created: ' + title.trim(), type: 'link' });
-            this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf, 'reldocs');   // editor; Return → parent detail, Related tab
-            return filePath;   // truthy → modal closes
-          },
-        }).open();
-      };
-      const newNoteBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New note' });
-      newNoteBtn.style.cssText = 'margin-bottom:8px;margin-left:6px;';
-      newNoteBtn.onclick = () => {
-        const parentDocPath = this.node.path;
-        // Create-from-parent (R2): type only, no title — createNoteContainer
-        // auto-generates "<Type> - <ParentName>" when title is empty and a
-        // parentDocPath is given.
-        new NoteCreateModal(this.app, { defaultType: 'Meeting', types: ['Meeting', 'Decision', 'Incident'], askTitle: false }, async (title, noteType) => {
-          // createNoteContainer stamps relatedParents, writes the parent-side
-          // relation, and opens the note editor with the card expanded; the
-          // sidecar write triggers this pane's own re-render.
-          await this.plugin.createNoteContainer({ noteType, parentDocPath });
-        }).open();
-      };
-      const dz = p.createDiv('doc-detail-dropzone');
-      dz.createSpan({ text: 'Drag a file here to attach as a reference, or use Add link below' });
-      dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
-      dz.ondragleave = () => dz.removeClass('drag');
-      dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
-      const addWrap = p.createDiv('doc-detail-addlink');
-      const docRoot = this.plugin.settings.docRoot || 'Documents';
-      const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Browse ' + docRoot + '/ or type a document name…' } });
-      const sug = addWrap.createDiv('doc-detail-linksug');
-      // Path navigator (like the Core Templates folder-location field): click to
-      // browse docRoot, drill into folders, or type to filter. Folders navigate;
-      // office files (MANAGED_EXTS) are the selectable link targets, shown with
-      // their full directory path + extension. Arrays computed once per render.
-      const underRoot = (pth) => pth === docRoot || pth.startsWith(docRoot + '/');
-      const allFolders = this.app.vault.getAllLoadedFiles().filter(f => (f instanceof obsidian.TFolder) && f.path !== docRoot && underRoot(f.path));
-      const allDocs = this.app.vault.getFiles().filter(f => docContainer.MANAGED_EXTS.includes((f.extension || '').toLowerCase()) && underRoot(f.path));
-      const depth = (pth) => (pth.match(/\//g) || []).length;
-      const byPath = (a, b) => depth(a.path) - depth(b.path) || a.path.localeCompare(b.path);
-      const parentOf = (pth) => { const i = pth.lastIndexOf('/'); return i < 0 ? '' : pth.slice(0, i); };
-      let matches = [];   // [{ kind:'folder'|'file', path, file? }]
-      let activeIdx = -1;
-      const chooseFile = async (f) => {
-        const wl = this._relWikilink(f.path);
-        const entry = { kind: 'link', target: f.path, label: f.basename, added: docToday() };
-        await this._mutateSidecar((front) => {
-          // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
-          // must never clobber entries written elsewhere (e.g. note-card relation writes).
-          // Strip any legacy `link` field off entries — a wikilink inside the
-          // relatedDocuments objects makes Obsidian render it as "[object Object]"
-          // in backlinks. The graph wikilink lives ONLY in the `links` array.
-          const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
-          if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
-          front.relatedDocuments = cur.map(({ link, ...r }) => r);
-          if (wl) {
-            const links = Array.isArray(front.links) ? front.links.slice() : [];
-            if (!links.includes(wl)) links.push(wl);
-            front.links = links;
-          }
-        }, { action: 'Related link added: ' + f.basename, type: 'link' });
-      };
-      const hide = () => { sug.removeClass('visible'); sug.empty(); matches = []; activeIdx = -1; };
-      const paint = () => Array.from(sug.children).forEach((el, i) => el.toggleClass('active', i === activeIdx));
-      const drillTo = (folderPath) => { input.value = folderPath + '/'; renderSug(); input.focus(); };
-      const pick = (m) => { if (m.kind === 'folder') drillTo(m.path); else chooseFile(m.file); };
-      const renderSug = () => {
-        const val = input.value; sug.empty(); activeIdx = -1;
-        // Folder context: empty input or a trailing "/" → browse that folder's
-        // IMMEDIATE children; otherwise the part after the last "/" is a name
-        // fragment that also runs a nested name search across docRoot.
-        let baseDir, frag;
-        if (!val) { baseDir = docRoot; frag = ''; }
-        else if (val.endsWith('/')) { baseDir = val.slice(0, -1); frag = ''; }
-        else { const i = val.lastIndexOf('/'); baseDir = i < 0 ? docRoot : val.slice(0, i); frag = i < 0 ? val : val.slice(i + 1); }
-        const fl = frag.toLowerCase();
-        const folders = allFolders
-          .filter(fo => parentOf(fo.path) === baseDir && (!fl || fo.name.toLowerCase().includes(fl)))
-          .sort(byPath).slice(0, 25).map(fo => ({ kind: 'folder', path: fo.path }));
-        let fileHits = allDocs.filter(fi => parentOf(fi.path) === baseDir && (!fl || fi.basename.toLowerCase().includes(fl)));
-        if (fl) fileHits = fileHits.concat(allDocs.filter(fi => parentOf(fi.path) !== baseDir && fi.basename.toLowerCase().includes(fl)));   // nested name search
-        const files = fileHits.sort(byPath).slice(0, 25).map(fi => ({ kind: 'file', path: fi.path, file: fi }));
-        matches = folders.concat(files).slice(0, 50);
-        if (!matches.length) { hide(); return; }
-        matches.forEach((m) => {
-          const it = sug.createDiv({ cls: 'doc-detail-sugitem' + (m.kind === 'folder' ? ' folder' : '') });
-          obsidian.setIcon(it.createSpan({ cls: 'doc-detail-sugico' }), m.kind === 'folder' ? 'folder' : 'file-text');
-          it.createSpan({ text: m.path });
-          it.onmousedown = (e) => { e.preventDefault(); pick(m); };   // mousedown beats input blur
-        });
-        sug.addClass('visible');
-      };
-      input.oninput = renderSug;
-      input.onfocus = renderSug;
-      input.onblur = () => setTimeout(hide, 150);
-      input.onkeydown = (e) => {
-        if (!matches.length) return;
-        if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = (activeIdx + 1) % matches.length; paint(); }
-        else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = (activeIdx - 1 + matches.length) % matches.length; paint(); }
-        else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); pick(matches[activeIdx]); }
-        else if (e.key === 'Escape') { hide(); }
-      };
-    }
+    // Create/attach affordances (New document, New note, drag-drop, browse/add-link)
+    // are always visible, not gated behind Edit — creation and attach are additive,
+    // non-destructive actions. Edit gates only the per-row remove ✕ and Break away
+    // further below (destructive/lifecycle controls).
+    const newBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New document' });
+    newBtn.style.cssText = 'margin-bottom:8px;';
+    newBtn.onclick = () => {
+      const parentDocPath = this.node.path;
+      new NewDocumentModal(this.app, this.plugin, parentDocPath, this.node.name, {
+        heading: 'New related document',
+        onSubmit: async ({ title, ext, templatePath }) => {
+          const filePath = await this.plugin.createLooseRelatedDoc({ parentDocPath, title, ext, templatePath });
+          if (!filePath) return null;
+          const wl = this._relWikilink(filePath);
+          const entry = { kind: 'link', target: filePath, label: title.trim(), added: docToday() };
+          await this._mutateSidecar((front) => {
+            // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
+            // must never clobber entries written elsewhere (e.g. note-card relation writes).
+            const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+            if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
+            front.relatedDocuments = cur.map(({ link, ...r }) => r);
+            if (wl) {
+              const links = Array.isArray(front.links) ? front.links.slice() : [];
+              if (!links.includes(wl)) links.push(wl);
+              front.links = links;
+            }
+          }, { action: 'Related document created: ' + title.trim(), type: 'link' });
+          this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf, 'reldocs');   // editor; Return → parent detail, Related tab
+          return filePath;   // truthy → modal closes
+        },
+      }).open();
+    };
+    const newNoteBtn = p.createEl('button', { cls: 'doc-detail-hbtn', text: '＋ New note' });
+    newNoteBtn.style.cssText = 'margin-bottom:8px;margin-left:6px;';
+    newNoteBtn.onclick = () => {
+      const parentDocPath = this.node.path;
+      // Create-from-parent (R2): type only, no title — createNoteContainer
+      // auto-generates "<Type> - <ParentName>" when title is empty and a
+      // parentDocPath is given.
+      new NoteCreateModal(this.app, { defaultType: 'Meeting', types: ['Meeting', 'Decision', 'Incident'], askTitle: false }, async (title, noteType) => {
+        // createNoteContainer stamps relatedParents, writes the parent-side
+        // relation, and opens the note editor with the card expanded; the
+        // sidecar write triggers this pane's own re-render.
+        await this.plugin.createNoteContainer({ noteType, parentDocPath });
+      }).open();
+    };
+    const dz = p.createDiv('doc-detail-dropzone');
+    dz.createSpan({ text: 'Drag a file here to attach as a reference, or use Add link below' });
+    dz.ondragover = (e) => { e.preventDefault(); dz.addClass('drag'); };
+    dz.ondragleave = () => dz.removeClass('drag');
+    dz.ondrop = async (e) => { e.preventDefault(); dz.removeClass('drag'); await this._dropRelatedRefs(fm, rel, e); };
+    const addWrap = p.createDiv('doc-detail-addlink');
+    const docRoot = this.plugin.settings.docRoot || 'Documents';
+    const input = addWrap.createEl('input', { cls: 'doc-detail-linkinput', attr: { placeholder: 'Browse ' + docRoot + '/ or type a document name…' } });
+    const sug = addWrap.createDiv('doc-detail-linksug');
+    // Path navigator (like the Core Templates folder-location field): click to
+    // browse docRoot, drill into folders, or type to filter. Folders navigate;
+    // office files (MANAGED_EXTS) are the selectable link targets, shown with
+    // their full directory path + extension. Arrays computed once per render.
+    const underRoot = (pth) => pth === docRoot || pth.startsWith(docRoot + '/');
+    const allFolders = this.app.vault.getAllLoadedFiles().filter(f => (f instanceof obsidian.TFolder) && f.path !== docRoot && underRoot(f.path));
+    const allDocs = this.app.vault.getFiles().filter(f => docContainer.MANAGED_EXTS.includes((f.extension || '').toLowerCase()) && underRoot(f.path));
+    const depth = (pth) => (pth.match(/\//g) || []).length;
+    const byPath = (a, b) => depth(a.path) - depth(b.path) || a.path.localeCompare(b.path);
+    const parentOf = (pth) => { const i = pth.lastIndexOf('/'); return i < 0 ? '' : pth.slice(0, i); };
+    let matches = [];   // [{ kind:'folder'|'file', path, file? }]
+    let activeIdx = -1;
+    const chooseFile = async (f) => {
+      const wl = this._relWikilink(f.path);
+      const entry = { kind: 'link', target: f.path, label: f.basename, added: docToday() };
+      await this._mutateSidecar((front) => {
+        // Re-derive from front (NOT the render-time `rel` snapshot): a stale pane
+        // must never clobber entries written elsewhere (e.g. note-card relation writes).
+        // Strip any legacy `link` field off entries — a wikilink inside the
+        // relatedDocuments objects makes Obsidian render it as "[object Object]"
+        // in backlinks. The graph wikilink lives ONLY in the `links` array.
+        const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+        if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
+        front.relatedDocuments = cur.map(({ link, ...r }) => r);
+        if (wl) {
+          const links = Array.isArray(front.links) ? front.links.slice() : [];
+          if (!links.includes(wl)) links.push(wl);
+          front.links = links;
+        }
+      }, { action: 'Related link added: ' + f.basename, type: 'link' });
+    };
+    const hide = () => { sug.removeClass('visible'); sug.empty(); matches = []; activeIdx = -1; };
+    const paint = () => Array.from(sug.children).forEach((el, i) => el.toggleClass('active', i === activeIdx));
+    const drillTo = (folderPath) => { input.value = folderPath + '/'; renderSug(); input.focus(); };
+    const pick = (m) => { if (m.kind === 'folder') drillTo(m.path); else chooseFile(m.file); };
+    const renderSug = () => {
+      const val = input.value; sug.empty(); activeIdx = -1;
+      // Folder context: empty input or a trailing "/" → browse that folder's
+      // IMMEDIATE children; otherwise the part after the last "/" is a name
+      // fragment that also runs a nested name search across docRoot.
+      let baseDir, frag;
+      if (!val) { baseDir = docRoot; frag = ''; }
+      else if (val.endsWith('/')) { baseDir = val.slice(0, -1); frag = ''; }
+      else { const i = val.lastIndexOf('/'); baseDir = i < 0 ? docRoot : val.slice(0, i); frag = i < 0 ? val : val.slice(i + 1); }
+      const fl = frag.toLowerCase();
+      const folders = allFolders
+        .filter(fo => parentOf(fo.path) === baseDir && (!fl || fo.name.toLowerCase().includes(fl)))
+        .sort(byPath).slice(0, 25).map(fo => ({ kind: 'folder', path: fo.path }));
+      let fileHits = allDocs.filter(fi => parentOf(fi.path) === baseDir && (!fl || fi.basename.toLowerCase().includes(fl)));
+      if (fl) fileHits = fileHits.concat(allDocs.filter(fi => parentOf(fi.path) !== baseDir && fi.basename.toLowerCase().includes(fl)));   // nested name search
+      const files = fileHits.sort(byPath).slice(0, 25).map(fi => ({ kind: 'file', path: fi.path, file: fi }));
+      matches = folders.concat(files).slice(0, 50);
+      if (!matches.length) { hide(); return; }
+      matches.forEach((m) => {
+        const it = sug.createDiv({ cls: 'doc-detail-sugitem' + (m.kind === 'folder' ? ' folder' : '') });
+        obsidian.setIcon(it.createSpan({ cls: 'doc-detail-sugico' }), m.kind === 'folder' ? 'folder' : 'file-text');
+        it.createSpan({ text: m.path });
+        it.onmousedown = (e) => { e.preventDefault(); pick(m); };   // mousedown beats input blur
+      });
+      sug.addClass('visible');
+    };
+    input.oninput = renderSug;
+    input.onfocus = renderSug;
+    input.onblur = () => setTimeout(hide, 150);
+    input.onkeydown = (e) => {
+      if (!matches.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); activeIdx = (activeIdx + 1) % matches.length; paint(); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); activeIdx = (activeIdx - 1 + matches.length) % matches.length; paint(); }
+      else if (e.key === 'Enter' && activeIdx >= 0) { e.preventDefault(); pick(matches[activeIdx]); }
+      else if (e.key === 'Escape') { hide(); }
+    };
 
     if (rel.length) {
       const rHead = p.createDiv('doc-detail-lhead');
@@ -4658,13 +4660,16 @@ class DocumentDetailView extends obsidian.ItemView {
     const listEl = p.createDiv('doc-detail-rellist');
     rel.forEach((r, i) => {
       const row = listEl.createDiv('doc-detail-frow');
+      // A note target = the note's _document.md inside a folder that holds a
+      // body.cnote. Hoisted here (rather than computed inside the label block)
+      // so both the read-mode open-handler AND the edit-mode remove/break-away
+      // routing below can use the same per-row values.
+      const noteFolder = r.target && r.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
+        ? r.target.slice(0, r.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
+      const noteBody = noteFolder ? this.plugin._noteBodyIn(noteFolder) : null;
       { const fl = row.createDiv('doc-detail-fl doc-detail-rellink');
-        // A note target = the note's _document.md inside a folder that holds a
-        // body.cnote. Label notes by their LIVE title (spec: read from the
-        // skeleton), fall back to the stored label.
-        const noteFolder = r.target && r.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
-          ? r.target.slice(0, r.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
-        const noteBody = noteFolder ? this.plugin._noteBodyIn(noteFolder) : null;
+        // Label notes by their LIVE title (spec: read from the skeleton), fall
+        // back to the stored label.
         let liveTitle = null;
         if (noteBody) {
           const dmf = this.app.vault.getAbstractFileByPath(r.target);
@@ -4695,32 +4700,32 @@ class DocumentDetailView extends obsidian.ItemView {
       if (r.added) right.createSpan({ text: r.added, cls: 'doc-detail-reladded', attr: { title: 'Added/linked ' + r.added } });
       right.createSpan({ text: r.kind === 'link' ? 'vault link' : 'reference', cls: 'doc-detail-reltype ' + (r.kind === 'link' ? 'rt-link' : 'rt-ref') });
       if (editing) {
+        const removed = rel[i];
+        // Removal callback shared by the row's ✕ and (for note targets) its Break
+        // away — declared once per row so both controls route through the same
+        // gate/self-heal sequence below, instead of duplicating it.
+        // Note-relation self-heal: dropping a note link also removes THIS
+        // document from the note's relatedParents (the note's reciprocal
+        // wikilink is dropped immediately; the next autosave re-derives).
+        // R4.5: the _mutateSidecar/_removeNoteParent sequence lives INSIDE
+        // this callback so an abort at the gate (Esc/close/X) leaves the
+        // sidecar untouched — the pane stays exactly as-is, no re-render fires
+        // (metadataCache 'changed' only fires from a real _mutateSidecar write).
+        const performRemoval = async () => {
+          const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
+          await this._mutateSidecar((front) => {
+            // Re-derive from front and filter by target (NOT the render-time `rel`
+            // snapshot) — mirrors _removeNoteRelation; row identity (`removed = rel[i]`)
+            // still comes from the render, only the WRITE re-derives.
+            const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
+            front.relatedDocuments = cur.filter((r) => !(r && r.target === removed.target)).map(({ link, ...r }) => r);
+            if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
+          }, { action: 'Related document removed', type: 'meta' });
+          if (noteBody) await this.plugin._removeNoteParent(noteFolder, this.node.path);
+        };
         const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
         rm.onclick = async () => {
-          const removed = rel[i];
-          // Note-relation self-heal: dropping a note link also removes THIS
-          // document from the note's relatedParents (the note's reciprocal
-          // wikilink is dropped immediately; the next autosave re-derives).
-          const nf = removed && removed.target && removed.target.endsWith('/' + docContainer.DOCUMENT_MD_NAME)
-            ? removed.target.slice(0, removed.target.length - docContainer.DOCUMENT_MD_NAME.length - 1) : null;
-          const isNoteTarget = !!(nf && this.plugin._noteBodyIn(nf));
-          // R4.5: the _mutateSidecar/_removeNoteParent sequence lives INSIDE
-          // this callback so an abort at the gate (Esc/close/X) leaves the
-          // sidecar untouched — the pane stays exactly as-is, no re-render fires
-          // (metadataCache 'changed' only fires from a real _mutateSidecar write).
-          const performRemoval = async () => {
-            const wl = removed && (removed.link || (removed.kind === 'link' ? this._relWikilink(removed.target) : null));
-            await this._mutateSidecar((front) => {
-              // Re-derive from front and filter by target (NOT the render-time `rel`
-              // snapshot) — mirrors _removeNoteRelation; row identity (`removed = rel[i]`)
-              // still comes from the render, only the WRITE re-derives.
-              const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
-              front.relatedDocuments = cur.filter((r) => !(r && r.target === removed.target)).map(({ link, ...r }) => r);
-              if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
-            }, { action: 'Related document removed', type: 'meta' });
-            if (isNoteTarget) await this.plugin._removeNoteParent(nf, this.node.path);
-          };
-          if (isNoteTarget) await this.plugin.confirmNoteParentRemoval(nf, this.node.path, performRemoval);
+          if (noteBody) await this.plugin.confirmNoteParentRemoval(noteFolder, this.node.path, performRemoval);
           else await performRemoval();
         };
         if (r.kind === 'link' && this._isLooseDoc(r.target)) {
@@ -4729,6 +4734,15 @@ class DocumentDetailView extends obsidian.ItemView {
           ba.onclick = async () => {
             if (!armedBA) { armedBA = true; ba.setText('Confirm break away'); return; }
             await this._breakAway(r.target);
+          };
+        } else if (noteBody) {
+          const ba = right.createSpan({ text: 'Break away', cls: 'doc-detail-fbtn' });
+          ba.onclick = async () => {
+            // Same gated removal as the ✕ — for notes, breaking away IS removing
+            // the parent association (the note container stays, standalone). The
+            // gate confirms, and prompts rename when the note is auto-named. No
+            // two-click arming here: the gate modal IS the confirmation.
+            await this.plugin.confirmNoteParentRemoval(noteFolder, this.node.path, performRemoval);
           };
         }
       }
