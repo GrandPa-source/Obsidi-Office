@@ -4656,7 +4656,7 @@ class DocumentDetailView extends obsidian.ItemView {
               if (!links.includes(wl)) links.push(wl);
               front.links = links;
             }
-          }, { action: 'Related document created: ' + title.trim(), type: 'link' });
+          }, { action: 'Related document created', detail: filePath, type: 'link' });   // path detail → Log tab renders a clickable ref (B3)
           this.plugin.openDocInEditor(filePath, parentDocPath, false, this.leaf, 'reldocs');   // editor; Return → parent detail, Related tab
           return filePath;   // truthy → modal closes
         },
@@ -4714,7 +4714,7 @@ class DocumentDetailView extends obsidian.ItemView {
           if (!links.includes(wl)) links.push(wl);
           front.links = links;
         }
-      }, { action: 'Related link added: ' + f.basename, type: 'link' });
+      }, { action: 'Related link added', detail: f.path, type: 'link' });   // path detail → Log tab renders a clickable ref (B3)
     };
     const hide = () => { sug.removeClass('visible'); sug.empty(); matches = []; activeIdx = -1; };
     const paint = () => Array.from(sug.children).forEach((el, i) => el.toggleClass('active', i === activeIdx));
@@ -4825,7 +4825,15 @@ class DocumentDetailView extends obsidian.ItemView {
             const cur = Array.isArray(front.relatedDocuments) ? front.relatedDocuments.slice() : [];
             front.relatedDocuments = cur.filter((r) => !(r && r.target === removed.target)).map(({ link, ...r }) => r);
             if (wl && Array.isArray(front.links)) front.links = front.links.filter((x) => x !== wl);   // drop the matching graph wikilink
-          }, { action: 'Related document removed', type: 'meta' });
+          }, {
+            // Path-bearing detail (B3 drill finding): the bare action left the Log
+            // tab unable to say WHICH document was removed. Note targets reuse the
+            // card-side action string so both surfaces log identically and the Log
+            // tab renders the note's live title as a clickable ref.
+            action: noteBody ? 'related note removed' : 'Related document removed',
+            detail: removed && removed.target,
+            type: 'meta',
+          });
           if (noteBody) await this.plugin._removeNoteParent(noteFolder, this.node.path);
         };
         const rm = right.createSpan({ cls: 'doc-detail-remove' }); obsidian.setIcon(rm, 'x');
@@ -4878,7 +4886,11 @@ class DocumentDetailView extends obsidian.ItemView {
         if (!cur.some((r) => r && r.target === entry.target)) cur.push(entry);
       }
       front.relatedDocuments = cur.map(({ link, ...r }) => r);
-    }, { action: 'Reference attached', type: 'attach' });
+    }, {
+      action: entries.length > 1 ? 'References attached (' + entries.length + ' files)' : 'Reference attached',
+      detail: entries.length === 1 ? entries[0].target : undefined,   // single drop → clickable ref; multi-drop keeps a count (one log line per drop, unchanged)
+      type: 'attach',
+    });
   }
 
   // Canonical Obsidian wikilink for a related-doc target, so adding/removing a
