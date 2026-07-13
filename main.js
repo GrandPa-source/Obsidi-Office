@@ -3493,6 +3493,7 @@ class ContainerNoteView extends obsidian.FileView {
     this._cardEl = null;
     this._cardCollapsed = true;
     this._cardWatchWired = false;
+    this._tagsEditing = false;   // R6.5: pills-strip Edit/Done state, reset per-file in onLoadFile
   }
   getViewType() { return VIEW_TYPE_NOTE; }
   getIcon() { return 'notebook-pen'; }
@@ -3524,6 +3525,7 @@ class ContainerNoteView extends obsidian.FileView {
     this._editorHostEl = null;   // else a failed load leaves a stale host and _togglePreview's guard passes
     this._previewing = false;
     this._previewEl = null;
+    this._tagsEditing = false;   // R6.5: per-file state, same as the other resets above
     this._destroyCm();
     if (this._locked) { this._renderLockedPlaceholder(); return; }
     const cm = requireCm();
@@ -3723,36 +3725,96 @@ class ContainerNoteView extends obsidian.FileView {
       }
 
       // (c) Tags — read-only pills from fm.tags (machine field, never written here);
-      // R4.2 label-above block, same grid as Parent. R4.3: quick-add input appends
-      // " #tag" to the OPEN EDITOR BUFFER — the updateListener's own docChanged path
-      // marks dirty and the normal autosave/extraction pipeline owns the field; the
-      // card itself never writes fm.tags.
+      // R4.2 label-above block, same grid as Parent. Quick-add inserts into the
+      // OPEN EDITOR BUFFER — the updateListener's own docChanged path marks dirty
+      // and the normal autosave/extraction pipeline owns the field; the card
+      // itself never writes fm.tags.
       const tagsRow = left.createDiv('obsidi-note-card-field obsidi-note-card-tagsrow');
-      // R5.3: label row carries a morphing ＋ that expands into the quick-add
-      // input in place (no permanent input row — see Task 5 brief).
-      const tagsLblRow = tagsRow.createDiv('obsidi-note-card-tagslblrow');
-      tagsLblRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
-      const tagMorph = tagsLblRow.createDiv('obsidi-note-card-tagmorph');
-      const tagPlus = tagMorph.createEl('button', { text: '＋', cls: 'obsidi-note-card-tagplus', attr: { 'aria-label': 'Add tag' } });
-      const tagInput = tagMorph.createEl('input', { attr: { placeholder: 'Add tag…' } });
-      const tagsWrap = tagsRow.createDiv('obsidi-note-card-tags');
       const tags = Array.isArray(fm.tags) ? fm.tags : [];
-      if (tags.length) tags.forEach((t) => tagsWrap.createSpan({ text: '#' + t, cls: 'doc-detail-tagpill' }));
-      else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
+      // R6.3: label | input (flex:1, hidden when closed) | ＋/✕ toggle — same
+      // docIconLabel/doc-detail-hbtn idiom and ＋⇄✕ toggle as the People reveal
+      // button (no more morph-replace on the ＋ itself).
+      const tagsLblRow = tagsRow.createDiv('obsidi-note-card-tagrow');
+      tagsLblRow.createSpan({ text: 'Tags', cls: 'obsidi-note-card-lbl' });
+      const tagInput = tagsLblRow.createEl('input', { attr: { placeholder: 'tag1, tag2, …' } });
+      const tagToggle = docIconLabel(tagsLblRow, 'plus', 'Add', { cls: 'doc-detail-hbtn' });
+      tagToggle.setAttr('aria-label', 'Add tag');
+      const closeTagRow = () => {
+        tagsLblRow.removeClass('is-open');
+        setIconLabel(tagToggle, 'plus', 'Add');
+        tagToggle.setAttr('aria-label', 'Add tag');
+      };
+      tagToggle.onclick = () => {
+        if (tagsLblRow.hasClass('is-open')) { closeTagRow(); return; }
+        tagsLblRow.addClass('is-open');
+        setIconLabel(tagToggle, 'x', 'Close');
+        tagToggle.setAttr('aria-label', 'Close tag input');
+        tagInput.focus();
+      };
+      // R6.4: comma-split multi-tag. Each token trimmed, leading '#' stripped,
+      // validated; invalid tokens named in ONE Notice, valid ones still added;
+      // all inserted in a SINGLE dispatch (extraction pipeline stays the sole
+      // fm.tags writer).
       const submitTag = () => {
         const raw = tagInput.value.trim();
         if (!raw) return;
-        const m = /^#?([A-Za-z][\w/-]*)$/.exec(raw);
-        if (!m) { new obsidian.Notice('Tag must start with a letter (letters, digits, _ / - only).'); return; }
-        const tagName = m[1];
         if (!this._cm) { new obsidian.Notice('Open the note editor to add tags.'); return; }
-        this._cm.dispatch({ changes: { from: this._cm.state.doc.length, insert: ' #' + tagName } });   // updateListener fires _noteChanged() — do not call it here
+        const valid = []; const invalid = [];
+        raw.split(',').map((s) => s.trim()).filter(Boolean).forEach((tok) => {
+          const m = /^#?([A-Za-z][\w/-]*)$/.exec(tok);
+          if (m) valid.push(m[1]); else invalid.push(tok);
+        });
+        if (invalid.length) new obsidian.Notice('Skipped invalid tag' + (invalid.length > 1 ? 's' : '') + ': ' + invalid.join(', '));
+        if (!valid.length) return;   // nothing valid — no dispatch
+        this._cm.dispatch({ changes: { from: this._cm.state.doc.length, insert: ' ' + valid.map((t) => '#' + t).join(' ') } });   // updateListener fires _noteChanged() — do not call it here
         tagInput.value = '';
-        this._renderCard({ tags: tags.concat([tagName]) });   // optimistic pill; card never writes fm.tags
+        this._renderCard({ tags: tags.concat(valid) });   // optimistic pills; card never writes fm.tags
       };
-      tagPlus.onclick = () => { tagMorph.addClass('is-open'); tagInput.focus(); };
-      tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); if (e.key === 'Escape') { tagInput.value = ''; tagMorph.removeClass('is-open'); } });
-      tagInput.addEventListener('blur', () => { if (!tagInput.value.trim()) tagMorph.removeClass('is-open'); });
+      tagInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitTag(); if (e.key === 'Escape') { tagInput.value = ''; closeTagRow(); } });
+
+      // R6.5: confirmed pills sit in a bordered strip (top+bottom rule) with a
+      // far-right Edit/Done toggle (same idiom as _renderStakeholdersPane /
+      // _renderRelatedPane). Editing exposes a per-pill ✕ that removes ALL body
+      // occurrences of that tag token via the CM buffer — boundary-aware, same
+      // token regex as extractNoteSkeleton, single dispatch per removal.
+      const tagsStrip = tagsRow.createDiv('obsidi-note-card-tagsstrip');
+      const tagsWrap = tagsStrip.createDiv('obsidi-note-card-tags');
+      const editing = !!this._tagsEditing;
+      const removeTagOccurrences = (tagName) => {
+        if (!this._cm) { new obsidian.Notice('Open the note editor to remove tags.'); return; }
+        const doc = this._cm.state.doc.toString();
+        const tagRe = /(^|[\s(])#([A-Za-z][\w/-]*)/g;   // mirrors extractNoteSkeleton's tag regex exactly
+        const changes = [];
+        let m;
+        while ((m = tagRe.exec(doc))) {
+          if (m[2] !== tagName) continue;
+          const matchStart = m.index;
+          const tagStart = matchStart + m[1].length;
+          const tagEnd = tagStart + 1 + m[2].length;
+          const from = /\s/.test(m[1]) ? matchStart : tagStart;   // consume ONE preceding space when present; leave '(' / start-of-string alone
+          changes.push({ from, to: tagEnd, insert: '' });
+        }
+        if (!changes.length) return;
+        this._cm.dispatch({ changes });   // single dispatch, all ranges from the same doc snapshot — CM applies against the same base state
+        this._renderCard({ tags: tags.filter((t) => t !== tagName) });   // optimistic; edit state survives via this._tagsEditing
+      };
+      if (tags.length) {
+        tags.forEach((t) => {
+          const pill = tagsWrap.createSpan({ cls: 'doc-detail-tagpill' + (editing ? ' obsidi-note-card-tagpill-editing' : '') });
+          pill.createSpan({ text: '#' + t });
+          if (editing) {
+            const rm = pill.createSpan({ cls: 'obsidi-note-card-rm' });
+            obsidian.setIcon(rm, 'x');
+            rm.setAttr('aria-label', 'Remove tag #' + t);
+            rm.onclick = () => removeTagOccurrences(t);
+          }
+        });
+      } else tagsWrap.createSpan({ text: '—', cls: 'doc-detail-muted' });
+      // Edit/Done toggle — same convention as _renderRelatedPane's foot toggle
+      // (pencil+"Edit" closed, plain "Done" text while editing).
+      const tagEditBtn = tagsStrip.createSpan({ cls: 'doc-detail-hbtn obsidi-note-card-tagedit' });
+      if (editing) { tagEditBtn.setText('Done'); } else { docIcon(tagEditBtn, 'pencil', 'doc-btn-ico'); tagEditBtn.createSpan({ text: 'Edit' }); }
+      tagEditBtn.onclick = () => { this._tagsEditing = !this._tagsEditing; this._renderCard({ tags }); };
 
       // (d) Executive Summary — human-owned free text, stored as fm.summary
       // (doc-level key; never touched by updateNoteSkeleton's title/tags/links/modified writes).
@@ -3829,7 +3891,8 @@ class ContainerNoteView extends obsidian.FileView {
     const key = (p) => (p.name || '') + '|' + (p.title || '');   // aggregateStakeholders composite key
     const have = new Set(people.map(key));
     const sec = bodyEl.createDiv('obsidi-note-card-people');
-    // R5.3: heading row with a reveal ＋ that swipes the add-person row into view.
+    // R6.1/R6.2: heading row with a reveal ＋⇄✕ toggle that slides the add-person
+    // row down into view (top-down: max-height + translateY, see _injectNoteCSS).
     const headRow = sec.createDiv('obsidi-note-card-peoplehr');
     headRow.createDiv({ text: 'People', cls: 'obsidi-note-card-lbl obsidi-note-card-peoplehead' });
     const revealBtn = docIconLabel(headRow, 'plus', 'Add', { cls: 'doc-detail-hbtn' });
@@ -3855,7 +3918,19 @@ class ContainerNoteView extends obsidian.FileView {
       await this.plugin.writeNotePeople(folder, cur);
       this._renderCard(undefined, cur);
     };
-    revealBtn.onclick = () => { add.toggleClass('is-open', !add.hasClass('is-open')); if (add.hasClass('is-open')) nm.focus(); };
+    // R6.2: ＋/"Add" closed ⇄ ✕/"Close" open, aria-label follows state.
+    revealBtn.onclick = () => {
+      const open = !add.hasClass('is-open');
+      add.toggleClass('is-open', open);
+      if (open) {
+        setIconLabel(revealBtn, 'x', 'Close');
+        revealBtn.setAttr('aria-label', 'Close add person');
+        nm.focus();
+      } else {
+        setIconLabel(revealBtn, 'plus', 'Add');
+        revealBtn.setAttr('aria-label', 'Add person');
+      }
+    };
 
     // Roster checkboxes, sourced LIVE from each parent's current sidecar — own
     // table (Stakeholders-table idiom, no header row of its own; the person
@@ -3984,6 +4059,14 @@ function docIconLabel(parent, name, label, opts) {
   docIcon(el, name, 'doc-btn-ico');
   el.createSpan({ text: label });
   return el;
+}
+
+// Swap a docIconLabel element's icon + text in place (e.g. ＋⇄✕ toggle
+// buttons) without re-creating the element (preserves listeners/position).
+function setIconLabel(el, name, label) {
+  el.empty();
+  docIcon(el, name, 'doc-btn-ico');
+  el.createSpan({ text: label });
 }
 
 // When a .doc-detail-tabs flex bar wraps to 2+ rows, draw a grey L-border (under
@@ -8007,20 +8090,31 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sugitem { padding: 4px 8px; cursor: pointer; }'
       + '.obsidi-note-card-sugitem:hover { background: var(--background-modifier-hover); }'
       + '.obsidi-note-card-tags { flex: 1; display: flex; flex-wrap: wrap; align-items: flex-start; gap: 2px; }'
-      // R5.3: Tags label row + morphing ＋→input (replaces the old permanent tagadd row).
-      + '.obsidi-note-card-tagslblrow { display: flex; align-items: center; gap: 8px; }'
-      + '.obsidi-note-card-tagmorph { position: relative; display: flex; }'
-      + '.obsidi-note-card-tagmorph input { width: 0; opacity: 0; padding: 0; border-width: 0; transform: translateX(16px); transition: width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
-      + '.obsidi-note-card-tagmorph.is-open input { width: 140px; opacity: 1; padding: 0 8px; border-width: 1px; transform: translateX(0); }'
-      + '.obsidi-note-card-tagmorph.is-open .obsidi-note-card-tagplus { display: none; }'
+      // R6.3: Tags row = label | input (flex:1, shown only when open) | ＋/✕ toggle.
+      // Closed: input is display:none so the toggle sits directly after the label.
+      // Open: input fills the remaining width, pushing the toggle to the far right
+      // as the natural last flex child — no morph/width transition needed.
+      + '.obsidi-note-card-tagrow { display: flex; align-items: center; gap: 8px; }'
+      + '.obsidi-note-card-tagrow input { flex: 1; min-width: 0; height: var(--input-height); }'
+      + '.obsidi-note-card-tagrow:not(.is-open) input { display: none; }'
+      // R6.5: confirmed-pills strip — border-top + border-bottom, pills wrap left,
+      // Edit/Done far right inside the strip.
+      + '.obsidi-note-card-tagsstrip { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 6px 0; border-top: 1px solid var(--background-modifier-border); border-bottom: 1px solid var(--background-modifier-border); }'
+      + '.obsidi-note-card-tagsstrip .obsidi-note-card-tags { flex: 1; }'
+      + '.obsidi-note-card-tagedit { flex: none; }'
+      + '.obsidi-note-card-tagpill-editing { display: inline-flex; align-items: center; gap: 4px; padding-right: 6px; }'
       + '.obsidi-note-card-sumrow { margin-top: 10px; }'
       + '.obsidi-note-card-summary { width: 100%; resize: vertical; font-family: var(--font-text); }'
       + '.obsidi-note-card-people { min-width: 0; }'
       + '.obsidi-note-card-peoplehr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }'
-      + '.obsidi-note-card-reveal { overflow: hidden; max-width: 0; opacity: 0; transform: translateX(24px); transition: max-width 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
+      // R6.1: top-down vertical reveal (was a right-to-left swipe) — max-height +
+      // translateY + opacity; closed state contributes zero height (overflow
+      // clips max-height:0) and zero margin (margins aren't clipped, so the
+      // :not(.is-open) override still earns its keep).
+      + '.obsidi-note-card-reveal { overflow: hidden; max-height: 0; opacity: 0; transform: translateY(-8px); transition: max-height 0.25s ease, opacity 0.2s ease, transform 0.25s ease; }'
       + '.obsidi-note-card-reveal:not(.is-open) { margin-bottom: 0; }'   // closed sliver still has row height; kill the trailing gap it would otherwise leak
-      + '.obsidi-note-card-reveal.is-open { max-width: 100%; opacity: 1; transform: translateX(0); }'
-      + '@media (prefers-reduced-motion: reduce) { .obsidi-note-card-reveal, .obsidi-note-card-tagmorph input { transition: none; } }'
+      + '.obsidi-note-card-reveal.is-open { max-height: 80px; opacity: 1; transform: translateY(0); }'
+      + '@media (prefers-reduced-motion: reduce) { .obsidi-note-card-reveal { transition: none; } }'
       + '.obsidi-note-card-peoplehead { flex: none; margin-bottom: 4px; }'
       + '.obsidi-note-card-ptbl { width: 100%; }'
       + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
