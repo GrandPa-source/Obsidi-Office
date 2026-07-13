@@ -8390,8 +8390,17 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return docContainer.lockStateFromFront(fm, new Date().toISOString(), this.settings.checkoutTimeoutHours || 0);
   }
   async setCheckout(node) {
-    const f = this.lockTargetFile(node);
-    if (!(f instanceof obsidian.TFile)) return;
+    let f = this.lockTargetFile(node);
+    if (!(f instanceof obsidian.TFile) && node && node.path && node.current) {
+      // Hand-dropped containers can have version files but no sidecar yet; the
+      // lock lives in sidecar frontmatter, so seed the current version's sidecar
+      // (same seed as _mutateSidecar) instead of silently doing nothing (C9 drill
+      // finding: check-out click produced no write, no log, no feedback).
+      const scPath = node.path + '/' + node.current + '.md';
+      try { await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { /* exists or race — re-resolve below */ }
+      f = this.app.vault.getAbstractFileByPath(scPath);
+    }
+    if (!(f instanceof obsidian.TFile)) { new obsidian.Notice('Check out failed — no document version found in this container.'); return; }
     const at = new Date().toISOString();
     await this.app.fileManager.processFrontMatter(f, (fm) => { fm.checkedOutBy = resolveAuthorId(); fm.checkedOutAt = at; });
     this.appendLog(node.path, 'checked out');
