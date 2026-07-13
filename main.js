@@ -8095,6 +8095,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       // Open: input fills the remaining width, pushing the toggle to the far right
       // as the natural last flex child — no morph/width transition needed.
       + '.obsidi-note-card-tagrow { display: flex; align-items: center; gap: 8px; }'
+      + '.obsidi-note-card-tagrow .doc-detail-hbtn { margin-left: auto; }'   // ＋ Add sits at the row's right edge (input fills the gap when open)
       + '.obsidi-note-card-tagrow input { flex: 1; min-width: 0; height: var(--input-height); }'
       + '.obsidi-note-card-tagrow:not(.is-open) input { display: none; }'
       // R6.5: confirmed-pills strip — border-top + border-bottom, pills wrap left,
