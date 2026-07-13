@@ -8107,7 +8107,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-sumrow { margin-top: 10px; }'
       + '.obsidi-note-card-summary { width: 100%; resize: vertical; font-family: var(--font-text); }'
       + '.obsidi-note-card-people { min-width: 0; }'
-      + '.obsidi-note-card-peoplehr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }'
+      // Cross-column alignment: the People header line must occupy the same height
+      // as the left column's Type/Date label line (label 0 padding-top + 2px gap),
+      // so the add-person inputs' top lines up with the date input's top. The card's
+      // hbtn buttons drop their vertical padding for the same reason — otherwise the
+      // button box, not the label, sets the header row height.
+      + '.obsidi-note-card-peoplehr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2px; }'
+      + '.obsidi-note-card-body .doc-detail-hbtn { padding-top: 0; padding-bottom: 0; }'
       // R6.1: top-down vertical reveal (was a right-to-left swipe) — max-height +
       // translateY + opacity; closed state contributes zero height (overflow
       // clips max-height:0) and zero margin (margins aren't clipped, so the
@@ -8116,7 +8122,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       + '.obsidi-note-card-reveal:not(.is-open) { margin-bottom: 0; }'   // closed sliver still has row height; kill the trailing gap it would otherwise leak
       + '.obsidi-note-card-reveal.is-open { max-height: 80px; opacity: 1; transform: translateY(0); }'
       + '@media (prefers-reduced-motion: reduce) { .obsidi-note-card-reveal { transition: none; } }'
-      + '.obsidi-note-card-peoplehead { flex: none; margin-bottom: 4px; }'
+      + '.obsidi-note-card-peoplehead { flex: none; margin-bottom: 0; padding-top: 0; }'   // metrics match the .obsidi-note-card-field label line exactly
       + '.obsidi-note-card-ptbl { width: 100%; }'
       + '.obsidi-note-card-ptbl th { padding: 4px 6px; }'
       + '.obsidi-note-card-ptbl td { padding: 3px 6px; }'
