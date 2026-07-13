@@ -87,3 +87,27 @@ Paul chose: every note↔parent removal (card ✕ AND parent-tab remove/break-aw
 
 ## Status
 Paul holding at drill step 6 (log-rename verification) pending R5.1 fix; full regression sweep deferred until round 5 lands.
+
+---
+
+# Round 6 (2026-07-12 round-5 drill: steps 1-5 PASS) — TO BUILD
+
+Round-5 drill passed 1-5 on 0.1.19. Paul's refinements, all in the note card (`_renderCard`/`_renderPeopleSection`/`_injectNoteCSS`):
+
+## R6.1 People reveal direction: top → downward
+The add-person row's reveal transition becomes a vertical slide (top-down: `max-height` 0→open + `translateY(-8px)`→0 + opacity), replacing the right-to-left swipe. Keep `prefers-reduced-motion: reduce` opt-out.
+
+## R6.2 People reveal button toggles ＋ → ✕
+The header-row reveal button shows ＋/"Add" when closed; once pressed (row visible) it becomes ✕ (close/hide the row). Toggling closed hides the row (draft text in the inputs may persist until re-render; no write). Update `aria-label` per state ('Add person' / 'Close add person').
+
+## R6.3 Tags ＋ styled like the People ＋, same toggle
+The tag button uses the same `docIconLabel`/`doc-detail-hbtn` idiom as the People ＋ and toggles ＋ → ✕ while the input is visible. When open, the tag input fills the REMAINING WIDTH of the Tags label row (layout: label | input flex:1 | ✕ button). No more morph-replace.
+
+## R6.4 Multi-tag comma input
+The tag input accepts multiple tags separated by commas ("a, b, c"). On Enter: each token trimmed, leading '#' stripped, validated against `[A-Za-z][\w/-]*` (invalid tokens → one Notice naming them, valid ones still added), inserted into the OPEN EDITOR BUFFER as ` #a #b #c` (single dispatch; extraction pipeline stays the sole fm.tags writer). Optimistic pill render includes all added tags.
+
+## R6.5 Tag pills strip with Edit
+Confirmed pills sit between two horizontal rules (container with top+bottom `1px solid var(--background-modifier-border)`), with an **Edit** button aligned far right inside the strip. Edit toggles per-pill remove ✕ (button label becomes Done). Removing a pill deletes ALL occurrences of that `#tag` token from the note body via the CM buffer (boundary-aware: preceded by start/whitespace/'(' — same boundary as `extractNoteSkeleton`'s tag regex — and not followed by `[\w/-]`; also consume ONE preceding space when present so no double-spaces accumulate), single dispatch per removal; the extraction/autosave pipeline updates fm.tags; optimistic render drops the pill. If `_cm` is null → Notice, no-op (same as quick-add).
+
+## Out of scope
+Doc-level tag pills on the detail page; encryption; iPad.
