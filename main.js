@@ -5879,7 +5879,7 @@ class SettingsTab extends obsidian.PluginSettingTab {
         "streaming-https tar.gz GitHub flow on desktop (mobile requires this set)."
       )
       .addText(t => t
-        .setPlaceholder("https://github.com/.../obsidi-office-assets-v9.3.1.zip OR obsidi-office-assets-v9.3.1.zip")
+        .setPlaceholder("https://github.com/GrandPa-source/Obsidi-Office/releases/download/v0.1.0-assets/obsidi-office-assets-v9.3.3.zip")
         .setValue(this.plugin.settings.assetZipSource || "")
         .onChange(async v => {
           this.plugin.settings.assetZipSource = v.trim();
