@@ -92,6 +92,34 @@ One consistent rule — "the working sidecar is `node.current + '.md'`, or `node
 - Manual desktop drill: modal upload × 3 formats; Decide Later → tree visibility → metadata edit while pending → Create file; Decide Later → Upload; duplicate-title abort; upload-failure retry (simulated); regression: template create unchanged, New version unchanged on normal containers.
 - Then rides the pending iPad smoke session.
 
+## Round 2 (2026-07-16, from Paul's desktop drill of 0.1.26)
+
+Drill result: steps 1–4, 6, 7 PASS; console clean. Five follow-ups, approved by Paul (title-adopt semantics = full rename, confirmed):
+
+### R2.1 Upload as a 4th format tab
+
+The modal's Format segment gains a fourth button, **Upload**, styled like the other three and acting as a tab. When active, the TEMPLATE section is replaced by a **drag-and-drop / click-to-upload zone** (accept docx/pptx/xlsx; click opens the picker, drop accepts one file). Staged-file chip with ✕ stays. The bottom "Or upload an existing file" row is REMOVED. Switching to a format tab (Document/Presentation/Spreadsheet) clears any staged file — one source of truth per tab. Title still defaults from the filename stem when empty. Create with a staged file → `createDocumentFromUpload` (unchanged). The drop zone is a shared builder reused by R2.2's modal.
+
+### R2.2 Pending Files & Versions redesign
+
+On a pending container: Create file / Upload leave the pane header and render as two **centered, enlarged buttons** below the empty-state hint. **Create file** → the existing `openCreateFileModal` variant. **Upload** → a new small `UploadDropModal` containing only the shared drag-and-drop / click-to-upload zone; a picked/dropped file flows into the title-mismatch gate (R2.5) then `attachFirstVersion`.
+
+### R2.3 No pre-selected template
+
+The modal opens with NO template selected (`templatePath` gains a `null` = nothing-selected state, distinct from `''` = Blank card, which remains selectable). Create is enabled only when a title is present AND (a template card is explicitly selected OR a file is staged on the Upload tab). Switching format tabs resets the selection to null. Applies to the `openCreateFileModal` variant too. Kills the accidental blank-docx create.
+
+### R2.4 Delete-confirm accent title
+
+`DeleteConfirmModal`: the document name shown in the body paragraph renders as a span in the theme accent colour (`var(--text-accent)`).
+
+### R2.5 Title-mismatch prompt on pending upload
+
+When a file is uploaded into a pending container (R2.2 path only — the modal's Upload tab shows the editable Title field, so no prompt there) and the file's stem differs from the container's title (case-insensitive compare), a prompt asks which title the document keeps:
+- **Keep container title** → current behavior (file renamed to `<Base>_V1.0.<ext>`).
+- **Use file name** → FULL rename: container folder renamed to the file's stem (via `fileManager.renameFile` so child paths follow), sidecar `title` updated, attach proceeds against the new folder/base — tree, detail page, and file end consistent. If a sibling folder with that name already exists: Notice and proceed keeping the container title. Invalid-char rule applies to the adopted name.
+- Esc/close → the upload is aborted, nothing written (container stays pending).
+After a folder rename the detail view re-resolves by the NEW path (`openDocDetail({path: newFolder})` — `_refreshNode` looks up the old path and would miss).
+
 ## Alternatives considered
 
 - **B — dedicated marker file** (`_pending.md`): no rename on attach, but a new file convention beside `body.cnote`/`_document.md`, metadata migration on attach (second moving part), conceptual collision with note containers. Rejected.
