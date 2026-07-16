@@ -4306,10 +4306,20 @@ class DocumentDetailView extends obsidian.ItemView {
     return null;
   }
 
+  // One rule (design §5): the working sidecar is <current>.md, or the pending
+  // marker when no file exists yet. All reads/writes of "the document's
+  // metadata" route through this.
+  _workingSidecarPath() {
+    if (!this.node) return null;
+    if (this.node.current) return this.node.path + '/' + this.node.current + '.md';
+    if (this.node.pending) return this.node.path + '/' + this.node.pending;
+    return null;
+  }
   sidecarFor(file) { return this.app.vault.getAbstractFileByPath(this.node.path + '/' + file + '.md'); }
   frontmatter() {
-    if (!this.node || !this.node.current) return {};
-    const sc = this.sidecarFor(this.node.current);
+    const scPath = this._workingSidecarPath();
+    if (!scPath) return {};
+    const sc = this.app.vault.getAbstractFileByPath(scPath);
     if (!sc) return {};
     const cache = this.app.metadataCache.getFileCache(sc);
     return (cache && cache.frontmatter) || {};
@@ -4508,6 +4518,22 @@ class DocumentDetailView extends obsidian.ItemView {
   // ── Tab panes — Files & Versions is real; the rest are filled in T23–T28 ────
   _renderFilesPane(p) {
     const acts = p.createDiv('doc-detail-paneacts');
+    if (this.node.pending && !this.node.current) {
+      // Pending document (design §3): no working file yet — offer both arrivals.
+      const cf = docIconLabel(acts, 'file-plus', 'Create file', { cls: 'doc-detail-hbtn' });
+      cf.onclick = () => this.plugin.openCreateFileModal(this.node, this.leaf);
+      const up = docIconLabel(acts, 'upload', 'Upload', { cls: 'doc-detail-hbtn' });
+      up.onclick = async () => {
+        const picked = await this.plugin._pickOfficeFile();
+        if (!picked) return;
+        const r = await this.plugin.attachFirstVersion(this.node.path, this.node.pending,
+          { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
+        if (r) new obsidian.Notice('Uploaded "' + picked.name + '"');
+        this.render();   // render() recomputes the node — pending → normal document
+      };
+      p.createDiv({ cls: 'doc-detail-stub', text: 'No working file yet — create one or upload an existing document.' });
+      return;
+    }
     const nv = docIconLabel(acts, 'file-plus', 'New version', { cls: 'doc-detail-hbtn' });
     nv.onclick = () => this.plugin.newDocumentVersion(this.node);
     // Current-version button label mirrors the gate (lock-holder edits; others read-only).
@@ -4541,8 +4567,8 @@ class DocumentDetailView extends obsidian.ItemView {
   // appending an activityLog entry in the SAME transaction (one write, one re-render).
   // The metadataCache 'changed' listener re-renders the detail afterward.
   async _mutateSidecar(applyFn, log) {
-    if (!this.node || !this.node.current) return;
-    const scPath = this.node.path + '/' + this.node.current + '.md';
+    const scPath = this._workingSidecarPath();
+    if (!scPath) return;
     let sc = this.app.vault.getAbstractFileByPath(scPath);
     if (!sc) { try { sc = await this.app.vault.create(scPath, '---\n---\n'); } catch (e) { sc = this.app.vault.getAbstractFileByPath(scPath); } }
     if (!sc) return;
@@ -5257,40 +5283,46 @@ class DocumentDetailView extends obsidian.ItemView {
     const footerBar = c.createDiv('doc-detail-footer');
     const footer = footerBar.createDiv('doc-detail-footer-inner');
     const mk = (label, cls, fn) => { const b = footer.createSpan({ text: label, cls: 'doc-detail-btn ' + (cls || '') }); b.onclick = fn; return b; };
-    // Check-out / check-in action — first in the bar, left of "Open in editor".
-    // The button is a normal inline footer item (stays put with the others);
-    // the lock status text is a SEPARATE, absolutely-positioned element in the
-    // reserved bottom strip, so its toggle never reflows the button row.
-    const lock = this.plugin.readLock(this.node);
-    const me = resolveAuthorId();
-    if (!lock.by) {
-      mk('Check out', 'accent', async () => { await this.plugin.setCheckout(this.node); this.render(); });
-    } else if (lock.by === me) {
-      mk('Check in', 'accent', async () => { await this.plugin.clearCheckout(this.node, 'checked in'); this.render(); });
-      footer.createSpan({ cls: 'doc-detail-lockmine doc-detail-lockfoot-txt', text: 'You have this checked out.' });
-    } else {
-      const fb = mk('Force check-in', 'neutral', () => {});
-      let armed = false;   // two-click confirm (iPad-safe; avoids window.confirm)
-      fb.onclick = async () => {
-        if (!armed) { armed = true; fb.setText('Confirm force check-in'); return; }
-        await this.plugin.clearCheckout(this.node, 'force check-in'); this.render();
-      };
-      footer.createSpan({ cls: 'doc-detail-lockother doc-detail-lockfoot-txt', text: 'Checked out by ' + lock.by + (lock.stale ? ' (stale)' : '') });
+    // Pending document (no file yet): every file-bound action (check-out, open,
+    // new version, system app, reveal) is meaningless — the Files & Versions
+    // pane carries Create file / Upload. Keep only the spacer + Delete.
+    const filePending = !!(this.node && this.node.pending && !this.node.current);
+    if (!filePending) {
+      // Check-out / check-in action — first in the bar, left of "Open in editor".
+      // The button is a normal inline footer item (stays put with the others);
+      // the lock status text is a SEPARATE, absolutely-positioned element in the
+      // reserved bottom strip, so its toggle never reflows the button row.
+      const lock = this.plugin.readLock(this.node);
+      const me = resolveAuthorId();
+      if (!lock.by) {
+        mk('Check out', 'accent', async () => { await this.plugin.setCheckout(this.node); this.render(); });
+      } else if (lock.by === me) {
+        mk('Check in', 'accent', async () => { await this.plugin.clearCheckout(this.node, 'checked in'); this.render(); });
+        footer.createSpan({ cls: 'doc-detail-lockmine doc-detail-lockfoot-txt', text: 'You have this checked out.' });
+      } else {
+        const fb = mk('Force check-in', 'neutral', () => {});
+        let armed = false;   // two-click confirm (iPad-safe; avoids window.confirm)
+        fb.onclick = async () => {
+          if (!armed) { armed = true; fb.setText('Confirm force check-in'); return; }
+          await this.plugin.clearCheckout(this.node, 'force check-in'); this.render();
+        };
+        footer.createSpan({ cls: 'doc-detail-lockother doc-detail-lockfoot-txt', text: 'Checked out by ' + lock.by + (lock.stale ? ' (stale)' : '') });
+      }
+      // Label reflects the gate: only the lock-holder can edit the current
+      // version. Everyone else (and the unlocked case) opens read-only.
+      const heldByMe = !!lock.by && lock.by === me;
+      mk(heldByMe ? 'Open in editor' : 'View Read-Only', 'accent', (e) => {
+        if (!this.node.current) return;
+        const filePath = this.node.path + '/' + this.node.current;
+        const newPane = !!(e && (e.metaKey || e.ctrlKey));   // Ctrl/Cmd-click → new pane (escape hatch); plain click swaps this tab
+        this.plugin.openDocInEditor(filePath, this.node.path, newPane, this.leaf);
+      });
+      const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
+      nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
+      mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
     }
-    // Label reflects the gate: only the lock-holder can edit the current
-    // version. Everyone else (and the unlocked case) opens read-only.
-    const heldByMe = !!lock.by && lock.by === me;
-    mk(heldByMe ? 'Open in editor' : 'View Read-Only', 'accent', (e) => {
-      if (!this.node.current) return;
-      const filePath = this.node.path + '/' + this.node.current;
-      const newPane = !!(e && (e.metaKey || e.ctrlKey));   // Ctrl/Cmd-click → new pane (escape hatch); plain click swaps this tab
-      this.plugin.openDocInEditor(filePath, this.node.path, newPane, this.leaf);
-    });
-    const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
-    nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
-    mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
     footer.createSpan({ cls: 'doc-detail-fspace' });
-    mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
+    if (!filePending) mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
     if (this._editMode) {
       const title = this.frontmatter().title || this.node.name;
       const docPath = this.node.path;
@@ -8323,6 +8355,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + node.current + '.md');
       if (sc) return (this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
     }
+    if (node.pending) {
+      const sc = this.app.vault.getAbstractFileByPath(node.path + '/' + node.pending);
+      if (sc) return (this.app.metadataCache.getFileCache(sc) || {}).frontmatter || {};
+    }
     return {};
   }
 
@@ -8649,6 +8685,22 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   openNewDocumentModal(node) {
     if (!node || !node.path) { new obsidian.Notice('No container selected'); return; }
     new NewDocumentModal(this.app, this, node.path, node.name || node.path).open();
+  }
+
+  // Pending "Create file": format + template only — the title is the folder's
+  // name already. onSubmit routes to attachFirstVersion instead of a new folder.
+  openCreateFileModal(node, leaf) {
+    if (!node || !node.pending) { new obsidian.Notice('No pending document selected'); return; }
+    new NewDocumentModal(this.app, this, node.path, node.name, {
+      heading: 'Create file for “' + node.name + '”',
+      lockedTitle: node.name,
+      onSubmit: async ({ ext, templatePath }) => {
+        const r = await this.attachFirstVersion(node.path, node.pending, { ext, templatePath });
+        const dv = leaf && leaf.view;
+        if (r && dv && dv.render) dv.render();
+        return r;
+      },
+    }).open();
   }
 
   // Create a managed document inside a container: a title-named sub-folder holding
