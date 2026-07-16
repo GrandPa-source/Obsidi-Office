@@ -8737,10 +8737,46 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // Pending-container upload arrival (R2.2). Task-3 upgrade adds the
   // title-mismatch gate here; the signature is load-bearing.
   async uploadIntoPending(node, picked, leaf) {
-    const r = await this.attachFirstVersion(node.path, node.pending, { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
+    const stem = picked.name.replace(/\.[^.]+$/, '');
+    let docFolder = node.path, pendingName = node.pending, adopted = false;
+    // R2.5: mismatched titles → the user picks which one the document keeps.
+    if (stem.trim().toLowerCase() !== String(node.name).trim().toLowerCase()) {
+      const choice = await new Promise((resolve) => new TitleKeepModal(this.app, node.name, stem, resolve).open());
+      if (!choice) return;                                   // Esc/close → abort; container stays pending
+      if (choice === 'file') {
+        const clean = stem.trim();
+        if (/[\\/:*?"<>|]/.test(clean)) {
+          new obsidian.Notice('File name contains \\ / : * ? " < > | — keeping "' + node.name + '".');
+        } else {
+          const parentPath = node.path.slice(0, node.path.lastIndexOf('/'));
+          const target = parentPath + '/' + clean;
+          if (this.app.vault.getAbstractFileByPath(target)) {
+            new obsidian.Notice('A document named "' + clean + '" already exists here — keeping "' + node.name + '".');
+          } else {
+            // FULL rename (Paul's ruling): folder, marker base, and title all adopt the file's name.
+            const folder = this.app.vault.getAbstractFileByPath(node.path);
+            await this.app.fileManager.renameFile(folder, target);
+            docFolder = target; adopted = true;
+            const vm = pendingName.match(/_V(\d+\.\d+)/);
+            const newMarkerName = docContainer.documentBaseName(clean) + '_V' + (vm ? vm[1] : '1.0') + '.md';
+            if (pendingName !== newMarkerName) {
+              const sc = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
+              if (sc) { await this.app.fileManager.renameFile(sc, docFolder + '/' + newMarkerName); pendingName = newMarkerName; }
+            }
+            const sc2 = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
+            if (sc2) await this.app.fileManager.processFrontMatter(sc2, (front) => { front.title = clean; });
+          }
+        }
+      }
+    }
+    const r = await this.attachFirstVersion(docFolder, pendingName, { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
     if (r) new obsidian.Notice('Uploaded "' + picked.name + '"');
-    const dv = leaf && leaf.view;
-    if (dv && dv._refreshNode) { dv._refreshNode(); dv.render(); }
+    if (adopted) {
+      await this.openDocDetail({ path: docFolder }, {});     // path changed — _refreshNode would look up the old path
+    } else {
+      const dv = leaf && leaf.view;
+      if (dv && dv._refreshNode) { dv._refreshNode(); dv.render(); }
+    }
     return r;
   }
 
@@ -9543,6 +9579,28 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 // ===========================================================================
 // MetadataModal â€” Obsidian tags + wikilinks for .docx sidecar
 // ===========================================================================
+
+// ===========================================================================
+// TitleKeepModal — R2.5: container title vs uploaded file name; pick one.
+// Resolves 'container' | 'file' | null (Esc/close = abort the upload).
+// ===========================================================================
+class TitleKeepModal extends obsidian.Modal {
+  constructor(app, containerTitle, fileStem, resolve) {
+    super(app); this.a = containerTitle; this.b = fileStem; this._resolve = resolve; this._done = false;
+  }
+  onOpen() {
+    this.contentEl.createEl('h3', { text: 'Which title should this document keep?' });
+    this.contentEl.createEl('p', { text: 'The container is titled "' + this.a + '" but the uploaded file is named "' + this.b + '".' });
+    const row = this.contentEl.createDiv({ attr: { style: 'display:flex; gap:8px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap;' } });
+    const mk = (label, val, cta) => {
+      const b = row.createEl('button', { text: label, cls: cta ? 'mod-cta' : '' });
+      b.onclick = () => { this._done = true; this._resolve(val); this.close(); };
+    };
+    mk('Keep "' + this.a + '"', 'container', true);
+    mk('Use "' + this.b + '"', 'file', false);
+  }
+  onClose() { this.contentEl.empty(); if (!this._done) this._resolve(null); }
+}
 
 // ===========================================================================
 // UploadDropModal — R2.2: pending container's Upload action; just a drop zone.
