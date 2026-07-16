@@ -4546,20 +4546,13 @@ class DocumentDetailView extends obsidian.ItemView {
   _renderFilesPane(p) {
     const acts = p.createDiv('doc-detail-paneacts');
     if (this.node.pending && !this.node.current) {
-      // Pending document (design §3): no working file yet — offer both arrivals.
-      const cf = docIconLabel(acts, 'file-plus', 'Create file', { cls: 'doc-detail-hbtn' });
-      cf.onclick = () => this.plugin.openCreateFileModal(this.node, this.leaf);
-      const up = docIconLabel(acts, 'upload', 'Upload', { cls: 'doc-detail-hbtn' });
-      up.onclick = async () => {
-        const picked = await this.plugin._pickOfficeFile();
-        if (!picked) return;
-        const r = await this.plugin.attachFirstVersion(this.node.path, this.node.pending,
-          { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
-        if (r) new obsidian.Notice('Uploaded "' + picked.name + '"');
-        this._refreshNode();   // pending → normal document: re-resolve before repaint
-        this.render();
-      };
+      // Pending document (R2.2): hint + two centered, enlarged actions.
       p.createDiv({ cls: 'doc-detail-stub', text: 'No working file yet — create one or upload an existing document.' });
+      const actions = p.createDiv('doc-pending-actions');
+      const cf = docIconLabel(actions, 'file-plus', 'Create file', { cls: 'doc-detail-hbtn big' });
+      cf.onclick = () => this.plugin.openCreateFileModal(this.node, this.leaf);
+      const up = docIconLabel(actions, 'upload', 'Upload', { cls: 'doc-detail-hbtn big' });
+      up.onclick = () => new UploadDropModal(this.app, this.plugin, this.node, this.leaf).open();
       return;
     }
     const nv = docIconLabel(acts, 'file-plus', 'New version', { cls: 'doc-detail-hbtn' });
@@ -8741,6 +8734,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }).open();
   }
 
+  // Pending-container upload arrival (R2.2). Task-3 upgrade adds the
+  // title-mismatch gate here; the signature is load-bearing.
+  async uploadIntoPending(node, picked, leaf) {
+    const r = await this.attachFirstVersion(node.path, node.pending, { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
+    if (r) new obsidian.Notice('Uploaded "' + picked.name + '"');
+    const dv = leaf && leaf.view;
+    if (dv && dv._refreshNode) { dv._refreshNode(); dv.render(); }
+    return r;
+  }
+
   // Create a managed document inside a container: a title-named sub-folder holding
   // a first version file (from the chosen template, or the embedded blank) plus a
   // seeded sidecar. Lands on the detail page (NOT the editor). Returns the
@@ -9541,6 +9544,21 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
 // MetadataModal â€” Obsidian tags + wikilinks for .docx sidecar
 // ===========================================================================
 
+// ===========================================================================
+// UploadDropModal — R2.2: pending container's Upload action; just a drop zone.
+// ===========================================================================
+class UploadDropModal extends obsidian.Modal {
+  constructor(app, plugin, node, leaf) { super(app); this.plugin = plugin; this.node = node; this.leaf = leaf; }
+  onOpen() {
+    this.contentEl.createEl('h3', { text: 'Upload file for “' + this.node.name + '”' });
+    buildUploadDropZone(this.plugin, this.contentEl, async (picked) => {
+      this.close();
+      await this.plugin.uploadIntoPending(this.node, picked, this.leaf);
+    });
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 // Type-the-name-to-confirm delete. The Delete button stays disabled until the
 // typed text exactly matches the name. Used for documents (and containers).
 class DeleteConfirmModal extends obsidian.Modal {
@@ -9548,7 +9566,12 @@ class DeleteConfirmModal extends obsidian.Modal {
   onOpen() {
     const { contentEl, titleEl } = this;
     titleEl.setText('Delete ' + this.kind);
-    contentEl.createEl('p', { text: 'This moves "' + this.name + '" and everything inside it (all versions, sidecars, log, forks) to your system trash. Recoverable from there.' });
+    const p1 = contentEl.createEl('p');
+    p1.appendText('This moves ');
+    const nm = p1.createSpan({ text: '"' + this.name + '"' });
+    nm.style.color = 'var(--text-accent)';
+    nm.style.fontWeight = '600';
+    p1.appendText(' and everything inside it (all versions, sidecars, log, forks) to your system trash. Recoverable from there.');
     if (this.relatedDocs.length) {
       const n = this.relatedDocs.length;
       const warn = contentEl.createEl('p', { text: 'This also deletes ' + n + ' related document' + (n === 1 ? '' : 's') + ' bundled in this folder: ' + this.relatedDocs.join(', ') + '. Break them away first if you want to keep them.' });
