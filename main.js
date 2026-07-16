@@ -4172,6 +4172,10 @@ class DocumentBrowserView extends obsidian.ItemView {
       row.addClass('is-doc');
       docIcon(row, 'file-text', 'doc-container-ico');
       row.createSpan({ text: node.name });
+      if (node.pending && !node.current) {
+        const hint = row.createSpan({ text: 'no file', cls: 'doc-container-badge' });
+        hint.style.opacity = '0.7';
+      }
       const status = this.readStatus(node);
       if (status) row.createSpan({ text: status, cls: 'doc-container-badge st-' + status.toLowerCase().replace(/\s+/g, '-') });
       row.onclick = () => { this.plugin.openDocDetail(node); this.markSelected(row); };
@@ -8125,6 +8129,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       '.nav-file-title[data-path$=".pptx.md"], ' +
       '.nav-file-title[data-path$=".xlsx.md"], ' +
       '.nav-file-title[data-path$=".pdf.md"], ' +
+      // Pending markers (<Base>_V1.0.md) are machine files too. Scoped to the
+      // managed root; a user note with "_V" in its name inside the doc root is
+      // the accepted (unlikely) collateral.
+      '.nav-file-title[data-path^="' + (this.settings.docRoot || 'Documents') + '/"][data-path*="_V"][data-path$=".md"], ' +
       '.nav-file-title[data-path$=".cnote"], ' +
       '.nav-file-title[data-path$="/log.md"], ' +
       '.nav-file-title[data-path$="/_document.md"], ' +
@@ -8383,7 +8391,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const paths = this.app.vault.getFiles().map(f => f.path);
     const tree = docContainer.buildTaxonomy(paths, root);
     const docs = [];
-    const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
+    // Pending documents (no file yet) are not migration candidates — their only
+    // sidecar IS the marker; creating _document.md here would be pure noise.
+    const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') { if (!n.pending) docs.push(n); } else walk(n.children); } };
     walk(tree);
 
     let willCreate = 0, willSkip = 0, sidecarsSlimmed = 0;
