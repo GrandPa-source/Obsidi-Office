@@ -834,6 +834,14 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-paneacts { display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px; }
 .doc-detail-hbtn { font-size:11px; color: var(--interactive-accent); cursor:pointer; border:1px solid var(--background-modifier-border); border-radius:5px; padding:3px 9px; }
 .doc-detail-hbtn:hover { border-color: var(--interactive-accent); }
+.doc-upload-zone { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border:2px dashed var(--background-modifier-border); border-radius:8px; padding:28px 16px; cursor:pointer; text-align:center; }
+.doc-upload-zone:hover, .doc-upload-zone.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
+.doc-upload-zone-ico svg { width:28px; height:28px; color: var(--text-muted); }
+.doc-upload-zone-txt { font-size:13px; color: var(--text-normal); }
+.doc-upload-zone-sub { font-size:11px; color: var(--text-faint); }
+.doc-newdoc-upchiprow { display:flex; align-items:center; gap:8px; padding:12px; border:1px solid var(--background-modifier-border); border-radius:8px; }
+.doc-pending-actions { display:flex; gap:16px; justify-content:center; margin:24px 0 12px; }
+.doc-pending-actions .doc-detail-hbtn.big { font-size:13px; padding:10px 22px; }
 .doc-detail-stub { font-size:11px; color: var(--text-faint); font-style:italic; padding:8px 4px; }
 .doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow: 0 -4px 12px rgba(0,0,0,.12); }
 .doc-detail-footer-inner { position:relative; max-width:1100px; margin:0 auto; display:flex; align-items:center; gap:8px; padding:10px 18px 26px; flex-wrap:wrap; }
@@ -10056,6 +10064,28 @@ class NoteRemoveConfirmModal extends obsidian.Modal {
 // NewDocumentModal — B1 create-side: title + format + template → new document
 // ===========================================================================
 
+// Shared drag-and-drop / click-to-upload zone for office files (R2.1/R2.2).
+// Click opens the OS picker; a single dropped file is read the same way.
+// onPicked receives {name, ext, bytes}; invalid types Notice and are ignored.
+function buildUploadDropZone(plugin, parent, onPicked) {
+  const zone = parent.createDiv('doc-upload-zone');
+  const ico = zone.createDiv('doc-upload-zone-ico');
+  obsidian.setIcon(ico, 'upload');
+  zone.createDiv({ cls: 'doc-upload-zone-txt', text: 'Drop a file here, or click to choose' });
+  zone.createDiv({ cls: 'doc-upload-zone-sub', text: '.docx · .pptx · .xlsx' });
+  const readFile = async (f) => {
+    const ext = (f.name.split('.').pop() || '').toLowerCase();
+    if (!['docx', 'pptx', 'xlsx'].includes(ext)) { new obsidian.Notice('Only .docx, .pptx, or .xlsx files can be uploaded.'); return; }
+    try { onPicked({ name: f.name, ext, bytes: await f.arrayBuffer() }); }
+    catch (e) { new obsidian.Notice('Could not read file: ' + (e && e.message || e)); }
+  };
+  zone.onclick = async () => { const picked = await plugin._pickOfficeFile(); if (picked) onPicked(picked); };
+  zone.ondragover = (e) => { e.preventDefault(); zone.addClass('drag'); };
+  zone.ondragleave = () => zone.removeClass('drag');
+  zone.ondrop = (e) => { e.preventDefault(); zone.removeClass('drag'); const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) readFile(f); };
+  return zone;
+}
+
 class NewDocumentModal extends obsidian.Modal {
   constructor(app, plugin, containerPath, containerLabel, opts) {
     super(app);
@@ -10063,7 +10093,8 @@ class NewDocumentModal extends obsidian.Modal {
     this.containerPath = containerPath;
     this.containerLabel = containerLabel || containerPath;
     this.ext = 'docx';
-    this.templatePath = '';   // '' = Blank (embedded fallback)
+    this.templatePath = null;  // null = NOTHING selected (R2.3); '' = the Blank card
+    this.uploadTab = false;    // R2.1: 4th format tab
     this.onSubmit = (opts && opts.onSubmit) || null;     // optional override (loose related doc)
     this.heading = (opts && opts.heading) || null;
     this.lockedTitle = (opts && opts.lockedTitle) || null;   // pending "Create file": title fixed to the folder name
@@ -10094,41 +10125,25 @@ class NewDocumentModal extends obsidian.Modal {
     const seg = fmtWrap.createDiv('doc-newdoc-formats');
     seg.style.cssText = 'display:flex;gap:6px;margin:4px 0 12px;';
     this._fmtBtns = {};
-    [['docx', 'Document'], ['pptx', 'Presentation'], ['xlsx', 'Spreadsheet']].forEach(([ext, label]) => {
+    const tabs = [['docx', 'Document'], ['pptx', 'Presentation'], ['xlsx', 'Spreadsheet']];
+    if (!this.onSubmit) tabs.push(['upload', 'Upload']);   // R2.1: only the plain container-create modal uploads
+    tabs.forEach(([key, label]) => {
       const b = seg.createEl('button', { text: label });
       b.style.cssText = 'flex:1;padding:6px;';
       b.addEventListener('click', () => {
-        this.ext = ext; this.templatePath = '';
-        this._renderFormats(); this._renderTemplates();
+        if (key === 'upload') { this.uploadTab = true; }
+        else { this.uploadTab = false; this.ext = key; this.staged = null; }   // leaving Upload clears the staged file
+        this.templatePath = null;                                              // R2.3: no selection survives a tab switch
+        this._renderFormats(); this._renderTemplates(); this._syncCreateState();
       });
-      this._fmtBtns[ext] = b;
+      this._fmtBtns[key] = b;
     });
 
     // Template grid
     const tmplWrap = contentEl.createDiv();
-    tmplWrap.createEl('label', { text: 'Template', cls: 'doc-newdoc-label' });
+    this._tmplLabel = tmplWrap.createEl('label', { text: 'Template', cls: 'doc-newdoc-label' });
     this._tmplGrid = tmplWrap.createDiv('template-grid');
     this._tmplGrid.style.margin = '4px 0 12px';
-
-    // Upload an existing file — alternative first version (2026-07-16 design).
-    // Only on the plain container-create modal: the loose-related-doc flow and
-    // the pending "Create file" variant both pass onSubmit and must not show it.
-    if (!this.onSubmit) {
-      const upWrap = contentEl.createDiv();
-      upWrap.createEl('label', { text: 'Or upload an existing file', cls: 'doc-newdoc-label' });
-      const upRow = upWrap.createDiv();
-      upRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0 12px;';
-      const upBtn = upRow.createEl('button', { text: 'Upload file…' });
-      upBtn.style.cssText = 'padding:6px 10px;';
-      this._upChip = upRow.createSpan();
-      upBtn.addEventListener('click', async () => {
-        const picked = await this.plugin._pickOfficeFile();
-        if (!picked) return;
-        this.staged = picked;
-        if (!this.titleInput.value.trim()) this.titleInput.value = picked.name.replace(/\.[^.]+$/, '');
-        this._renderStaged(); this._syncCreateState();
-      });
-    }
 
     // Buttons
     const btnRow = contentEl.createEl('div', { attr: { style: 'display:flex;gap:8px;justify-content:flex-end;' } });
@@ -10143,17 +10158,35 @@ class NewDocumentModal extends obsidian.Modal {
     this._renderFormats();
     this._renderTemplates();
     this._syncCreateState();
-    this._renderStaged();
     this.titleInput.focus();
   }
 
   _renderFormats() {
-    Object.entries(this._fmtBtns).forEach(([ext, b]) => b.toggleClass('mod-cta', ext === this.ext));
+    Object.entries(this._fmtBtns).forEach(([key, b]) =>
+      b.toggleClass('mod-cta', this.uploadTab ? key === 'upload' : key === this.ext));
   }
 
   _renderTemplates() {
     const grid = this._tmplGrid;
     grid.empty();
+    if (this._tmplLabel) this._tmplLabel.setText(this.uploadTab ? 'Upload' : 'Template');
+    if (this.uploadTab) {                                   // R2.1: tab body = drop zone / staged chip
+      if (this.staged) {
+        const chip = grid.createDiv('doc-newdoc-upchiprow');
+        chip.createSpan({ text: this.staged.name });
+        const x = chip.createSpan({ text: ' ✕' });
+        x.style.cursor = 'pointer';
+        x.setAttr('title', 'Clear staged file');
+        x.onclick = () => { this.staged = null; this._renderTemplates(); this._syncCreateState(); };
+      } else {
+        buildUploadDropZone(this.plugin, grid, (picked) => {
+          this.staged = picked;
+          if (!this.titleInput.value.trim()) this.titleInput.value = picked.name.replace(/\.[^.]+$/, '');
+          this._renderTemplates(); this._syncCreateState();
+        });
+      }
+      return;
+    }
     const root = this.plugin.settings.templatesRoot || '_obsidi-office-templates';
     const dir = root + '/' + this.ext;
     const blankName = ({ docx: 'Blank Document', pptx: 'Blank Presentation', xlsx: 'Blank Spreadsheet' })[this.ext] || 'Blank Document';
@@ -10164,38 +10197,23 @@ class NewDocumentModal extends obsidian.Modal {
       if (f.path.startsWith(dir + '/') && f.extension === this.ext) extras.push({ name: f.basename, path: f.path, icon: tmplIcon });
     }
     extras.sort((a, b) => a.name.localeCompare(b.name));
-    const cards = [{ name: blankName, path: '', icon: blankIcon }, ...extras];   // Blank first
+    const cards = [{ name: blankName, path: '', icon: blankIcon }, ...extras];   // Blank first — selectable, NOT pre-selected (R2.3)
     for (const c of cards) {
       const card = grid.createEl('div', { cls: 'template-card' });
       card.createEl('div', { cls: 'icon', text: c.icon });
       card.createEl('div', { cls: 'label', text: c.name });
-      card.toggleClass('is-selected', c.path === this.templatePath);
+      card.toggleClass('is-selected', this.templatePath !== null && c.path === this.templatePath);
       card.addEventListener('click', () => { this.templatePath = c.path; this._renderTemplates(); this._syncCreateState(); });
     }
   }
 
   _syncCreateState() {
-    const ok = !!this.titleInput.value.trim();
+    const okTitle = !!this.titleInput.value.trim();
+    const okSource = this.uploadTab ? !!this.staged : this.templatePath !== null;   // R2.3
+    const ok = okTitle && okSource;
     this._createBtn.disabled = !ok;
     this._createBtn.style.opacity = ok ? '' : '0.5';
-    if (this._laterBtn) { this._laterBtn.disabled = !ok; this._laterBtn.style.opacity = ok ? '' : '0.5'; }
-  }
-
-  _renderStaged() {
-    if (!this._upChip) return;
-    this._upChip.empty();
-    if (this.staged) {
-      this._upChip.createSpan({ text: this.staged.name });
-      const x = this._upChip.createSpan({ text: ' ✕' });
-      x.style.cursor = 'pointer';
-      x.setAttr('title', 'Clear staged file');
-      x.onclick = () => { this.staged = null; this._renderStaged(); this._syncCreateState(); };
-    }
-    // Format + template choose the new file's content — irrelevant while a real
-    // file is staged (format then derives from the staged extension).
-    const dis = !!this.staged;
-    Object.values(this._fmtBtns || {}).forEach(b => { b.disabled = dis; b.style.opacity = dis ? '0.4' : ''; });
-    if (this._tmplGrid) { this._tmplGrid.style.opacity = dis ? '0.4' : ''; this._tmplGrid.style.pointerEvents = dis ? 'none' : ''; }
+    if (this._laterBtn) { this._laterBtn.disabled = !okTitle; this._laterBtn.style.opacity = okTitle ? '' : '0.5'; }   // Decide Later needs a title only
   }
 
   async _decideLater() {
@@ -10211,14 +10229,14 @@ class NewDocumentModal extends obsidian.Modal {
     if (!title) { this.titleInput.focus(); return; }
     this._createBtn.disabled = true;
     let result;
-    if (this.staged) {
+    if (this.uploadTab && this.staged) {
       result = await this.plugin.createDocumentFromUpload({
         containerPath: this.containerPath, title,
         name: this.staged.name, ext: this.staged.ext, bytes: this.staged.bytes });
     } else {
       result = this.onSubmit
-        ? await this.onSubmit({ title, ext: this.ext, templatePath: this.templatePath })
-        : await this.plugin.createDocumentInContainer({ containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath });
+        ? await this.onSubmit({ title, ext: this.ext, templatePath: this.templatePath || '' })
+        : await this.plugin.createDocumentInContainer({ containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath || '' });
     }
     if (result) this.close();        // created → close; on failure keep modal open
     else this._syncCreateState();
