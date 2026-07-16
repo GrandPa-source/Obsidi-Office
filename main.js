@@ -8712,6 +8712,148 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
   }
 
+  // ── Upload first version + Decide Later (2026-07-16 design) ───────────────────
+
+  // OS file picker for an office file. Resolves {name, ext, bytes} or null on
+  // cancel/invalid. tap-to-pick (hidden input[type=file]) works on desktop AND
+  // iPad — no drag requirement (cf. P23 drop-zone pattern).
+  _pickOfficeFile() {
+    return new Promise((resolve) => {
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.accept = '.docx,.pptx,.xlsx';
+      input.oncancel = () => resolve(null);
+      input.onchange = async () => {
+        const f = input.files && input.files[0];
+        if (!f) { resolve(null); return; }
+        const ext = (f.name.split('.').pop() || '').toLowerCase();
+        if (!['docx', 'pptx', 'xlsx'].includes(ext)) {
+          new obsidian.Notice('Only .docx, .pptx, or .xlsx files can be uploaded.');
+          resolve(null); return;
+        }
+        try { resolve({ name: f.name, ext, bytes: await f.arrayBuffer() }); }
+        catch (e) { new obsidian.Notice('Could not read file: ' + (e && e.message || e)); resolve(null); }
+      };
+      input.click();
+    });
+  }
+
+  // "Decide Later" — create the container with a title only. The seeded sidecar
+  // <Base>_V1.0.md IS the pending marker buildTaxonomy recognizes; when the file
+  // arrives (attachFirstVersion) the sidecar is renamed, never migrated.
+  async createPendingDocument({ containerPath, title, openDetail = true }) {
+    const cleanTitle = (title || '').trim();
+    if (!cleanTitle) { new obsidian.Notice('Enter a document title'); return; }
+    if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
+    const docFolder = containerPath + '/' + cleanTitle;
+    if (this.app.vault.getAbstractFileByPath(docFolder)) {
+      new obsidian.Notice('A document named "' + cleanTitle + '" already exists here.'); return;
+    }
+    const base = docContainer.documentBaseName(cleanTitle);
+    const scPath = docFolder + '/' + docContainer.firstVersionName(base, 'md');   // <Base>_V1.0.md
+    try {
+      await this.app.vault.createFolder(docFolder);
+      const nowIso = new Date().toISOString();
+      const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      await this.app.vault.create(scPath, '---\ncreated: "' + nowIso + '"\nmodified: "' + nowIso + '"\n---\n');
+      const sc = this.app.vault.getAbstractFileByPath(scPath);
+      if (sc) {
+        await this.app.fileManager.processFrontMatter(sc, (front) => {
+          if (!front.title) front.title = cleanTitle;
+          if (!front.status) front.status = 'Draft';
+          if (!front.originationDate) front.originationDate = today;
+        });
+      }
+      this.appendLog(docFolder, 'created (no file yet)');
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER).forEach(l => l.view.render && l.view.render());
+      if (openDetail) {
+        await this._awaitSidecarCache(scPath, 'title');
+        await this.openDocDetail({ path: docFolder }, { edit: true, fresh: true });   // edit mode; Cancel discards the unsaved new doc
+        const leftSplit = this.app.workspace.leftSplit;
+        if (leftSplit && !leftSplit.collapsed) leftSplit.collapse();
+        new obsidian.Notice('Created "' + cleanTitle + '" — no file yet');
+      }
+      return docFolder;
+    } catch (e) {
+      new obsidian.Notice('Could not create document: ' + (e && e.message ? e.message : e));
+      return;
+    }
+  }
+
+  // One choke point for ALL first-version arrivals (modal upload, pending
+  // "Create file", pending "Upload"). Rename-first ordering: if the binary
+  // write fails, the container is STILL pending (PENDING_SIDECAR_RE accepts the
+  // ext-named sidecar) and the attach is retryable.
+  // NOTE: designated future fidelity-layer ingest seam (plaintext conversion
+  // hooks here later — see spec §4; explicitly out of scope in this build).
+  async attachFirstVersion(docFolder, pendingName, { ext, bytes, templatePath, originalName, openDetail = false }) {
+    const m = String(pendingName || '').match(/^(.*)_V(\d+\.\d+)(?:\.[a-z0-9]+)?\.md$/i);
+    if (!m) { new obsidian.Notice('Not a pending document.'); return; }
+    const fileName = m[1] + '_V' + m[2] + '.' + ext;                 // e.g. Policy_V1.0.docx
+    const filePath = docFolder + '/' + fileName;
+    const oldScPath = docFolder + '/' + pendingName;
+    const newScPath = filePath + '.md';
+    if (this.app.vault.getAbstractFileByPath(filePath)) {
+      new obsidian.Notice('File "' + fileName + '" already exists.'); return;
+    }
+    try {
+      // 1) Rename the sidecar FIRST — on later failure the container stays pending.
+      const sc = this.app.vault.getAbstractFileByPath(oldScPath);
+      if (sc && oldScPath !== newScPath) await this.app.fileManager.renameFile(sc, newScPath);
+      // 2) Write the office file. createBinary-before-open — the established
+      //    iPad-safe ordering (Capacitor adapter registry races otherwise).
+      let buffer = bytes;
+      if (!buffer) {
+        if (templatePath && await this.app.vault.adapter.exists(templatePath)) {
+          buffer = await this.app.vault.adapter.readBinary(templatePath);
+        } else {
+          const blankB64 = ({ docx: BLANK_DOCX_BASE64, pptx: BLANK_PPTX_BASE64, xlsx: BLANK_XLSX_BASE64 })[ext] || BLANK_DOCX_BASE64;
+          buffer = Uint8Array.from(atob(blankB64), (c) => c.charCodeAt(0)).buffer;
+        }
+      }
+      const tfile = await this.app.vault.createBinary(filePath, buffer);
+      // 3) Sidecar gains the office link now that the file exists (no-op create
+      //    covers the hand-dropped-marker edge where no sidecar file existed).
+      await this._autoCreateSidecar(tfile);
+      const sc2 = this.app.vault.getAbstractFileByPath(newScPath);
+      if (sc2) {
+        await this.app.fileManager.processFrontMatter(sc2, (front) => {
+          front.docx = '[[' + tfile.name + ']]';
+          front.modified = new Date().toISOString();
+        });
+      }
+      this.appendLog(docFolder, originalName
+        ? 'first version uploaded — "' + originalName + '"'
+        : 'first version created', fileName);
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER).forEach(l => l.view.render && l.view.render());
+      if (openDetail) {
+        await this._awaitSidecarCache(newScPath, 'title');
+        await this.openDocDetail({ path: docFolder }, { edit: true, fresh: true });
+        const leftSplit = this.app.workspace.leftSplit;
+        if (leftSplit && !leftSplit.collapsed) leftSplit.collapse();
+      }
+      return filePath;
+    } catch (e) {
+      new obsidian.Notice('Could not add file: ' + (e && e.message ? e.message : e) + ' — the document is still awaiting its file.');
+      return;
+    }
+  }
+
+  // Modal upload path = pending create + attach in sequence, so exactly ONE code
+  // path writes first versions from bytes. Detail page opens once, at the end.
+  async createDocumentFromUpload({ containerPath, title, name, ext, bytes }) {
+    const docFolder = await this.createPendingDocument({ containerPath, title, openDetail: false });
+    if (!docFolder) return;
+    const base = docContainer.documentBaseName((title || '').trim());
+    const filePath = await this.attachFirstVersion(docFolder, docContainer.firstVersionName(base, 'md'),
+      { ext, bytes, originalName: name, openDetail: true });
+    if (filePath) new obsidian.Notice('Created "' + (title || '').trim() + '" from "' + name + '"');
+    else await this.openDocDetail({ path: docFolder }, {});   // attach failed → show the pending page (retry from its pane)
+    return docFolder;   // folder exists either way — modal may close
+  }
+
   // Create a LOOSE related office file inside an existing document's folder (so the
   // taxonomy treats it as an attachment, not a version). Seeds a sidecar with the
   // looseDoc marker that gates "Break away". Returns the file path on success.
