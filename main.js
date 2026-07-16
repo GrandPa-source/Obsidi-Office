@@ -836,6 +836,7 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-hbtn:hover { border-color: var(--interactive-accent); }
 .doc-upload-zone { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border:2px dashed var(--background-modifier-border); border-radius:8px; padding:28px 16px; cursor:pointer; text-align:center; }
 .doc-upload-zone:hover, .doc-upload-zone.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
+.doc-upload-zone:focus-visible { border-color: var(--interactive-accent); outline: none; }
 .doc-upload-zone-ico svg { width:28px; height:28px; color: var(--text-muted); }
 .doc-upload-zone-txt { font-size:13px; color: var(--text-normal); }
 .doc-upload-zone-sub { font-size:11px; color: var(--text-faint); }
@@ -10069,6 +10070,9 @@ class NoteRemoveConfirmModal extends obsidian.Modal {
 // onPicked receives {name, ext, bytes}; invalid types Notice and are ignored.
 function buildUploadDropZone(plugin, parent, onPicked) {
   const zone = parent.createDiv('doc-upload-zone');
+  zone.setAttr('tabindex', '0');
+  zone.setAttr('role', 'button');
+  zone.setAttr('aria-label', 'Upload a docx, pptx, or xlsx file');
   const ico = zone.createDiv('doc-upload-zone-ico');
   obsidian.setIcon(ico, 'upload');
   zone.createDiv({ cls: 'doc-upload-zone-txt', text: 'Drop a file here, or click to choose' });
@@ -10080,6 +10084,7 @@ function buildUploadDropZone(plugin, parent, onPicked) {
     catch (e) { new obsidian.Notice('Could not read file: ' + (e && e.message || e)); }
   };
   zone.onclick = async () => { const picked = await plugin._pickOfficeFile(); if (picked) onPicked(picked); };
+  zone.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); zone.click(); } };
   zone.ondragover = (e) => { e.preventDefault(); zone.addClass('drag'); };
   zone.ondragleave = () => zone.removeClass('drag');
   zone.ondrop = (e) => { e.preventDefault(); zone.removeClass('drag'); const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) readFile(f); };
@@ -10227,6 +10232,11 @@ class NewDocumentModal extends obsidian.Modal {
   async _submit() {
     const title = this.titleInput.value.trim();
     if (!title) { this.titleInput.focus(); return; }
+    // R2.3 gate — Enter in the title field must not bypass the disabled Create
+    // button: a template must be explicitly selected (or a file staged on the
+    // Upload tab) before anything is created.
+    const okSource = this.uploadTab ? !!this.staged : this.templatePath !== null;
+    if (!okSource) return;
     this._createBtn.disabled = true;
     let result;
     if (this.uploadTab && this.staged) {
