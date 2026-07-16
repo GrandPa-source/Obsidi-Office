@@ -4264,7 +4264,8 @@ class DocumentDetailView extends obsidian.ItemView {
       // don't blow away an in-progress note draft, metadata edit, or stakeholder-row edit.
       // (Related-docs edit is NOT guarded — its add/remove are atomic writes and rely on this
       //  listener to repaint the fresh list; only a half-typed search box is transient.)
-      const relevant = this.node && this.node.current && f && f.path === this.node.path + '/' + this.node.current + '.md';
+      const wp = this._workingSidecarPath();
+      const relevant = this.node && wp && f && f.path === wp;
       if (this._composerDirty || this._editMode || this._stakeEdit) {
         if (relevant) this._staleWhileGuarded = true;   // catch-up: consumed by blur/leaf-switch below
         return;
@@ -7216,6 +7217,10 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         if (!(file instanceof obsidian.TFile)) return;
         if (file.extension !== "md") return;
         if (/\.(docx|pptx|xlsx)\.md$/i.test(file.path)) return;  // office sidecar
+        // Pending doc markers (<Base>_V1.0.md under the managed root) are machine
+        // sidecars too — skip normalization so a later attach+rename yields a
+        // sidecar identical to a template-created one.
+        if (file.path.startsWith((this.settings.docRoot || 'Documents') + '/') && docContainer.PENDING_SIDECAR_RE.test(file.name)) return;
         if (file.name === docContainer.DOCUMENT_MD_NAME) return;  // machine-written note/doc skeleton
         if (file.name === docContainer.LOG_MD_NAME) return;       // machine-written activity log (parseLogBody owns its format)
         const root = this.settings.templatesRoot || "_obsidi-office-templates";
