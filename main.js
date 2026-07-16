@@ -9985,6 +9985,8 @@ class NewDocumentModal extends obsidian.Modal {
     this.templatePath = '';   // '' = Blank (embedded fallback)
     this.onSubmit = (opts && opts.onSubmit) || null;     // optional override (loose related doc)
     this.heading = (opts && opts.heading) || null;
+    this.lockedTitle = (opts && opts.lockedTitle) || null;   // pending "Create file": title fixed to the folder name
+    this.staged = null;                                      // {name, ext, bytes} from "Upload file…"
   }
 
   onOpen() {
@@ -9998,6 +10000,7 @@ class NewDocumentModal extends obsidian.Modal {
     this.titleInput = titleWrap.createEl('input', { type: 'text' });
     this.titleInput.style.cssText = 'width:100%;padding:8px;margin:4px 0 12px;';
     this.titleInput.placeholder = 'Document title';
+    if (this.lockedTitle) { this.titleInput.value = this.lockedTitle; this.titleInput.disabled = true; }
     this.titleInput.addEventListener('input', () => this._syncCreateState());
     this.titleInput.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') this._submit();
@@ -10026,15 +10029,40 @@ class NewDocumentModal extends obsidian.Modal {
     this._tmplGrid = tmplWrap.createDiv('template-grid');
     this._tmplGrid.style.margin = '4px 0 12px';
 
+    // Upload an existing file — alternative first version (2026-07-16 design).
+    // Only on the plain container-create modal: the loose-related-doc flow and
+    // the pending "Create file" variant both pass onSubmit and must not show it.
+    if (!this.onSubmit) {
+      const upWrap = contentEl.createDiv();
+      upWrap.createEl('label', { text: 'Or upload an existing file', cls: 'doc-newdoc-label' });
+      const upRow = upWrap.createDiv();
+      upRow.style.cssText = 'display:flex;align-items:center;gap:8px;margin:4px 0 12px;';
+      const upBtn = upRow.createEl('button', { text: 'Upload file…' });
+      upBtn.style.cssText = 'padding:6px 10px;';
+      this._upChip = upRow.createSpan();
+      upBtn.addEventListener('click', async () => {
+        const picked = await this.plugin._pickOfficeFile();
+        if (!picked) return;
+        this.staged = picked;
+        if (!this.titleInput.value.trim()) this.titleInput.value = picked.name.replace(/\.[^.]+$/, '');
+        this._renderStaged(); this._syncCreateState();
+      });
+    }
+
     // Buttons
     const btnRow = contentEl.createEl('div', { attr: { style: 'display:flex;gap:8px;justify-content:flex-end;' } });
     btnRow.createEl('button', { text: 'Cancel' }).addEventListener('click', () => this.close());
+    if (!this.onSubmit) {
+      this._laterBtn = btnRow.createEl('button', { text: 'Decide Later' });
+      this._laterBtn.addEventListener('click', () => this._decideLater());
+    }
     this._createBtn = btnRow.createEl('button', { text: 'Create', cls: 'mod-cta' });
     this._createBtn.addEventListener('click', () => this._submit());
 
     this._renderFormats();
     this._renderTemplates();
     this._syncCreateState();
+    this._renderStaged();
     this.titleInput.focus();
   }
 
@@ -10069,15 +10097,48 @@ class NewDocumentModal extends obsidian.Modal {
     const ok = !!this.titleInput.value.trim();
     this._createBtn.disabled = !ok;
     this._createBtn.style.opacity = ok ? '' : '0.5';
+    if (this._laterBtn) { this._laterBtn.disabled = !ok; this._laterBtn.style.opacity = ok ? '' : '0.5'; }
+  }
+
+  _renderStaged() {
+    if (!this._upChip) return;
+    this._upChip.empty();
+    if (this.staged) {
+      this._upChip.createSpan({ text: this.staged.name });
+      const x = this._upChip.createSpan({ text: ' ✕' });
+      x.style.cursor = 'pointer';
+      x.setAttr('title', 'Clear staged file');
+      x.onclick = () => { this.staged = null; this._renderStaged(); this._syncCreateState(); };
+    }
+    // Format + template choose the new file's content — irrelevant while a real
+    // file is staged (format then derives from the staged extension).
+    const dis = !!this.staged;
+    Object.values(this._fmtBtns || {}).forEach(b => { b.disabled = dis; b.style.opacity = dis ? '0.4' : ''; });
+    if (this._tmplGrid) { this._tmplGrid.style.opacity = dis ? '0.4' : ''; this._tmplGrid.style.pointerEvents = dis ? 'none' : ''; }
+  }
+
+  async _decideLater() {
+    const title = this.titleInput.value.trim();
+    if (!title) { this.titleInput.focus(); return; }
+    this._laterBtn.disabled = true;
+    const result = await this.plugin.createPendingDocument({ containerPath: this.containerPath, title });
+    if (result) this.close(); else this._syncCreateState();
   }
 
   async _submit() {
     const title = this.titleInput.value.trim();
     if (!title) { this.titleInput.focus(); return; }
     this._createBtn.disabled = true;
-    const result = this.onSubmit
-      ? await this.onSubmit({ title, ext: this.ext, templatePath: this.templatePath })
-      : await this.plugin.createDocumentInContainer({ containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath });
+    let result;
+    if (this.staged) {
+      result = await this.plugin.createDocumentFromUpload({
+        containerPath: this.containerPath, title,
+        name: this.staged.name, ext: this.staged.ext, bytes: this.staged.bytes });
+    } else {
+      result = this.onSubmit
+        ? await this.onSubmit({ title, ext: this.ext, templatePath: this.templatePath })
+        : await this.plugin.createDocumentInContainer({ containerPath: this.containerPath, title, ext: this.ext, templatePath: this.templatePath });
+    }
     if (result) this.close();        // created → close; on failure keep modal open
     else this._syncCreateState();
   }
