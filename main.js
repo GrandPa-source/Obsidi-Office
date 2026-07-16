@@ -4306,6 +4306,19 @@ class DocumentDetailView extends obsidian.ItemView {
     return null;
   }
 
+  // Recompute this.node from the vault. render() only repaints the cached
+  // node object, and taxonomy fields (pending/current/files) are one-shot
+  // snapshot values — so when THIS view's own action changes the taxonomy
+  // shape (pending → normal document after a first-version attach), the node
+  // must be re-resolved before repainting. Deliberately narrower than
+  // setState: preserves edit mode, tabs, drafts, and scroll.
+  _refreshNode() {
+    if (!this.node) return;
+    const paths = this.app.vault.getFiles().map(f => f.path);
+    const fresh = this.findDoc(docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot), this.node.path);
+    if (fresh) this.node = fresh;
+  }
+
   // One rule (design §5): the working sidecar is <current>.md, or the pending
   // marker when no file exists yet. All reads/writes of "the document's
   // metadata" route through this.
@@ -4529,7 +4542,8 @@ class DocumentDetailView extends obsidian.ItemView {
         const r = await this.plugin.attachFirstVersion(this.node.path, this.node.pending,
           { ext: picked.ext, bytes: picked.bytes, originalName: picked.name });
         if (r) new obsidian.Notice('Uploaded "' + picked.name + '"');
-        this.render();   // render() recomputes the node — pending → normal document
+        this._refreshNode();   // pending → normal document: re-resolve before repaint
+        this.render();
       };
       p.createDiv({ cls: 'doc-detail-stub', text: 'No working file yet — create one or upload an existing document.' });
       return;
@@ -8697,7 +8711,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       onSubmit: async ({ ext, templatePath }) => {
         const r = await this.attachFirstVersion(node.path, node.pending, { ext, templatePath });
         const dv = leaf && leaf.view;
-        if (r && dv && dv.render) dv.render();
+        if (r && dv && dv._refreshNode) { dv._refreshNode(); dv.render(); }
         return r;
       },
     }).open();
