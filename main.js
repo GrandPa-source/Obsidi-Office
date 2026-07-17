@@ -834,7 +834,7 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-paneacts { display:flex; justify-content:flex-end; gap:6px; margin-bottom:8px; }
 .doc-detail-hbtn { font-size:11px; color: var(--interactive-accent); cursor:pointer; border:1px solid var(--background-modifier-border); border-radius:5px; padding:3px 9px; }
 .doc-detail-hbtn:hover { border-color: var(--interactive-accent); }
-.doc-upload-zone { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border:2px dashed var(--background-modifier-border); border-radius:8px; padding:28px 16px; cursor:pointer; text-align:center; }
+.doc-upload-zone { flex:1 1 100%; width:100%; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; border:2px dashed var(--background-modifier-border); border-radius:8px; padding:20px 16px; cursor:pointer; text-align:center; }
 .doc-upload-zone:hover, .doc-upload-zone.drag { border-color: var(--interactive-accent); background: var(--background-modifier-hover); }
 .doc-upload-zone:focus-visible { border-color: var(--interactive-accent); outline: none; }
 .doc-upload-zone-ico svg { width:28px; height:28px; color: var(--text-muted); }
@@ -4546,13 +4546,14 @@ class DocumentDetailView extends obsidian.ItemView {
   _renderFilesPane(p) {
     const acts = p.createDiv('doc-detail-paneacts');
     if (this.node.pending && !this.node.current) {
-      // Pending document (R2.2): hint + two centered, enlarged actions.
-      p.createDiv({ cls: 'doc-detail-stub', text: 'No working file yet — create one or upload an existing document.' });
+      // Pending document (R2.2): two centered, enlarged actions; hint centered beneath.
       const actions = p.createDiv('doc-pending-actions');
       const cf = docIconLabel(actions, 'file-plus', 'Create file', { cls: 'doc-detail-hbtn big' });
       cf.onclick = () => this.plugin.openCreateFileModal(this.node, this.leaf);
       const up = docIconLabel(actions, 'upload', 'Upload', { cls: 'doc-detail-hbtn big' });
       up.onclick = () => new UploadDropModal(this.app, this.plugin, this.node, this.leaf).open();
+      const hint = p.createDiv({ cls: 'doc-detail-stub', text: 'No working file yet — create one or upload an existing document.' });
+      hint.style.textAlign = 'center';
       return;
     }
     const nv = docIconLabel(acts, 'file-plus', 'New version', { cls: 'doc-detail-hbtn' });
