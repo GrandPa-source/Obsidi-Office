@@ -8745,26 +8745,38 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (!choice) return;                                   // Esc/close → abort; container stays pending
       if (choice === 'file') {
         const clean = stem.trim();
-        if (/[\\/:*?"<>|]/.test(clean)) {
+        if (!clean) {
+          new obsidian.Notice('File name is empty — keeping "' + node.name + '".');
+        } else if (/[\\/:*?"<>|]/.test(clean)) {
           new obsidian.Notice('File name contains \\ / : * ? " < > | — keeping "' + node.name + '".');
         } else {
           const parentPath = node.path.slice(0, node.path.lastIndexOf('/'));
           const target = parentPath + '/' + clean;
+          const folder = this.app.vault.getAbstractFileByPath(node.path);
           if (this.app.vault.getAbstractFileByPath(target)) {
             new obsidian.Notice('A document named "' + clean + '" already exists here — keeping "' + node.name + '".');
+          } else if (!folder) {
+            new obsidian.Notice('Could not adopt the file name — keeping "' + node.name + '".');
           } else {
-            // FULL rename (Paul's ruling): folder, marker base, and title all adopt the file's name.
-            const folder = this.app.vault.getAbstractFileByPath(node.path);
-            await this.app.fileManager.renameFile(folder, target);
-            docFolder = target; adopted = true;
-            const vm = pendingName.match(/_V(\d+\.\d+)/);
-            const newMarkerName = docContainer.documentBaseName(clean) + '_V' + (vm ? vm[1] : '1.0') + '.md';
-            if (pendingName !== newMarkerName) {
-              const sc = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
-              if (sc) { await this.app.fileManager.renameFile(sc, docFolder + '/' + newMarkerName); pendingName = newMarkerName; }
+            // FULL rename (Paul's ruling): folder, marker base, and title all adopt
+            // the file's name. Each local updates only after its await resolves, so
+            // on a mid-sequence failure the locals still describe what is on disk
+            // and the attach below targets reality.
+            try {
+              await this.app.fileManager.renameFile(folder, target);
+              docFolder = target; adopted = true;
+              const vm = pendingName.match(/_V(\d+\.\d+)/);
+              const newMarkerName = docContainer.documentBaseName(clean) + '_V' + (vm ? vm[1] : '1.0') + '.md';
+              if (pendingName !== newMarkerName) {
+                const sc = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
+                if (sc) { await this.app.fileManager.renameFile(sc, docFolder + '/' + newMarkerName); pendingName = newMarkerName; }
+              }
+              const sc2 = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
+              if (sc2) await this.app.fileManager.processFrontMatter(sc2, (front) => { front.title = clean; });
+            } catch (e) {
+              elog('[doc-container] adopt rename failed:', e && e.stack || e);
+              new obsidian.Notice('Could not fully adopt the file name — continuing with what succeeded.');
             }
-            const sc2 = this.app.vault.getAbstractFileByPath(docFolder + '/' + pendingName);
-            if (sc2) await this.app.fileManager.processFrontMatter(sc2, (front) => { front.title = clean; });
           }
         }
       }
