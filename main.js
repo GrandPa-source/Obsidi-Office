@@ -5192,11 +5192,24 @@ class DocumentDetailView extends obsidian.ItemView {
       this._composerDraft = null;
       this._composerDirty = false;   // committing — allow the post-save re-render to rebuild a fresh composer
       await this._saveSidecar('noteLog', noteLog.concat([entry]), { action: 'Note added', type: 'note' });   // one write, one re-render
+      // iPad smoke B8: the 'changed' listener normally repaints — but it returns
+      // early while a metadata or stakeholder edit is open, because a full
+      // render() would destroy those in-progress inputs. The note DID commit, so
+      // the guard made a successful write look like a dead button. Refresh the
+      // two things the user is looking at, and leave the edit DOM untouched.
+      if (this._editMode || this._stakeEdit) {
+        input.value = '';
+        stagedTags.length = 0; stagedFiles.length = 0;
+        renderStaged(); updateDropState();
+        this._renderNoteList(listEl, noteLog.concat([entry]), 'No notes yet.');
+        this._staleWhileGuarded = true;   // the rest of the page still owes a catch-up render
+      }
     };
     addBtn.onclick = add;
 
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the document's tags. Newest first." });
-    this._renderNoteList(p.createDiv('doc-detail-notelist'), noteLog, 'No notes yet.');
+    const listEl = p.createDiv('doc-detail-notelist');
+    this._renderNoteList(listEl, noteLog, 'No notes yet.');
     renderStaged(); updateDropState();
   }
 
@@ -5634,6 +5647,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     fm.activityLog.push({ datetime, actor: getUsername(), action, type });
   }
   _renderNoteListInto(listEl, notes, emptyText) {
+    listEl.empty();   // repaintable, like _renderNoteList — a guarded refresh calls this on a populated element
     const sorted = notes.slice().sort((a, b) => String(b.date).localeCompare(String(a.date)));
     if (!sorted.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: emptyText || 'No notes yet.' }); return; }
     for (const n of sorted) {
@@ -5809,10 +5823,20 @@ class ContainerOverviewView extends obsidian.ItemView {
       this._projComposerDirty = false;   // committing — allow the listener re-render
       await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
       // listener re-renders (Notes tab persists via _projActiveTab) with the fresh note
+      // — except while the project metadata edit is open, where the listener
+      // returns early to protect those inputs. Same defect class as the document
+      // detail pane (iPad smoke B8): repaint the list and composer only.
+      if (this._projEditMode) {
+        input.value = '';
+        stagedTags.length = 0; stagedFiles.length = 0;
+        renderStaged(); updateDropState();
+        this._renderNoteListInto(listEl, notes.concat([entry]), 'No notes yet.');
+      }
     };
     addBtn.onclick = add;
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Note tags (green) & attachments are scoped to the note — separate from the project's tags. Newest first." });
-    this._renderNoteListInto(p.createDiv('doc-detail-notelist'), notes, 'No notes yet.');
+    const listEl = p.createDiv('doc-detail-notelist');
+    this._renderNoteListInto(listEl, notes, 'No notes yet.');
     renderStaged(); updateDropState();
   }
   async _projLogPane(p, node, log) {
