@@ -4263,6 +4263,10 @@ class DocumentDetailView extends obsidian.ItemView {
   getViewType() { return VIEW_TYPE_DOC_DETAIL; }
   getDisplayText() { return this.node ? this.node.name : 'Document Status'; }
   getIcon() { return 'file-text'; }
+  // Obsidian records leaf history only for views that declare themselves
+  // navigable. Without this the back/forward arrows stay greyed out no matter
+  // how navigation is routed.
+  navigation = true;
 
   async onOpen() {
     this.render();   // paint empty-state on workspace restore (setState re-renders with data)
@@ -5389,6 +5393,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   getViewType() { return VIEW_TYPE_DOC_CONTAINER; }
   getDisplayText() { return this.path ? this.path.split('/').pop() : 'Documents'; }
   getIcon() { return 'folder-open'; }
+  navigation = true;   // see DocumentDetailView — precondition for leaf history
   async onOpen() {
     this.render();   // paint on workspace restore (setState re-renders with data)
     // Re-render when THIS container's _project.md or any descendant sidecar changes
