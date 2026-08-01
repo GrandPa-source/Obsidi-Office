@@ -833,6 +833,24 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 .doc-ent-flab { display:block; margin:12px 0 4px; color: var(--text-muted); font-size:0.85em; text-transform:uppercase; letter-spacing:0.02em; }
 .doc-ent-owner { display:flex; align-items:baseline; gap:8px; margin:12px 0 4px; }
+.doc-ent-link { background:none; border:none; box-shadow:none; padding:0 8px 0 0; margin:0; color: var(--text-accent); cursor:pointer; font:inherit; text-align:left; }
+.doc-ent-link:hover { text-decoration:underline; }
+.doc-ent-link:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
+.doc-ov-table tr.row[tabindex]:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
+.doc-ent-overdue td { color: var(--text-error); }
+.doc-ent-note-mention td { color: var(--text-muted); font-style:italic; }
+/* Placeholder panes: error colour AND an explicit label — colour is never the
+   only signal that a row is sample data. */
+.doc-ent-sample-banner { display:flex; align-items:center; gap:8px; margin-bottom:12px; padding:8px 12px;
+  border:1px dashed var(--text-error); border-radius:6px; color: var(--text-muted); font-size:0.9em; }
+.doc-ent-sample-tag { color: var(--text-error); font-weight:600; letter-spacing:0.02em; white-space:nowrap; }
+.doc-ent-sample td { color: var(--text-error); font-style:italic; }
+.doc-ent-sample th { color: var(--text-muted); }
+@media (pointer: coarse) {
+  .doc-ov-table td, .doc-ov-table th { padding-top:12px; padding-bottom:12px; }
+  .doc-detail-tabb { min-height:44px; display:flex; align-items:center; }
+  .doc-ent-link { min-height:44px; display:inline-flex; align-items:center; }
+}
 /* Breadcrumb segments are real buttons — keyboard-reachable, and the only way
    up a level that does not depend on this tab's history. */
 /* Plain clickable text, not a control. Obsidian's base button carries a
@@ -5608,7 +5626,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       // (Sites / Work / Notes / placeholders) and inline editing are Task 5.
       // Branching here also keeps the grouping page's "New Collection" button
       // off an entity, which the spec forbids (D5/D6).
-      this.renderEntityRecordStub(c, node, ctype);
+      this.renderEntityView(c, node, ctype);
     } else if (node.kind === 'collection' && ctype === 'project') {
       this.renderProjectView(c, node);
     } else {
@@ -5657,36 +5675,278 @@ class ContainerOverviewView extends obsidian.ItemView {
     c.scrollTop = prevScroll;
   }
 
-  // Organizations & Sites v0.1 (partial) — read-only record. Task 5 replaces
-  // this with the full entity view (editable card + Sites/Work/Notes tabs).
-  renderEntityRecordStub(c, node, type) {
+  // ── Organizations & Sites: shared entity view (spec §7) ─────────────────────
+  _entChipCls(status) {
+    const s = String(status || '').toLowerCase();
+    if (s === 'active') return 'c-active';
+    if (s === 'prospective' || s === 'planned') return 'c-review';
+    if (s === 'inactive' || s === 'closed') return 'c-draft';
+    if (s === 'archived') return 'c-arch';
+    return '';
+  }
+
+  renderEntityView(c, node, type) {
     const rec = this.plugin.readEntityRecord(node.path);
+    const editing = this._entEditMode;
+    if (editing) this._entInputs = {};
     const isOrg = type === 'organization';
+
     renderCrumb(c, this.plugin, node.path, 'doc-ov-crumb');
     const h1 = c.createDiv('doc-pv-h1row');
     h1.createSpan({ text: rec.name || node.name, cls: 'doc-ov-title' });
     const kindVal = isOrg ? rec.orgType : rec.siteType;
     if (kindVal) h1.createSpan({ text: kindVal, cls: 'doc-detail-chip' });
-    if (rec.status) h1.createSpan({ text: rec.status, cls: 'doc-detail-chip' });
+    if (rec.status) h1.createSpan({ text: rec.status, cls: 'doc-detail-chip ' + this._entChipCls(rec.status) });
     h1.createSpan({ text: isOrg ? 'Organization' : 'Site', cls: 'doc-ov-typetag' });
-    c.createDiv({ text: 'Stored in ' + docContainer.entityNoteName(node.name), cls: 'doc-pv-sub' });
+
+    const acts = h1.createDiv('doc-detail-h1actions');
+    if (editing) {
+      acts.createEl('button', { text: 'Save changes', cls: 'doc-detail-editbtn' })
+        .onclick = () => this._saveEntityEdits(node, type);
+      acts.createEl('button', { text: 'Cancel', cls: 'doc-detail-editbtn ghost' })
+        .onclick = () => { this._entEditMode = false; this.render(); };
+    } else {
+      acts.createEl('button', { text: 'Edit', cls: 'doc-detail-editbtn' })
+        .onclick = () => { this._entEditMode = true; this.render(); };
+    }
+    c.createDiv({ text: editing ? 'Editing — Save or Cancel' : 'Stored in ' + docContainer.entityNoteName(node.name),
+                  cls: 'doc-pv-sub' });
 
     const card = c.createDiv('doc-detail-metacard');
-    card.createDiv({ text: 'Record', cls: 'doc-detail-grp' });
-    const grid = card.createDiv('doc-detail-grid');
-    const fields = isOrg ? docContainer.ORG_FIELDS : docContainer.SITE_FIELDS;
-    for (const f of fields) {
-      const cell = grid.createDiv('doc-detail-fld');
-      if (f.type === 'textarea' || f.key === 'name' || f.key === 'address') cell.addClass('span2');
-      cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
-      let val = rec[f.key];
-      if (f.key === 'tags') val = Array.isArray(val) ? val.map((t) => '#' + String(t).replace(/^#/, '')).join(' ') : val;
-      if (f.type === 'entity') val = docContainer.entityLinkName(val) || '';
-      cell.createDiv({ text: val == null || val === '' ? '—' : String(val),
-                       cls: 'doc-detail-val' + (val ? '' : ' doc-detail-muted') });
+    const groups = isOrg
+      ? [['Identification', ['name', 'orgType', 'status', 'relationship']],
+         ['Contact', ['website', 'address']],
+         ['Description', ['summary', 'tags']]]
+      : [['Identification', ['name', 'organization', 'siteType', 'siteCode', 'status']],
+         ['Location', ['address', 'city', 'province', 'postalCode']],
+         ['Description', ['summary', 'tags']]];
+    const byKey = {};
+    for (const f of (isOrg ? docContainer.ORG_FIELDS : docContainer.SITE_FIELDS)) byKey[f.key] = f;
+    for (const [label, keys] of groups) {
+      card.createDiv({ text: label, cls: 'doc-detail-grp' });
+      const grid = card.createDiv('doc-detail-grid');
+      for (const k of keys) { const f = byKey[k]; if (f) this._entCell(grid, f, rec, editing); }
     }
-    c.createDiv({ cls: 'doc-detail-stub',
-      text: 'Record view. Editing, the Sites/Work/Notes rollups and the Agreements and Contacts placeholders arrive with the rest of the v0.1 rung.' });
+
+    this._entTabs(c.createDiv('doc-pv-tabwrap'), node, type);
+  }
+
+  _entCell(grid, f, rec, editing) {
+    const cell = grid.createDiv('doc-detail-fld');
+    if (f.type === 'textarea' || f.key === 'name' || f.key === 'tags' || f.key === 'address') cell.addClass('span2');
+    const labId = 'ent-' + f.key;
+    const lab = cell.createEl('label', { text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
+    lab.htmlFor = labId;
+
+    const seed = f.key === 'tags'
+      ? (Array.isArray(rec.tags) ? rec.tags.join(', ') : (rec.tags || ''))
+      : (f.type === 'entity' ? (docContainer.entityLinkName(rec[f.key]) || '')
+                             : (rec[f.key] != null ? String(rec[f.key]) : ''));
+
+    if (editing) {
+      let inp;
+      if (f.type === 'select') {
+        inp = cell.createEl('select', { cls: 'doc-detail-vinput', attr: { id: labId } });
+        inp.createEl('option', { text: '—', value: '' });
+        (f.options || []).forEach((o) => inp.createEl('option', { text: o, value: o }));
+        inp.value = seed;
+      } else if (f.type === 'textarea') {
+        inp = cell.createEl('textarea', { cls: 'doc-detail-vinput', attr: { id: labId } });
+        inp.rows = 2; inp.value = seed;
+      } else {
+        inp = cell.createEl('input', { cls: 'doc-detail-vinput', attr: { id: labId } });
+        inp.value = seed;
+        if (f.key === 'tags') inp.placeholder = 'comma-separated';
+        if (f.key === 'website') { inp.type = 'url'; inp.spellcheck = false; inp.placeholder = 'https://…'; }
+        if (f.type === 'entity') inp.placeholder = 'Organization name';
+      }
+      this._entInputs[f.key] = { inp, orig: seed, field: f };
+      return;
+    }
+
+    if (f.key === 'tags') {
+      const arr = Array.isArray(rec.tags) ? rec.tags : (rec.tags ? String(rec.tags).split(/[,\s]+/) : []);
+      const tags = arr.map((t) => String(t).replace(/^#/, '')).filter(Boolean);
+      if (!tags.length) { cell.createDiv({ text: '—', cls: 'doc-detail-val doc-detail-muted' }); return; }
+      const box = cell.createDiv('doc-detail-val');
+      tags.forEach((t) => box.createSpan({ text: t, cls: 'doc-detail-tagpill' }));
+      return;
+    }
+    if (f.type === 'entity' && seed) {
+      const box = cell.createDiv('doc-detail-val');
+      const b = box.createEl('button', { text: seed, cls: 'doc-ent-link' });
+      b.onclick = () => this.plugin.openEntityByName(seed);
+      return;
+    }
+    if (f.key === 'website' && seed) {
+      const box = cell.createDiv('doc-detail-val');
+      const a = box.createEl('a', { text: seed, href: seed });
+      a.setAttr('rel', 'noopener'); a.setAttr('target', '_blank');
+      return;
+    }
+    cell.createDiv({ text: seed || '—', cls: 'doc-detail-val' + (seed ? '' : ' doc-detail-muted') });
+  }
+
+  async _saveEntityEdits(node, type) {
+    const inputs = this._entInputs || {};
+    let changed = false;
+    for (const k in inputs) if (inputs[k].inp.value !== inputs[k].orig) { changed = true; break; }
+    this._entEditMode = false;
+    if (!changed) { this.render(); return; }
+    try {
+      await this.plugin.writeEntityRecord(node.path, (fm) => {
+        for (const k in inputs) {
+          const { inp, orig, field } = inputs[k];
+          const v = inp.value;
+          if (v === orig) continue;   // never clobber untouched values
+          if (k === 'tags') fm.tags = v.split(/[,\s]+/).map((s) => s.trim().replace(/^#/, '')).filter(Boolean);
+          else if (field.type === 'entity') { const nm = docContainer.entityLinkName(v); if (nm) fm[k] = docContainer.entityLink(nm); else delete fm[k]; }
+          else fm[k] = v === '' ? null : v;
+        }
+      });
+    } catch (e) {
+      elog('[entities] save failed:', e && e.stack || e);
+      new obsidian.Notice('Save failed: ' + ((e && e.message) || e));
+      this._entEditMode = true;
+      return;
+    }
+    this.render();
+  }
+
+  _entTabs(parent, node, type) {
+    const bar = parent.createDiv('doc-detail-tabs');
+    const panes = parent.createDiv('doc-detail-panes');
+    const refs = this.plugin.entityReferences(node.path);
+    const isOrg = type === 'organization';
+    const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+
+    const specs = [];
+    if (isOrg) specs.push({ id: 'esites', label: 'Sites', count: refs.sites.length, fill: (p) => this._entSitesPane(p, node, refs.sites) });
+    specs.push({ id: 'ework', label: 'Work', count: refs.work.length, fill: (p) => this._entWorkPane(p, refs.work, today) });
+    specs.push({ id: 'enotes', label: 'Notes', count: refs.notes.length, fill: (p) => this._entNotesPane(p, node, isOrg, refs.notes) });
+    if (isOrg) specs.push({ id: 'eagree', label: 'Agreements & Procurements', fill: (p) => this._entAgreementsPane(p) });
+    specs.push({ id: 'econtacts', label: 'Contacts', fill: (p) => this._entContactsPane(p) });
+
+    const hasActive = specs.some((s) => s.id === this._entActiveTab);
+    specs.forEach((spec, i) => {
+      const tab = bar.createDiv('doc-detail-tabb');
+      tab.setAttr('role', 'tab'); tab.setAttr('tabindex', '0');
+      tab.createSpan({ text: spec.label });
+      if (spec.count != null) tab.createSpan({ text: String(spec.count), cls: 'doc-detail-tabcnt' });
+      const pane = panes.createDiv('doc-detail-tabpane');
+      pane.setAttr('role', 'tabpanel');
+      spec.fill(pane);
+      const activate = () => {
+        this._entActiveTab = spec.id;
+        bar.querySelectorAll('.doc-detail-tabb').forEach((t) => { t.removeClass('is-active'); t.setAttr('aria-selected', 'false'); });
+        panes.querySelectorAll('.doc-detail-tabpane').forEach((p) => p.removeClass('is-active'));
+        tab.addClass('is-active'); tab.setAttr('aria-selected', 'true'); pane.addClass('is-active');
+      };
+      tab.onclick = activate;
+      tab.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(); } };
+      if (hasActive ? spec.id === this._entActiveTab : i === 0) activate();
+    });
+    docTabsWrapGuard(bar);
+  }
+
+  // Rows are keyboard-reachable: the table-row pattern predates this work, so
+  // they carry tabindex + an Enter handler rather than being bare click targets.
+  _entRow(table, cells, onOpen, label) {
+    const tr = table.createEl('tr', { cls: 'row' });
+    cells.forEach((cell) => tr.createEl('td', { text: cell == null || cell === '' ? '—' : String(cell) }));
+    tr.setAttr('tabindex', '0');
+    tr.setAttr('aria-label', label);
+    tr.onclick = onOpen;
+    tr.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); onOpen(); } };
+    return tr;
+  }
+
+  _entSitesPane(p, node, sites) {
+    const acts = p.createDiv('doc-detail-paneacts');
+    const add = docIconLabel(acts, 'plus', 'New site', { tag: 'button', cls: 'doc-ov-primary' });
+    add.style.marginBottom = '0';
+    add.onclick = () => this.plugin.openNewSiteModal(node);
+    if (!sites.length) {
+      p.createDiv({ text: 'No sites yet. Use New site to add this organization’s first location.', cls: 'doc-detail-stub' });
+      return;
+    }
+    const table = p.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr'); ['Site', 'Code', 'Type', 'City', 'Status'].forEach((h) => head.createEl('th', { text: h }));
+    for (const s of sites) {
+      this._entRow(table, [s.rec.name || s.name, s.rec.siteCode, s.rec.siteType, s.rec.city, s.rec.status],
+        () => this.plugin.openContainerOverview({ path: s.path }), 'Open site ' + (s.rec.name || s.name));
+    }
+  }
+
+  _entWorkPane(p, work, today) {
+    if (!work.length) {
+      p.createDiv({ text: 'No work attributed yet. Set Organization or Sites on a document or project to see it here.', cls: 'doc-detail-stub' });
+      return;
+    }
+    const overdue = work.filter((w) => docContainer.isOverdue(w.nextReviewDate, today)).length;
+    const roll = p.createDiv('doc-ov-rollup');
+    roll.createSpan({ text: work.length + ' items', cls: 'doc-ov-pill' });
+    if (overdue) roll.createSpan({ text: overdue + ' review overdue', cls: 'doc-ov-pill over' });
+    const table = p.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr'); ['Title', 'Kind', 'Class', 'Status', 'Next review', 'Via'].forEach((h) => head.createEl('th', { text: h }));
+    for (const w of work) {
+      const tr = this._entRow(table,
+        [w.title, w.kind === 'project' ? 'Project' : 'Document', w.docClass, w.status, w.nextReviewDate || '—',
+         w.stamp === 'organization' ? 'Organization' : 'Site'],
+        () => (w.kind === 'project' ? this.plugin.openContainerOverview({ path: w.path }) : this.plugin.openDocDetail({ path: w.path })),
+        'Open ' + w.title);
+      if (docContainer.isOverdue(w.nextReviewDate, today)) tr.addClass('doc-ent-overdue');
+    }
+  }
+
+  _entNotesPane(p, node, isOrg, notes) {
+    if (isOrg) {
+      const acts = p.createDiv('doc-detail-paneacts');
+      const add = docIconLabel(acts, 'plus', 'New organizational note', { tag: 'button', cls: 'doc-ov-primary' });
+      add.style.marginBottom = '0';
+      add.onclick = () => this.plugin.createOrganizationalNote(node);
+    }
+    if (!notes.length) {
+      p.createDiv({ text: 'No notes yet. Notes written on documents and projects appear here when they name this record.', cls: 'doc-detail-stub' });
+      return;
+    }
+    const table = p.createEl('table', { cls: 'doc-ov-table' });
+    const head = table.createEl('tr'); ['Note', 'Type', 'Date', 'Source', 'Kind'].forEach((h) => head.createEl('th', { text: h }));
+    const kindWord = { organizational: 'This record', stamped: 'Attributed', mention: 'Mention' };
+    for (const n of notes) {
+      const tr = this._entRow(table, [n.title, n.noteType, n.noteDate, n.parentTitle || '—', kindWord[n.rowType]],
+        () => this.plugin.openNoteInEditor({ path: n.path }), 'Open note ' + n.title);
+      tr.addClass('doc-ent-note-' + n.rowType);
+    }
+  }
+
+  // Placeholder panes. Sample rows are rendered in the error colour AND labelled
+  // "SAMPLE" — colour is never the only signal that this is not real data.
+  _entPlaceholderTable(p, intro, headers, rows) {
+    const banner = p.createDiv('doc-ent-sample-banner');
+    banner.setAttr('role', 'note');
+    banner.createSpan({ text: 'SAMPLE — not real data', cls: 'doc-ent-sample-tag' });
+    banner.createSpan({ text: intro });
+    const table = p.createEl('table', { cls: 'doc-ov-table doc-ent-sample' });
+    const head = table.createEl('tr'); headers.forEach((h) => head.createEl('th', { text: h }));
+    for (const r of rows) { const tr = table.createEl('tr'); r.forEach((cell) => tr.createEl('td', { text: cell })); }
+  }
+
+  _entAgreementsPane(p) {
+    this._entPlaceholderTable(p,
+      'Contracts, quotes and invoices will be uploaded and tracked here once the Agreements work lands.',
+      ['Document', 'Kind', 'Value', 'Starts', 'Expires', 'Owner'],
+      [['Managed Services Agreement', 'Contract', '$120,000/yr', '2026-01-01', '2028-12-31', 'Procurement'],
+       ['Camera refresh — Phase 2', 'Quote', '$48,500', '2026-05-14', '2026-08-14', 'Security'],
+       ['INV-20260430', 'Invoice', '$10,000', '2026-04-30', '—', 'Finance']]);
+  }
+
+  _entContactsPane(p) {
+    this._entPlaceholderTable(p,
+      'People and their contact details will live here once Contacts becomes a real folder.',
+      ['Name', 'Title', 'Role', 'Phone', 'Email'],
+      [['A. Sample', 'Account Manager', 'Primary contact', '000-000-0000', 'sample@example.com'],
+       ['B. Sample', 'Service Lead', 'Escalation', '000-000-0000', 'sample@example.com']]);
   }
 
   // ── T32: Project view — progress, compact identification, description, tabs ─
@@ -7113,11 +7373,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
             if (folder) await this.openContainerOverview({ path: folder });
           },
         }).open() });
-      // TEMPORARY PROBE — remove once the rollup mechanism is settled. Answers
-      // spec §9: does a quoted wikilink in FRONTMATTER reach Obsidian's link
-      // index? Everything in the Work/Sites/Notes rollups depends on it.
-      this.addCommand({ id: 'probe-entity-backlinks', name: 'Probe: entity backlinks (temporary)',
-        callback: () => this.probeEntityBacklinks() });
     }
 
     this.addCommand({
@@ -8669,6 +8924,139 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach((l) => l.view.render && l.view.render());
   }
 
+  // Open an entity page by its display name — what a wikilink carries. Used by
+  // the site record's Organization field, which shows a name, not a path.
+  async openEntityByName(name) {
+    const want = String(name || '').trim();
+    for (const [folder] of this.entityFolders()) {
+      if (folder.slice(folder.lastIndexOf('/') + 1) === want) { await this.openContainerOverview({ path: folder }); return; }
+    }
+    new obsidian.Notice('No record found for “' + want + '”');
+  }
+
+  // ── Organizations & Sites: rollups (spec §9) ────────────────────────────────
+  // Backlinks come from Obsidian's own link index, so this is a map read rather
+  // than a vault scan. Verified 2026-08-01: a quoted wikilink in frontmatter does
+  // reach resolvedLinks (3/3 stamped sources found, including a stamp on a
+  // current-version sidecar and one on _project.md).
+  //
+  // Only the metadata stamp counts as a reference (spec D8). A [[link]] typed
+  // into a note BODY surfaces in the Notes tab flagged 'mention' and never in
+  // Work.
+  _backlinkSources(targetPath) {
+    const out = [];
+    const rl = this.app.metadataCache.resolvedLinks || {};
+    for (const src of Object.keys(rl)) { if (rl[src] && rl[src][targetPath]) out.push(src); }
+    return out;
+  }
+
+  entityReferences(entityFolderPath) {
+    const notePath = this.entityNotePath(entityFolderPath);
+    const entityName = entityFolderPath.slice(entityFolderPath.lastIndexOf('/') + 1);
+    const byFolder = new Map();
+    const walk = (n) => { byFolder.set(n.path, n); (n.children || []).forEach(walk); };
+    this.taxonomy().forEach(walk);
+
+    const sites = [], work = [], notes = [];
+    const seen = new Set();
+
+    for (const src of this._backlinkSources(notePath)) {
+      const cut = src.lastIndexOf('/');
+      const folder = cut >= 0 ? src.slice(0, cut) : '';
+      const fileName = cut >= 0 ? src.slice(cut + 1) : src;
+      const folderName = folder.slice(folder.lastIndexOf('/') + 1);
+      if (seen.has(folder)) continue;
+      seen.add(folder);
+
+      const f = this.app.vault.getAbstractFileByPath(src);
+      const fm = (f && (this.app.metadataCache.getFileCache(f) || {}).frontmatter) || {};
+      const org = docContainer.entityLinkName(fm.organization);
+      const siteList = Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []);
+      const stamp = org === entityName ? 'organization'
+        : (siteList.some((s) => docContainer.entityLinkName(s) === entityName) ? 'sites' : null);
+      const node = byFolder.get(folder);
+      const name = folderName;
+
+      // A site record naming this organization.
+      if (fileName === docContainer.entityNoteName(folderName)) {
+        if (node && node.kind === 'site' && stamp === 'organization') {
+          sites.push({ path: folder, name, rec: this.readEntityRecord(folder) });
+        }
+        continue;
+      }
+      if (node && node.kind === 'note') {
+        notes.push({
+          path: folder, name,
+          title: fm.title || name,
+          noteType: fm.noteType || 'General',
+          noteDate: fm.noteDate || '',
+          rowType: folder.startsWith(entityFolderPath + '/') ? 'organizational' : (stamp ? 'stamped' : 'mention'),
+          parentTitle: this._parentDisplayTitle((Array.isArray(fm.relatedParents) ? fm.relatedParents[0] : '') || ''),
+        });
+        continue;
+      }
+      if (!stamp) continue;   // documents and projects join Work only on a stamp
+      if (fileName === '_project.md') {
+        work.push({ path: folder, name, kind: 'project', title: fm.projectName || name,
+                    docClass: 'Project', status: fm.status || '', nextReviewDate: '', stamp });
+      } else {
+        work.push({ path: folder, name, kind: 'document', title: fm.title || name,
+                    docClass: fm.docClass || '', status: fm.status || '',
+                    nextReviewDate: fm.nextReviewDate
+                      || docContainer.computeNextReview(fm.effectiveDate, fm.reviewFrequencyDays) || '',
+                    stamp });
+      }
+    }
+
+    // Organizational notes live inside the folder and may carry no link at all.
+    const own = byFolder.get(entityFolderPath);
+    for (const child of ((own && own.children) || [])) {
+      if (child.kind !== 'note' || notes.some((n) => n.path === child.path)) continue;
+      const dm = this.app.vault.getAbstractFileByPath(child.path + '/' + docContainer.DOCUMENT_MD_NAME);
+      const fm = (dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter) || {};
+      notes.push({ path: child.path, name: child.name, title: fm.title || child.name,
+                   noteType: fm.noteType || 'General', noteDate: fm.noteDate || '',
+                   rowType: 'organizational', parentTitle: '' });
+    }
+
+    notes.sort((a, b) => String(b.noteDate).localeCompare(String(a.noteDate)));
+    sites.sort((a, b) => a.name.localeCompare(b.name));
+    work.sort((a, b) => String(a.title).localeCompare(String(b.title)));
+    return { sites, work, notes };
+  }
+
+  // A site is created FROM an organization page but STORED in the Sites
+  // category (spec §8). The owning organization is stamped at creation.
+  openNewSiteModal(orgNode) {
+    const rec = this.readEntityRecord(orgNode.path);
+    const orgName = rec.name || orgNode.path.slice(orgNode.path.lastIndexOf('/') + 1);
+    new EntityCreateModal(this.app, {
+      type: 'site',
+      orgName,
+      onSubmit: async ({ name, siteType, address }) => {
+        const seed = { organization: docContainer.entityLink(orgName) };
+        if (siteType) seed.siteType = siteType;
+        if (address) seed.address = address;
+        const folder = await this.createEntity({ type: 'site', name, seed });
+        if (folder) {
+          this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER)
+            .forEach((l) => l.view && l.view.render && l.view.render());
+        }
+      },
+    }).open();
+  }
+
+  // An organizational note belongs to the organization rather than to any one
+  // document: it lives INSIDE the organization folder and carries no
+  // relatedParents (spec §7.3).
+  async createOrganizationalNote(orgNode) {
+    new NoteCreateModal(this.app, { defaultType: 'General', types: docContainer.NOTE_TYPES, askTitle: true },
+      async (title, noteType) => {
+        const folder = await this.createNoteContainer({ containerPath: orgNode.path, title, noteType });
+        if (folder) dlog('organizational note created:', folder);
+      }).open();
+  }
+
   // Create an organization or site record. `seed` supplies extra frontmatter
   // (e.g. a site's organization link). Returns the folder path, or null.
   async createEntity({ type, name, seed }) {
@@ -9958,59 +10346,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath, returnTab: returnTab || null } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
-  }
-
-  // ── TEMPORARY PROBE (2026-07-31) — REMOVE once the rollup is settled ────────
-  // Spec §9 rests on one unverified claim: that a quoted wikilink in FRONTMATTER
-  // (organization: "[[Baycrest]]") reaches Obsidian's link index. If it does not,
-  // the Work/Sites/Notes rollups need a different mechanism and the entity
-  // dashboards get redesigned — so this is measured before anything is built on
-  // it. Writes to the debug log so it can be run on iPad, where there is no
-  // console. Reports three independent signals per entity.
-  probeEntityBacklinks() {
-    const P = 'entity-probe:';
-    const ents = this.entityFolders();
-    dlog(P, 'entity folders found:', ents.size);
-    if (!ents.size) {
-      new obsidian.Notice('No organization or site records found — create one first');
-      dlog(P, 'RESULT: no entities to probe'); return;
-    }
-    const rl = this.app.metadataCache.resolvedLinks || {};
-    let totalStamped = 0;
-    for (const [folder, type] of ents) {
-      const notePath = this.entityNotePath(folder);
-      const name = folder.slice(folder.lastIndexOf('/') + 1);
-      // Signal 1: who links here, according to resolvedLinks.
-      const sources = Object.keys(rl).filter((src) => rl[src] && rl[src][notePath]);
-      // Signal 2: of those, which carry the link in a STAMP field rather than a body.
-      const stamped = [];
-      for (const src of sources) {
-        const f = this.app.vault.getAbstractFileByPath(src);
-        const fm = (f && (this.app.metadataCache.getFileCache(f) || {}).frontmatter) || {};
-        const org = docContainer.entityLinkName(fm.organization);
-        const sites = Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []);
-        if (org === name || sites.some((s) => docContainer.entityLinkName(s) === name)) stamped.push(src);
-      }
-      totalStamped += stamped.length;
-      // Signal 3: does the cache expose frontmatterLinks separately? Useful as a
-      // fallback route if resolvedLinks turns out not to include frontmatter.
-      let fmLinkSample = 'n/a';
-      if (sources.length) {
-        const f0 = this.app.vault.getAbstractFileByPath(sources[0]);
-        const c0 = (f0 && this.app.metadataCache.getFileCache(f0)) || {};
-        fmLinkSample = Array.isArray(c0.frontmatterLinks)
-          ? c0.frontmatterLinks.map((l) => l.link).join(',') || '(empty array)' : 'absent';
-      }
-      dlog(P, type, name, '| backlink sources:', sources.length, '| stamped:', stamped.length,
-           '| frontmatterLinks on first source:', fmLinkSample);
-      sources.slice(0, 10).forEach((s) => dlog(P, '   source:', s));
-    }
-    const verdict = totalStamped > 0
-      ? 'PASS — frontmatter wikilinks reach resolvedLinks; rollups can read the link index'
-      : 'INCONCLUSIVE — no stamped source found. Add organization: "[[<name>]]" to a document\'s _document.md or current sidecar, wait for the index, and re-run';
-    dlog(P, 'RESULT:', verdict);
-    new obsidian.Notice(totalStamped > 0 ? 'Probe PASS — ' + totalStamped + ' stamped source(s) found. See debug log.'
-                                         : 'Probe inconclusive — no stamped sources. See debug log.', 8000);
   }
 
   // Hand a file to the platform. Desktop opens it in the registered application;

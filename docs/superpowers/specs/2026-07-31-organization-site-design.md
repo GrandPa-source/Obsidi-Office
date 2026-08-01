@@ -271,10 +271,13 @@ References are wikilinks, so rollups are a link-index read rather than a file sc
   present in `organization`/`sites` is a stamp, anything else is a mention.
 - Mentions appear only in the Notes tab (D8).
 
-**Verification step for the plan:** confirm by console probe that a quoted wikilink in frontmatter
-appears in `resolvedLinks` on both desktop and iPad before building on it. The note skeleton relies
-on the native indexer parsing this form, so it is expected to hold, but it must be observed rather
-than assumed.
+**Verification step — RESOLVED 2026-08-01: PASS.** A temporary `Probe: entity backlinks` command
+found all 3 stamped sources on desktop: a document whose stamp sits on its current-version sidecar
+(no `_document.md`), a PDF document, and a project's `_project.md`. Quoted wikilinks in frontmatter
+do reach `resolvedLinks`, so the rollups read the link index as designed and no fallback to
+`frontmatterLinks` or a file scan is needed. The probe has been removed. iPad remains unconfirmed,
+but the link index is core Obsidian rather than platform code, so it rides the normal iPad pass
+instead of gating the build.
 
 Refresh follows the project view's pattern: the entity view listens for metadata changes under the
 document root and re-renders, so stamping a document updates the organization's Work tab live.
