@@ -733,10 +733,24 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 /* Breadcrumb segments are real buttons — keyboard-reachable, and the only way
    up a level that does not depend on this tab's history. */
-.doc-crumb-link { background:none; border:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer; }
-.doc-crumb-link:hover { color: var(--text-accent); text-decoration:underline; }
-.doc-crumb-link:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
-@media (pointer: coarse) { .doc-crumb-link { min-height:44px; display:inline-flex; align-items:center; } }
+/* Plain clickable text, not a control. Obsidian's base button carries a
+   background, radius and box-shadow; resetting background and border alone left
+   the shadow drawing a box around every segment. Scoped to the crumb containers
+   so this reset can never leak onto real buttons. */
+.doc-detail-crumb .doc-crumb-link, .doc-ov-crumb .doc-crumb-link {
+  -webkit-appearance:none; appearance:none;
+  background:none; background-color:transparent; border:none; box-shadow:none; border-radius:0;
+  padding:0; margin:0; height:auto; min-height:0; width:auto;
+  font:inherit; line-height:inherit; color:inherit; text-align:left; cursor:pointer;
+}
+.doc-detail-crumb .doc-crumb-link:hover { color: var(--text-accent); text-decoration:underline; background:none; box-shadow:none; }
+.doc-ov-crumb .doc-crumb-link:hover { color: var(--text-accent); text-decoration:underline; background:none; box-shadow:none; }
+.doc-detail-crumb .doc-crumb-link:focus-visible, .doc-ov-crumb .doc-crumb-link:focus-visible {
+  outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
+/* Touch keeps a 44px target without adding visible chrome. */
+@media (pointer: coarse) {
+  .doc-detail-crumb .doc-crumb-link, .doc-ov-crumb .doc-crumb-link { min-height:44px; display:inline-flex; align-items:center; }
+}
 .doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
 .doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
 .doc-detail-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px 22px; }
@@ -854,7 +868,10 @@ const DOC_CONTAINER_CSS = `
    the bottom edge. z-index 0 keeps it under Obsidian's status bar so the sync
    indicator stays on top instead of being covered. */
 .doc-detail-footer { flex:0 0 auto; position:relative; z-index:0; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow:none; }
-.doc-detail-footer-inner { position:relative; max-width:none; margin:0; display:flex; align-items:center; gap:8px; padding:10px 18px calc(10px + env(safe-area-inset-bottom)); flex-wrap:wrap; }
+/* The bottom padding is a reserved strip for .doc-detail-lockfoot-txt, which is
+   absolutely positioned so toggling the lock notice never reflows the button row.
+   Cutting it to 10px is what made "Checked out by …" collide with Force check-in. */
+.doc-detail-footer-inner { position:relative; max-width:none; margin:0; display:flex; align-items:center; gap:8px; padding:10px 18px calc(26px + env(safe-area-inset-bottom)); flex-wrap:wrap; }
 .doc-detail-footer .doc-detail-btn { margin-left:0; }
 /* Lock status text — absolutely placed in the reserved bottom strip so toggling
    it never reflows the footer button row. */
