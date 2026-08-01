@@ -5635,7 +5635,18 @@ class ContainerOverviewView extends obsidian.ItemView {
       const over = docContainer.countOverdue(docs, today);
       if (over) roll.createSpan({ text: `${over} review overdue`, cls: 'doc-ov-pill over' });
       if (node.kind === 'collection' || node.kind === 'document') this.renderDocs(c, node, docs, today);
-      else this.renderContainers(c, node);   // root or category
+      else {
+        this.renderContainers(c, node);   // root or category
+        // A category may hold documents directly, not only collections (SOPs
+        // does). renderContainers skips document children, so those documents
+        // were invisible on their own category page — the only route to them
+        // was the tree. List them underneath the container cards.
+        const direct = (node.children || []).filter((ch) => ch.kind === 'document');
+        if (direct.length) {
+          c.createDiv({ text: 'Documents in this ' + (node.kind === 'root' ? 'root' : 'category'), cls: 'doc-detail-grp' });
+          this.renderDocs(c, node, direct.map((ch) => this.docMeta(ch)), today);
+        }
+      }
     }
     c.scrollTop = prevScroll;
   }
@@ -9067,6 +9078,26 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return this.app.workspace.getLeaf('tab');
   }
 
+  // TEMPORARY (2026-08-01) — REMOVE once the history rule is understood.
+  // Obsidian's push rule for leaf history is not documented and my model of it
+  // disagrees with observed behaviour, so this records the truth at every one of
+  // our navigations instead of reasoning about it: what view we are leaving,
+  // whether it declares itself navigable, and what is actually on the stack.
+  _navTrace(tag, leaf, phase) {
+    try {
+      const h = leaf && leaf.history;
+      const v = leaf && leaf.view;
+      const back = h && Array.isArray(h.backHistory) ? h.backHistory : null;
+      const fwd = h && Array.isArray(h.forwardHistory) ? h.forwardHistory : null;
+      dlog('nav-trace', phase, tag,
+        '| view:', (v && typeof v.getViewType === 'function' && v.getViewType()) || '?',
+        '| navigation:', v ? String(v.navigation) : '?',
+        '| back:', back ? back.length : 'n/a',
+        '| fwd:', fwd ? fwd.length : 'n/a',
+        '| stack:', back ? back.map((e) => (e && e.state && e.state.type) || '?').join(' > ') : 'n/a');
+    } catch (e) { elog('nav-trace failed:', (e && e.message) || e); }
+  }
+
   async openDocDetail(node, opts) {
     const leaf = this._navLeaf([VIEW_TYPE_DOC_DETAIL]);
     // Core Obsidian does not stack a second entry when the same link is clicked
@@ -9075,7 +9106,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_DETAIL
       && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
     if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
+    this._navTrace('openDocDetail ' + node.path, leaf, 'BEFORE');
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
+    this._navTrace('openDocDetail ' + node.path, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -9086,7 +9119,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_CONTAINER
       && v.path === path;
     if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
+    this._navTrace('openContainerOverview ' + path, leaf, 'BEFORE');
     await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path } });
+    this._navTrace('openContainerOverview ' + path, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
   }
   async createTaxonomyFolder(parentPath, name) {
@@ -9562,7 +9597,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       return;
     }
     const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
+    this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'BEFORE');
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
+    this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
   }
@@ -9877,7 +9914,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this._returnContext = { path: filePath, docPath: returnDocPath, tab: returnTab || null };   // consumed by OfficeEditorView.onLoadFile
     // returnDocPath also goes into the view state so setState sets _returnToDocPath
     // synchronously (no race with async onLoadFile) → it persists via getState across restart.
+    this._navTrace('openDocInEditor ' + filePath, leaf, 'BEFORE');
     await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath, returnTab: returnTab || null } });
+    this._navTrace('openDocInEditor ' + filePath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
