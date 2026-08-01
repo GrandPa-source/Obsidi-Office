@@ -9524,16 +9524,28 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this._appendActivity(path, 'Opened in system app', 'open');
   }
 
-  revealInExplorer(path) {
+  async revealInExplorer(path) {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!file) { new obsidian.Notice('File not found: ' + path); return; }
     const fe = this.app.workspace.getLeavesOfType('file-explorer')[0];
-    if (fe && fe.view && typeof fe.view.revealInFolder === 'function') {
-      fe.view.revealInFolder(file);
-      this.app.workspace.revealLeaf(fe);
-    } else {
-      new obsidian.Notice('File explorer is not available');
+    // Instrumented: this path was silent, so an iPad failure gave nothing to read.
+    dlog('revealInExplorer:', path, 'leaf:', !!fe, 'deferred:', !!(fe && fe.isDeferred),
+         'hasReveal:', !!(fe && fe.view && typeof fe.view.revealInFolder === 'function'));
+    if (!fe) { new obsidian.Notice('File explorer is not available'); return; }
+    // Obsidian 1.7+ defers a view until its leaf is first visited. On mobile the
+    // left drawer starts closed, so the file-explorer leaf exists while its view
+    // is still a deferred placeholder with no revealInFolder — which is why this
+    // worked on desktop (sidebar visible at startup) and not on iPad.
+    if (fe.isDeferred && typeof fe.loadIfDeferred === 'function') {
+      try { await fe.loadIfDeferred(); } catch (e) { elog('revealInExplorer: loadIfDeferred failed:', e && e.stack || e); }
     }
+    this.app.workspace.revealLeaf(fe);   // opens the drawer on mobile, focuses the sidebar on desktop
+    if (!fe.view || typeof fe.view.revealInFolder !== 'function') {
+      elog('revealInExplorer: no revealInFolder after load; deferred:', !!fe.isDeferred);
+      new obsidian.Notice('File explorer is not available');
+      return;   // nothing was revealed — do not log an action that did not happen
+    }
+    fe.view.revealInFolder(file);
     this._appendActivity(path, 'Revealed in file explorer', 'open');
   }
 
