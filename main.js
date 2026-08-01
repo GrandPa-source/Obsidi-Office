@@ -55,6 +55,69 @@ const PERSON_TYPES = ['Complainant', 'Subject', 'Victim', 'Witness', 'Stakeholde
 const STATUS_VALUES = ['Draft','In Review','Pending Approval','Approved','Active','Archived','Obsolete'];
 const DOC_CLASSES   = ['Policy','SOP','Work Instruction','Form','Flowchart','Other'];
 
+// ── Organizations & Sites (2026-07-31 spec) ──────────────────────────────────
+// An entity is a folder holding a folder note named after the folder, carrying
+// `type: organization|site`. Entities are NOT document containers: they hold
+// their record and (organizations only) their own notes. See spec §4, §5.
+
+const ENTITY_TYPES = ['organization', 'site'];
+
+const ORG_TYPES = ['Internal', 'Health System Partner', 'Vendor', 'Contractor',
+                   'Agency', 'Regulator', 'Union', 'Community Partner', 'Other'];
+const ORG_STATUS = ['Active', 'Prospective', 'Inactive', 'Archived'];
+
+const SITE_TYPES = ['Hospital', 'Long-Term Care', 'Residential', 'Clinic',
+                    'Office', 'Campus Building', 'Parking', 'External'];
+const SITE_STATUS = ['Active', 'Planned', 'Closed', 'Archived'];
+
+// No `phone` on the organization record — phone numbers belong to Contacts,
+// which is a later piece of work (spec §2).
+const ORG_FIELDS = [
+  { key: 'name',         label: 'Name',         type: 'text' },
+  { key: 'orgType',      label: 'Type',         type: 'select', options: ORG_TYPES },
+  { key: 'status',       label: 'Status',       type: 'select', options: ORG_STATUS },
+  { key: 'relationship', label: 'Relationship', type: 'text' },
+  { key: 'website',      label: 'Website',      type: 'text' },
+  { key: 'address',      label: 'Address',      type: 'text' },
+  { key: 'summary',      label: 'Summary',      type: 'textarea' },
+  { key: 'tags',         label: 'Tags',         type: 'tags' },
+];
+
+const SITE_FIELDS = [
+  { key: 'name',         label: 'Name',         type: 'text' },
+  { key: 'organization', label: 'Organization', type: 'entity' },
+  { key: 'siteType',     label: 'Site Type',    type: 'select', options: SITE_TYPES },
+  { key: 'siteCode',     label: 'Site Code',    type: 'text' },
+  { key: 'address',      label: 'Address',      type: 'text' },
+  { key: 'city',         label: 'City',         type: 'text' },
+  { key: 'province',     label: 'Province',     type: 'text' },
+  { key: 'postalCode',   label: 'Postal Code',  type: 'text' },
+  { key: 'status',       label: 'Status',       type: 'select', options: SITE_STATUS },
+  { key: 'summary',      label: 'Summary',      type: 'textarea' },
+  { key: 'tags',         label: 'Tags',         type: 'tags' },
+];
+
+// The folder note is named after its folder so references read `[[Baycrest]]`
+// and the graph labels the node with the entity name (spec D4).
+function entityNoteName(folderName) {
+  return String(folderName || '') + '.md';
+}
+
+// References are quoted wikilinks in frontmatter — the form the native indexer
+// parses at boot, which is what makes backlinks and graph edges work (spec D3).
+function entityLink(name) {
+  return '[[' + String(name || '').trim() + ']]';
+}
+
+// Accepts '[[Name]]', '[[Name|alias]]', '[[Name#sub]]' or a bare name.
+function entityLinkName(link) {
+  const s = String(link == null ? '' : link).trim();
+  if (!s) return null;
+  const m = s.match(/^\[\[([^\]|#\n]+)(?:[#|][^\]\n]*)?\]\]$/);
+  const name = (m ? m[1] : s).trim();
+  return name || null;
+}
+
 const DOC_FIELDS = {
   phase1: [
     { key:'title',           label:'Title',            type:'text' },
@@ -163,7 +226,7 @@ function isManaged(name) {
 function isSidecar(name) { return name.toLowerCase().endsWith('.md'); }
 
 // paths: vault-relative file paths (forward slashes). root: managed-root folder name.
-function buildTaxonomy(paths, root) {
+function buildTaxonomy(paths, root, entityFolders) {
   const prefix = root.replace(/\/+$/, '') + '/';
   // folderPath → all direct child filenames (non-sidecar)
   const folderFiles = new Map();
@@ -200,6 +263,16 @@ function buildTaxonomy(paths, root) {
     const marker = sidecars.find(s => PENDING_SIDECAR_RE.test(s));
     if (marker) pending.set(folder, marker);
   }
+  // Entity folders are supplied by the caller (frontmatter is not readable from
+  // the pure core). Only those under the managed root participate.
+  const entities = new Map();
+  if (entityFolders) {
+    const pairs = (typeof entityFolders.entries === 'function')
+      ? entityFolders.entries() : Object.entries(entityFolders);
+    for (const [folder, kind] of pairs) {
+      if (String(folder).startsWith(prefix) && ENTITY_TYPES.includes(kind)) entities.set(folder, kind);
+    }
+  }
   // Build nested category/collection/document tree.
   const rootNode = { children: [] };
   const ensure = (parent, name, path) => {
@@ -208,6 +281,8 @@ function buildTaxonomy(paths, root) {
     return n;
   };
   const leaves = [];
+  // Entities first so their nodes exist before any nested note claims the path.
+  for (const [f, k] of entities) leaves.push({ folder: f, leafKind: k });
   for (const f of documents) leaves.push({ folder: f, leafKind: 'document' });
   for (const f of notes)     leaves.push({ folder: f, leafKind: 'note' });
   for (const f of pending.keys()) leaves.push({ folder: f, leafKind: 'pending' });
@@ -233,12 +308,27 @@ function buildTaxonomy(paths, root) {
       docNode.pending = pending.get(docFolder);
       docNode.current = null; docNode.files = [];
       docNode.attachments = (folderFiles.get(docFolder) || []).slice();
+    } else if (ENTITY_TYPES.includes(leafKind)) {
+      docNode.entityType = leafKind;
+      docNode.current = null; docNode.files = []; docNode.attachments = [];
     } else {
       docNode.noteBody = folderFiles.get(docFolder).find(isNoteBody);
       docNode.current = null; docNode.files = []; docNode.attachments = [];
     }
   }
+  // An entity folder can also be the parent of note folders; the "intermediate
+  // segment becomes a collection" rule must not demote it. Stamping last makes
+  // the result independent of leaf ordering.
+  if (entities.size) _stampEntityKinds(rootNode.children, entities);
   return rootNode.children;
+}
+
+function _stampEntityKinds(nodes, entities) {
+  for (const n of nodes) {
+    const k = entities.get(n.path);
+    if (k) { n.kind = k; n.entityType = k; }
+    if (n.children && n.children.length) _stampEntityKinds(n.children, entities);
+  }
 }
 
 // ── Task 14: Lifecycle (next review + overdue) ───────────────────────────────
@@ -533,6 +623,16 @@ module.exports = {
   STATUS_VALUES,
   DOC_CLASSES,
   DOC_FIELDS,
+  ENTITY_TYPES,
+  ORG_TYPES,
+  ORG_STATUS,
+  SITE_TYPES,
+  SITE_STATUS,
+  ORG_FIELDS,
+  SITE_FIELDS,
+  entityNoteName,
+  entityLink,
+  entityLinkName,
   parseVersion,
   compareVersions,
   groupDocumentFiles,
@@ -731,6 +831,8 @@ const DOC_CONTAINER_CSS = `
 .doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
 .doc-detail-wrap { max-width:1100px; margin:0 auto; padding:14px 18px 28px; }
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
+.doc-ent-flab { display:block; margin:12px 0 4px; color: var(--text-muted); font-size:0.85em; text-transform:uppercase; letter-spacing:0.02em; }
+.doc-ent-owner { display:flex; align-items:baseline; gap:8px; margin:12px 0 4px; }
 /* Breadcrumb segments are real buttons — keyboard-reachable, and the only way
    up a level that does not depend on this tab's history. */
 /* Plain clickable text, not a control. Obsidian's base button carries a
@@ -1199,7 +1301,9 @@ const DEFAULT_SETTINGS = {
   docGlossaryRoot: 'Definitions',
   authorLabel: '',          // mobile author display name (no system user on mobile)
   checkoutTimeoutHours: 0,  // 0 = no stale-lock timeout
-  docCategoryTypeMap: { Projects: 'project' },   // category → container type (else 'grouping')
+  docCategoryTypeMap: { Projects: 'project', Organizations: 'organization', Sites: 'site' },   // category → container type (else 'grouping')
+  docOrgCategory: 'Organizations',    // category under docRoot holding organization records
+  docSiteCategory: 'Sites',           // category under docRoot holding site records
   // Container-notes: tag-pane clicks on tags that exist ONLY in container
   // notes open the Document Browser filtered to the tag (core search would
   // label every hit "_document"). Mixed/ordinary tags stay native.
@@ -3920,7 +4024,7 @@ class ContainerNoteView extends obsidian.FileView {
       if (docs) return docs;
       docs = [];
       const walk = (nodes) => { for (const n of (nodes || [])) { if (n.kind === 'document') docs.push(n); else walk(n.children); } };
-      walk(docContainer.buildTaxonomy(this.app.vault.getFiles().map((f) => f.path), this.plugin.settings.docRoot));
+      walk(this.plugin.taxonomy());
       return docs;
     };
     const hide = () => { sug.removeClass('visible'); sug.empty(); };
@@ -4188,9 +4292,7 @@ class DocumentBrowserView extends obsidian.ItemView {
   async onClose() {}
 
   scan() {
-    const root = this.plugin.settings.docRoot;
-    const paths = this.app.vault.getFiles().map(f => f.path);
-    return docContainer.buildTaxonomy(paths, root);
+    return this.plugin.taxonomy();
   }
 
   render() {
@@ -4356,8 +4458,7 @@ class DocumentDetailView extends obsidian.ItemView {
 
   async setState(state, result) {
     if (state && state.docPath) {
-      const paths = this.app.vault.getFiles().map(f => f.path);
-      const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
+      const tree = this.plugin.taxonomy();
       this.node = this.findDoc(tree, state.docPath);
       this._editMode = !!state.edit; this._stakeEdit = false; this._relEdit = false;   // navigating opens in view mode (unless edit requested, e.g. a just-created doc)
       this._fresh = !!state.fresh;   // a just-created doc: Cancel discards it (see Cancel handler)
@@ -4386,8 +4487,7 @@ class DocumentDetailView extends obsidian.ItemView {
   // setState: preserves edit mode, tabs, drafts, and scroll.
   _refreshNode() {
     if (!this.node) return;
-    const paths = this.app.vault.getFiles().map(f => f.path);
-    const fresh = this.findDoc(docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot), this.node.path);
+    const fresh = this.findDoc(this.plugin.taxonomy(), this.node.path);
     if (fresh) this.node = fresh;
   }
 
@@ -5048,8 +5148,7 @@ class DocumentDetailView extends obsidian.ItemView {
   _relatedDocContainer(targetPath) {
     const folder = targetPath.slice(0, targetPath.lastIndexOf('/'));
     if (!folder) return null;
-    const paths = this.app.vault.getFiles().map((f) => f.path);
-    const tree = docContainer.buildTaxonomy(paths, this.plugin.settings.docRoot);
+    const tree = this.plugin.taxonomy();
     const node = this.findDoc(tree, folder);
     if (node && node.current && folder + '/' + node.current === targetPath) return folder;
     return null;
@@ -5468,7 +5567,7 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   node() {
     const root = this.plugin.settings.docRoot;
-    const tree = docContainer.buildTaxonomy(this.app.vault.getFiles().map(f => f.path), root);
+    const tree = this.plugin.taxonomy();
     if (this.path === root) return { kind: 'root', path: root, name: root, children: tree };
     const find = (nodes) => { for (const n of nodes) { if (n.path === this.path) return n; if (n.children) { const f = find(n.children); if (f) return f; } } return null; };
     return find(tree);
@@ -5497,7 +5596,14 @@ class ContainerOverviewView extends obsidian.ItemView {
     const node = this.node();
     if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
     // T31: project-type collections get the Project view; everything else is grouping
-    if (node.kind === 'collection' && this.plugin.resolveContainerType(node) === 'project') {
+    const ctype = this.plugin.resolveContainerType(node);
+    if (docContainer.ENTITY_TYPES.includes(ctype)) {
+      // v0.1 rung, partial: the record renders read-only. The dashboard tabs
+      // (Sites / Work / Notes / placeholders) and inline editing are Task 5.
+      // Branching here also keeps the grouping page's "New Collection" button
+      // off an entity, which the spec forbids (D5/D6).
+      this.renderEntityRecordStub(c, node, ctype);
+    } else if (node.kind === 'collection' && ctype === 'project') {
       this.renderProjectView(c, node);
     } else {
       const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
@@ -5532,6 +5638,38 @@ class ContainerOverviewView extends obsidian.ItemView {
       else this.renderContainers(c, node);   // root or category
     }
     c.scrollTop = prevScroll;
+  }
+
+  // Organizations & Sites v0.1 (partial) — read-only record. Task 5 replaces
+  // this with the full entity view (editable card + Sites/Work/Notes tabs).
+  renderEntityRecordStub(c, node, type) {
+    const rec = this.plugin.readEntityRecord(node.path);
+    const isOrg = type === 'organization';
+    renderCrumb(c, this.plugin, node.path, 'doc-ov-crumb');
+    const h1 = c.createDiv('doc-pv-h1row');
+    h1.createSpan({ text: rec.name || node.name, cls: 'doc-ov-title' });
+    const kindVal = isOrg ? rec.orgType : rec.siteType;
+    if (kindVal) h1.createSpan({ text: kindVal, cls: 'doc-detail-chip' });
+    if (rec.status) h1.createSpan({ text: rec.status, cls: 'doc-detail-chip' });
+    h1.createSpan({ text: isOrg ? 'Organization' : 'Site', cls: 'doc-ov-typetag' });
+    c.createDiv({ text: 'Stored in ' + docContainer.entityNoteName(node.name), cls: 'doc-pv-sub' });
+
+    const card = c.createDiv('doc-detail-metacard');
+    card.createDiv({ text: 'Record', cls: 'doc-detail-grp' });
+    const grid = card.createDiv('doc-detail-grid');
+    const fields = isOrg ? docContainer.ORG_FIELDS : docContainer.SITE_FIELDS;
+    for (const f of fields) {
+      const cell = grid.createDiv('doc-detail-fld');
+      if (f.type === 'textarea' || f.key === 'name' || f.key === 'address') cell.addClass('span2');
+      cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
+      let val = rec[f.key];
+      if (f.key === 'tags') val = Array.isArray(val) ? val.map((t) => '#' + String(t).replace(/^#/, '')).join(' ') : val;
+      if (f.type === 'entity') val = docContainer.entityLinkName(val) || '';
+      cell.createDiv({ text: val == null || val === '' ? '—' : String(val),
+                       cls: 'doc-detail-val' + (val ? '' : ' doc-detail-muted') });
+    }
+    c.createDiv({ cls: 'doc-detail-stub',
+      text: 'Record view. Editing, the Sites/Work/Notes rollups and the Agreements and Contacts placeholders arrive with the rest of the v0.1 rung.' });
   }
 
   // ── T32: Project view — progress, compact identification, description, tabs ─
@@ -6162,11 +6300,27 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .setDesc('Comma-separated categories whose containers are Projects (Project view instead of the Collection page). Each project folder may also carry a `_project.md` with `type: project`.')
       .addText(t => t.setValue(Object.keys(this.plugin.settings.docCategoryTypeMap || {}).filter(k => this.plugin.settings.docCategoryTypeMap[k] === 'project').join(', '))
         .onChange(async v => {
+          // Rebuild ONLY the project entries; carry every other mapping over.
+          // A blanket rebuild would silently drop the organization/site entries.
           const map = {};
+          const prev = this.plugin.settings.docCategoryTypeMap || {};
+          for (const [k, t] of Object.entries(prev)) if (t !== 'project') map[k] = t;
           v.split(',').map(s => s.trim()).filter(Boolean).forEach(c => { map[c] = 'project'; });
           this.plugin.settings.docCategoryTypeMap = map;
           await this.plugin.saveSettings();
         }));
+
+    new obsidian.Setting(containerEl)
+      .setName('Organizations category')
+      .setDesc('Category folder under the document root holding organization records. Each organization is a folder with a note named after it.')
+      .addText(t => t.setValue(this.plugin.settings.docOrgCategory || 'Organizations')
+        .onChange(async v => { this.plugin.settings.docOrgCategory = v.trim() || 'Organizations'; await this.plugin.saveSettings(); }));
+
+    new obsidian.Setting(containerEl)
+      .setName('Sites category')
+      .setDesc('Category folder under the document root holding site records. Sites are created from an organization page and stored here.')
+      .addText(t => t.setValue(this.plugin.settings.docSiteCategory || 'Sites')
+        .onChange(async v => { this.plugin.settings.docSiteCategory = v.trim() || 'Sites'; await this.plugin.saveSettings(); }));
   }
 }
 
@@ -6933,6 +7087,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.addCommand({ id: 'create-container-note', name: 'Create container note',
         callback: () => new NoteCreateModal(this.app, { defaultType: 'General', askTitle: true },
           (title, noteType) => this.createNoteContainer({ title, noteType })).open() });
+      // Organizations & Sites (2026-07-31 spec) — v0.1 rung.
+      this.addCommand({ id: 'create-organization', name: 'Create organization',
+        callback: () => new EntityCreateModal(this.app, {
+          type: 'organization',
+          onSubmit: async ({ name, orgType }) => {
+            const folder = await this.createEntity({ type: 'organization', name, seed: orgType ? { orgType } : null });
+            if (folder) await this.openContainerOverview({ path: folder });
+          },
+        }).open() });
+      // TEMPORARY PROBE — remove once the rollup mechanism is settled. Answers
+      // spec §9: does a quoted wikilink in FRONTMATTER reach Obsidian's link
+      // index? Everything in the Work/Sites/Notes rollups depends on it.
+      this.addCommand({ id: 'probe-entity-backlinks', name: 'Probe: entity backlinks (temporary)',
+        callback: () => this.probeEntityBacklinks() });
     }
 
     this.addCommand({
@@ -8411,12 +8579,114 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const fm = (this.app.metadataCache.getFileCache(pnote) || {}).frontmatter || {};
       if (fm.type) return String(fm.type);
     }
+    // Entity folder note: `<Folder>/<Folder>.md` with `type: organization|site`.
+    // Checked before the category map so an entity keeps its type even if the
+    // folder is moved out of its category.
+    const folderName = node.path.slice(node.path.lastIndexOf('/') + 1);
+    const enote = this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.entityNoteName(folderName));
+    if (enote) {
+      const efm = (this.app.metadataCache.getFileCache(enote) || {}).frontmatter || {};
+      if (docContainer.ENTITY_TYPES.includes(efm.type)) return efm.type;
+    }
     const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
     const rel = node.path.startsWith(root + '/') ? node.path.slice(root.length + 1) : node.path;
     const topCat = rel.split('/')[0];
     const map = this.settings.docCategoryTypeMap || {};
     if (map[topCat]) return map[topCat];
     return 'grouping';
+  }
+
+  // ── Organizations & Sites: entity folder resolution ──────────────────────────
+  // An entity folder holds a markdown file named after the folder whose
+  // frontmatter `type` is an entity type. Frontmatter is unreadable from the
+  // pure core, so the runtime resolves this and hands the map to buildTaxonomy.
+  entityFolders() {
+    const map = new Map();
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const prefix = root + '/';
+    for (const f of this.app.vault.getMarkdownFiles()) {
+      if (!f.path.startsWith(prefix)) continue;
+      const folder = f.path.slice(0, f.path.length - f.name.length - 1).replace(/\/+$/, '');
+      const folderName = folder.slice(folder.lastIndexOf('/') + 1);
+      if (f.name !== docContainer.entityNoteName(folderName)) continue;
+      const fm = (this.app.metadataCache.getFileCache(f) || {}).frontmatter || {};
+      if (docContainer.ENTITY_TYPES.includes(fm.type)) map.set(folder, fm.type);
+    }
+    return map;
+  }
+
+  // THE taxonomy entry point. Every caller uses this so entity detection can
+  // never be accidentally omitted at one call site.
+  taxonomy() {
+    return docContainer.buildTaxonomy(
+      this.app.vault.getFiles().map((f) => f.path),
+      this.settings.docRoot,
+      this.entityFolders());
+  }
+
+  // Absolute path of the category holding records of a given entity type.
+  entityCategoryPath(type) {
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const cat = type === 'site' ? (this.settings.docSiteCategory || 'Sites')
+                                : (this.settings.docOrgCategory || 'Organizations');
+    return root + '/' + cat;
+  }
+
+  entityNotePath(folderPath) {
+    const name = folderPath.slice(folderPath.lastIndexOf('/') + 1);
+    return folderPath + '/' + docContainer.entityNoteName(name);
+  }
+
+  // Phase D seam — the only read of an entity record's frontmatter.
+  readEntityRecord(folderPath) {
+    const f = this.app.vault.getAbstractFileByPath(this.entityNotePath(folderPath));
+    if (!(f instanceof obsidian.TFile)) return {};
+    return (this.app.metadataCache.getFileCache(f) || {}).frontmatter || {};
+  }
+
+  // Phase D seam — the only write of an entity record's frontmatter.
+  async writeEntityRecord(folderPath, mutator) {
+    const f = this.app.vault.getAbstractFileByPath(this.entityNotePath(folderPath));
+    if (!(f instanceof obsidian.TFile)) { elog('writeEntityRecord: no record at', folderPath); return; }
+    await this.app.fileManager.processFrontMatter(f, (fm) => mutator(fm));
+    this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach((l) => l.view.render && l.view.render());
+  }
+
+  // Create an organization or site record. `seed` supplies extra frontmatter
+  // (e.g. a site's organization link). Returns the folder path, or null.
+  async createEntity({ type, name, seed }) {
+    const clean = (name || '').trim();
+    if (!clean) { new obsidian.Notice('Enter a name'); return null; }
+    if (/[\\/:*?"<>|]/.test(clean)) { new obsidian.Notice('Name cannot contain \\ / : * ? " < > |'); return null; }
+    const category = this.entityCategoryPath(type);
+    if (!this.app.vault.getAbstractFileByPath(category)) {
+      try { await this.app.vault.createFolder(category); } catch (e) { /* exists or race */ }
+    }
+    const folder = category + '/' + clean;
+    if (this.app.vault.getAbstractFileByPath(folder)) {
+      new obsidian.Notice('“' + clean + '” already exists here.'); return null;
+    }
+    const defaults = type === 'site' ? { status: 'Active' } : { status: 'Active' };
+    const front = Object.assign({ type, name: clean }, defaults, seed || {});
+    const lines = ['---'];
+    for (const [k, v] of Object.entries(front)) {
+      if (v == null || v === '') continue;
+      if (Array.isArray(v)) { lines.push(k + ':'); v.forEach((x) => lines.push('  - ' + JSON.stringify(String(x)))); }
+      else lines.push(k + ': ' + JSON.stringify(String(v)));
+    }
+    lines.push('tags: []', '---', '');
+    try {
+      await this.app.vault.createFolder(folder);
+      await this.app.vault.create(this.entityNotePath(folder), lines.join('\n'));
+      dlog('entity created:', type, folder);
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach((l) => l.view.render && l.view.render());
+      new obsidian.Notice('Created ' + type + ' “' + clean + '”');
+      return folder;
+    } catch (e) {
+      elog('createEntity failed:', e && e.stack || e);
+      new obsidian.Notice('Could not create ' + type + ': ' + ((e && e.message) || e));
+      return null;
+    }
   }
 
   // ═══ _document.md metadata migration (2026-06-17) — Rung A runtime ═══════════
@@ -8481,8 +8751,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // data; only emits a `<root>/_migration-report.md` summary and opens it.
   async dryRunMetadataMigration() {
     const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
-    const paths = this.app.vault.getFiles().map(f => f.path);
-    const tree = docContainer.buildTaxonomy(paths, root);
+    const tree = this.taxonomy();
     const docs = [];
     // Pending documents (no file yet) are not migration candidates — their only
     // sidecar IS the marker; creating _document.md here would be pure noise.
@@ -9613,6 +9882,59 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
 
+  // ── TEMPORARY PROBE (2026-07-31) — REMOVE once the rollup is settled ────────
+  // Spec §9 rests on one unverified claim: that a quoted wikilink in FRONTMATTER
+  // (organization: "[[Baycrest]]") reaches Obsidian's link index. If it does not,
+  // the Work/Sites/Notes rollups need a different mechanism and the entity
+  // dashboards get redesigned — so this is measured before anything is built on
+  // it. Writes to the debug log so it can be run on iPad, where there is no
+  // console. Reports three independent signals per entity.
+  probeEntityBacklinks() {
+    const P = 'entity-probe:';
+    const ents = this.entityFolders();
+    dlog(P, 'entity folders found:', ents.size);
+    if (!ents.size) {
+      new obsidian.Notice('No organization or site records found — create one first');
+      dlog(P, 'RESULT: no entities to probe'); return;
+    }
+    const rl = this.app.metadataCache.resolvedLinks || {};
+    let totalStamped = 0;
+    for (const [folder, type] of ents) {
+      const notePath = this.entityNotePath(folder);
+      const name = folder.slice(folder.lastIndexOf('/') + 1);
+      // Signal 1: who links here, according to resolvedLinks.
+      const sources = Object.keys(rl).filter((src) => rl[src] && rl[src][notePath]);
+      // Signal 2: of those, which carry the link in a STAMP field rather than a body.
+      const stamped = [];
+      for (const src of sources) {
+        const f = this.app.vault.getAbstractFileByPath(src);
+        const fm = (f && (this.app.metadataCache.getFileCache(f) || {}).frontmatter) || {};
+        const org = docContainer.entityLinkName(fm.organization);
+        const sites = Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []);
+        if (org === name || sites.some((s) => docContainer.entityLinkName(s) === name)) stamped.push(src);
+      }
+      totalStamped += stamped.length;
+      // Signal 3: does the cache expose frontmatterLinks separately? Useful as a
+      // fallback route if resolvedLinks turns out not to include frontmatter.
+      let fmLinkSample = 'n/a';
+      if (sources.length) {
+        const f0 = this.app.vault.getAbstractFileByPath(sources[0]);
+        const c0 = (f0 && this.app.metadataCache.getFileCache(f0)) || {};
+        fmLinkSample = Array.isArray(c0.frontmatterLinks)
+          ? c0.frontmatterLinks.map((l) => l.link).join(',') || '(empty array)' : 'absent';
+      }
+      dlog(P, type, name, '| backlink sources:', sources.length, '| stamped:', stamped.length,
+           '| frontmatterLinks on first source:', fmLinkSample);
+      sources.slice(0, 10).forEach((s) => dlog(P, '   source:', s));
+    }
+    const verdict = totalStamped > 0
+      ? 'PASS — frontmatter wikilinks reach resolvedLinks; rollups can read the link index'
+      : 'INCONCLUSIVE — no stamped source found. Add organization: "[[<name>]]" to a document\'s _document.md or current sidecar, wait for the index, and re-run';
+    dlog(P, 'RESULT:', verdict);
+    new obsidian.Notice(totalStamped > 0 ? 'Probe PASS — ' + totalStamped + ' stamped source(s) found. See debug log.'
+                                         : 'Probe inconclusive — no stamped sources. See debug log.', 8000);
+  }
+
   // Hand a file to the platform. Desktop opens it in the registered application;
   // iOS has no public "reveal in Files" API, so it raises the share sheet, which
   // is the platform's hand-off ("Open in Word", "Save to Files"). The Web Share
@@ -10215,6 +10537,63 @@ class FileNameModal extends obsidian.Modal {
 // - Create-from-parent ("＋ New note"): type only, restricted type list,
 //   no title input — createNoteContainer auto-generates "<Type> - <Parent>".
 // everything else is set on the card after the editor opens.
+// Create an organization, or a site from an organization page. In site mode the
+// owning organization is shown read-only — it is the page you started from.
+class EntityCreateModal extends obsidian.Modal {
+  constructor(app, opts) { super(app); this.opts = opts || {}; }
+  onOpen() {
+    const isSite = this.opts.type === 'site';
+    this.titleEl.setText(isSite ? 'New site' : 'New organization');
+    const c = this.contentEl;
+
+    const nameLab = c.createEl('label', { text: 'Name', cls: 'doc-ent-flab' });
+    nameLab.htmlFor = 'doc-ent-name';
+    const name = c.createEl('input', { cls: 'doc-ov-newinput', attr: { id: 'doc-ent-name', spellcheck: 'false' } });
+    name.placeholder = isSite ? 'Apotex Centre' : 'Baycrest';
+
+    let typeSel = null, addr = null;
+    if (isSite) {
+      const owner = c.createDiv('doc-ent-owner');
+      owner.createSpan({ text: 'Organization', cls: 'doc-detail-lab' });
+      owner.createSpan({ text: this.opts.orgName || '—', cls: 'doc-detail-val' });
+      const tLab = c.createEl('label', { text: 'Site type', cls: 'doc-ent-flab' });
+      tLab.htmlFor = 'doc-ent-type';
+      typeSel = c.createEl('select', { cls: 'doc-detail-vinput', attr: { id: 'doc-ent-type' } });
+      typeSel.createEl('option', { text: '—', value: '' });
+      docContainer.SITE_TYPES.forEach((o) => typeSel.createEl('option', { text: o, value: o }));
+      const aLab = c.createEl('label', { text: 'Address (optional)', cls: 'doc-ent-flab' });
+      aLab.htmlFor = 'doc-ent-addr';
+      addr = c.createEl('input', { cls: 'doc-ov-newinput', attr: { id: 'doc-ent-addr' } });
+    } else {
+      const tLab = c.createEl('label', { text: 'Type', cls: 'doc-ent-flab' });
+      tLab.htmlFor = 'doc-ent-type';
+      typeSel = c.createEl('select', { cls: 'doc-detail-vinput', attr: { id: 'doc-ent-type' } });
+      typeSel.createEl('option', { text: '—', value: '' });
+      docContainer.ORG_TYPES.forEach((o) => typeSel.createEl('option', { text: o, value: o }));
+    }
+
+    const bar = c.createDiv('doc-detail-sh-bar');
+    const create = bar.createEl('button', { text: isSite ? 'Create site' : 'Create organization', cls: 'mod-cta' });
+    create.disabled = true;
+    name.oninput = () => { create.disabled = !name.value.trim(); };
+    const submit = async () => {
+      if (!name.value.trim()) return;
+      create.disabled = true;
+      await this.opts.onSubmit({
+        name: name.value.trim(),
+        orgType: (!isSite && typeSel) ? typeSel.value : '',
+        siteType: (isSite && typeSel) ? typeSel.value : '',
+        address: addr ? addr.value.trim() : '',
+      });
+      this.close();
+    };
+    create.onclick = submit;
+    name.onkeydown = (e) => { if (e.key === 'Enter' && name.value.trim()) { e.preventDefault(); submit(); } };
+    name.focus();
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 class NoteCreateModal extends obsidian.Modal {
   constructor(app, opts, onSubmit) {
     super(app);
