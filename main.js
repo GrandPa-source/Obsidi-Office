@@ -731,6 +731,12 @@ const DOC_CONTAINER_CSS = `
 .doc-container-empty, .doc-detail-empty, .doc-ov-empty { color: var(--text-faint); padding:14px; }
 .doc-detail-wrap { max-width:1100px; margin:0 auto; padding:14px 18px 28px; }
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
+/* Breadcrumb segments are real buttons — keyboard-reachable, and the only way
+   up a level that does not depend on this tab's history. */
+.doc-crumb-link { background:none; border:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer; }
+.doc-crumb-link:hover { color: var(--text-accent); text-decoration:underline; }
+.doc-crumb-link:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
+@media (pointer: coarse) { .doc-crumb-link { min-height:44px; display:inline-flex; align-items:center; } }
 .doc-detail-title { font-size:22px; font-weight:600; margin-top:2px; }
 .doc-detail-sub { font-size:12px; color: var(--text-muted); margin-bottom:18px; }
 .doc-detail-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px 22px; }
@@ -844,8 +850,11 @@ const DOC_CONTAINER_CSS = `
 .doc-pending-actions { display:flex; gap:16px; justify-content:center; margin:24px 0 12px; }
 .doc-pending-actions .doc-detail-hbtn.big { font-size:13px; padding:10px 22px; }
 .doc-detail-stub { font-size:11px; color: var(--text-faint); font-style:italic; padding:8px 4px; }
-.doc-detail-footer { flex:0 0 auto; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow: 0 -4px 12px rgba(0,0,0,.12); }
-.doc-detail-footer-inner { position:relative; max-width:1100px; margin:0 auto; display:flex; align-items:center; gap:8px; padding:10px 18px 26px; flex-wrap:wrap; }
+/* Full-bleed footer: spans the whole tabbed view, no side shadow, and sits at
+   the bottom edge. z-index 0 keeps it under Obsidian's status bar so the sync
+   indicator stays on top instead of being covered. */
+.doc-detail-footer { flex:0 0 auto; position:relative; z-index:0; border-top:1px solid var(--background-modifier-border); background: var(--background-primary); box-shadow:none; }
+.doc-detail-footer-inner { position:relative; max-width:none; margin:0; display:flex; align-items:center; gap:8px; padding:10px 18px calc(10px + env(safe-area-inset-bottom)); flex-wrap:wrap; }
 .doc-detail-footer .doc-detail-btn { margin-left:0; }
 /* Lock status text — absolutely placed in the reserved bottom strip so toggling
    it never reflows the footer button row. */
@@ -2431,6 +2440,15 @@ function escapeRe(s) {
 // ===========================================================================
 
 class OfficeEditorView extends obsidian.FileView {
+  // The editor is deliberately NOT a history step. FileView declares itself
+  // navigable, which meant leaving the editor pushed the editor onto the back
+  // stack — so Return to Overview landed on the detail page and the back arrow
+  // immediately reopened the editor, looping. Opening the editor still records
+  // the page you came FROM (that push is governed by the outgoing view), so back
+  // from the editor returns to the document; the editor itself never becomes a
+  // destination the arrows can send you to.
+  navigation = false;
+
   // --- Abstract contract: subclasses MUST override these static getters ---
   static get VIEW_TYPE()         { throw new Error("Subclass must override VIEW_TYPE"); }
   static get fileExtension()     { throw new Error("Subclass must override fileExtension"); }
@@ -3512,6 +3530,8 @@ function noteLinkCompletionSource(plugin) {
 // tags/links live in the sibling _document.md skeleton (machine-written).
 // Encryption-READY: all body I/O goes through plugin.readNoteBody/writeNoteBody.
 class ContainerNoteView extends obsidian.FileView {
+  navigation = false;   // see OfficeEditorView — editors are not history destinations
+
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -4120,6 +4140,23 @@ function docTabsWrapGuard(bar) {
   ro.observe(bar);
 }
 
+// Clickable breadcrumb. Each ancestor segment navigates to that container.
+// History is per-tab, so it cannot answer "take me up a level" when you arrived
+// in this tab from somewhere else — the trail always can. `path` is the current
+// page's own path; only its ancestors are rendered.
+function renderCrumb(parentEl, plugin, path, cls) {
+  const el = parentEl.createDiv({ cls });
+  const segs = String(path || '').split('/').slice(0, -1);
+  segs.forEach((seg, i) => {
+    if (i) el.createSpan({ text: ' › ' });
+    const target = segs.slice(0, i + 1).join('/');
+    const b = el.createEl('button', { text: seg, cls: 'doc-crumb-link' });
+    b.setAttr('aria-label', 'Go to ' + seg);
+    b.onclick = () => plugin.openContainerOverview({ path: target });
+  });
+  return el;
+}
+
 // ===========================================================================
 // DocumentBrowserView — sidebar tree for doc-container feature
 // ===========================================================================
@@ -4382,7 +4419,7 @@ class DocumentDetailView extends obsidian.ItemView {
     const wrap = scroll.createDiv('doc-detail-wrap');
 
     // Header: crumb · title + status chip + Edit · subhead
-    wrap.createDiv({ text: this.node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-detail-crumb' });
+    renderCrumb(wrap, this.plugin, this.node.path, 'doc-detail-crumb');
     const h1 = wrap.createDiv('doc-detail-h1row');
     h1.createSpan({ text: fm.title || this.node.name, cls: 'doc-detail-title' });
     if (fm.status) h1.createSpan({ text: fm.status, cls: 'doc-detail-chip ' + this._chipCls(fm.status) });
@@ -5448,7 +5485,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     } else {
       const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       const docs = this.docsUnder(node);
-      c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › ') || '', cls: 'doc-ov-crumb' });
+      renderCrumb(c, this.plugin, node.path, 'doc-ov-crumb');
       const head = c.createDiv('doc-ov-head');
       head.createSpan({ text: node.name, cls: 'doc-ov-title' });
       if (node.kind === 'collection' || node.kind === 'category') {
@@ -5493,7 +5530,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     const pn = this.plugin.readProjectNote(node);
     const editing = this._projEditMode;
     if (editing) this._pjInputs = {};
-    c.createDiv({ text: node.path.split('/').slice(0, -1).join(' › '), cls: 'doc-ov-crumb' });
+    renderCrumb(c, this.plugin, node.path, 'doc-ov-crumb');
     const h1 = c.createDiv('doc-pv-h1row');
     h1.createSpan({ text: pn.projectName || node.name, cls: 'doc-ov-title' });
     if (pn.status) h1.createSpan({ text: pn.status, cls: 'doc-detail-chip ' + this._projChipCls(pn.status) });
@@ -8731,7 +8768,12 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // tree navigates the main area rather than trying to navigate the tree itself.
   _navLeaf(fallbackTypes) {
     const active = this.app.workspace.getMostRecentLeaf();
-    if (active && this._isOurSurface(active)) return active;
+    // An empty tab the user just opened is theirs to fill. Skipping it and
+    // hijacking a different existing tab is what made "open a new tab on SOPs,
+    // then navigate in" lose the SOPs entry — the navigation landed in the
+    // other tab, so this tab's history never recorded the category.
+    const activeType = active && active.view && typeof active.view.getViewType === 'function' && active.view.getViewType();
+    if (active && (this._isOurSurface(active) || activeType === 'empty')) return active;
     for (const t of (fallbackTypes || [])) {
       const l = this.app.workspace.getLeavesOfType(t)[0];
       if (l) return l;
