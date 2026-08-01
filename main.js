@@ -9140,15 +9140,36 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (e) { elog('_dropEditorHistory failed:', (e && e.message) || e); }
   }
 
-  // Is the top of the back stack already this container?
-  _backTopIsContainer(leaf, path) {
+  // Is the top of the back stack already this page? `id` is matched against
+  // whichever key that view type stores its identity under.
+  _backTopIs(leaf, type, id) {
     try {
       const back = leaf && leaf.history && Array.isArray(leaf.history.backHistory) ? leaf.history.backHistory : null;
       if (!back || !back.length) return false;
       const top = back[back.length - 1];
-      return !!(top && top.state && top.state.type === VIEW_TYPE_DOC_CONTAINER
-                && top.state.state && top.state.state.path === path);
+      if (!top || !top.state || top.state.type !== type) return false;
+      const s = top.state.state || {};
+      return (s.path || s.docPath || s.file || '') === id;
     } catch (e) { return false; }
+  }
+
+  // A note's "up" is its identified parent document when it has one — that is
+  // the thing it belongs to. Only a note with no parent belongs to its folder
+  // (Paul's ruling, 2026-08-01: creating a note from a document's Related
+  // Documents tab and pressing back landed on Notes/ rather than the document).
+  async _seedNoteParentHistory(leaf, noteFolder) {
+    const dm = this.app.vault.getAbstractFileByPath(noteFolder + '/' + docContainer.DOCUMENT_MD_NAME);
+    const fm = (dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter) || {};
+    const parentDoc = (Array.isArray(fm.relatedParents) && fm.relatedParents.length) ? String(fm.relatedParents[0]) : null;
+    if (!parentDoc) return this._seedParentHistory(leaf, noteFolder);   // unparented → its folder
+    const v = leaf.view;
+    const curType = v && typeof v.getViewType === 'function' ? v.getViewType() : null;
+    // Already standing on the parent (the create-from-parent flow): the ordinary
+    // push records it, so seeding would only duplicate it.
+    if (curType === VIEW_TYPE_DOC_DETAIL && v.node && v.node.path === parentDoc) return;
+    if (this._backTopIs(leaf, VIEW_TYPE_DOC_DETAIL, parentDoc)) return;
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: parentDoc } });
+    dlog('nav: seeded parent document history:', parentDoc);
   }
 
   // Hierarchy fallback (Paul's ruling, 2026-08-01). A page opened straight from
@@ -9171,7 +9192,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const v = leaf.view;
     const curType = v && typeof v.getViewType === 'function' ? v.getViewType() : null;
     if (curType === VIEW_TYPE_DOC_CONTAINER && v.path === parent) return;
-    if (this._backTopIsContainer(leaf, parent)) return;
+    if (this._backTopIs(leaf, VIEW_TYPE_DOC_CONTAINER, parent)) return;
     await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path: parent } });
     dlog('nav: seeded parent container history:', parent);
   }
@@ -9679,7 +9700,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
     const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
     this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'BEFORE');
-    await this._seedParentHistory(leaf, node.path);
+    await this._seedNoteParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
