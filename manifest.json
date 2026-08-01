@@ -1,7 +1,7 @@
 {
   "id": "obsidi-office",
   "name": "ObsidiOffice",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "minAppVersion": "1.0.0",
   "description": "Localhost-free OnlyOffice DOCX viewer + editor. Uses an in-iframe transport shim + postMessage RPC instead of binding 127.0.0.1.",
   "author": "GrandPa-source",

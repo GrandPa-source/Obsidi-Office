@@ -26,8 +26,13 @@ Two independent causes. Fixing either alone leaves the arrows working only somet
 
 ## 3. Design
 
-**Governing principle: mirror core Obsidian.** No invented semantics. A doc-container page behaves
-like a note opened from a link.
+> **Amended 2026-08-01 after implementation.** The original governing principle was "mirror core
+> Obsidian", and §3.3–§3.5 below were written to it. Drilling proved that principle wrong for this
+> surface, three times over. It is superseded by §3.6, which records what was actually built and
+> why. The original text is kept because the reasoning that failed is worth being able to read.
+
+**Governing principle (SUPERSEDED — see §3.6): mirror core Obsidian.** No invented semantics. A
+doc-container page behaves like a note opened from a link.
 
 ### 3.1 Declare the views navigable
 
@@ -80,7 +85,55 @@ Stays, and behaves like a link: it navigates and pushes an entry rather than act
 button. This keeps the button and the arrows from disagreeing about where you are. It also remains
 the primary route on iPad, where the arrows are small or absent depending on layout.
 
-## 4. The one unverified assumption
+### 3.6 What was actually built (2026-08-01, supersedes §3.3–§3.5)
+
+Three drill rounds all reported the same class of failure, and each time the fix followed the
+mirror-core principle and each time it missed. The principle was the defect.
+
+**The measured rule.** Obsidian pushes the OUTGOING state when the INCOMING view is navigable. This
+was measured with temporary `nav-trace` instrumentation, not inferred — two earlier fixes were built
+on the opposite assumption and made things worse. Anything built on leaf history should start here.
+
+**Editors are invisible to the arrows.** `OfficeEditorView` and `ContainerNoteView` stay navigable,
+so opening one records the page you came FROM and back from inside an editor returns to it. The
+editor itself is removed from the stack by `_dropEditorHistory()` after any navigation away from
+one, which also drops the resulting duplicate of the page just landed on — otherwise the round trip
+costs a back press that appears to do nothing. Setting `navigation = false` (the first attempt) does
+the opposite of what it looks like: it discards the entry on the way IN while the editor is still
+recorded on the way OUT.
+
+**Back is hierarchy-aware, not purely historical.** A page opened from the sidebar tree lands in an
+empty tab, so Obsidian records nothing and back has nowhere to go — but the expectation on this
+surface is "up a level", because it is a document hierarchy rather than a note graph. Documents and
+notes therefore seed a parent entry when one is not already present:
+
+| Page | Seeds |
+|---|---|
+| Document detail | its parent container |
+| Note with `relatedParents` | that parent **document** — the thing it belongs to |
+| Note without `relatedParents` | its folder container (e.g. `Notes`) |
+
+Seeding is skipped when the parent is already the current page or already on top of the stack, so it
+never duplicates an entry the ordinary push would create. The entry is made by really navigating to
+the parent first, so Obsidian builds it with whatever internal shape it needs; fabricating one by
+hand means guessing at that shape, which is what cost the earlier rounds.
+
+**Return to Overview does NOT push** (reversing §3.5). It calls `setViewState` directly, bypassing
+the navigation helpers — which is why it stayed invisible through two rounds of debugging — and its
+push is removed along with the editor entry.
+
+**Internal API.** `leaf.history.backHistory` is read and mutated. It is outside the public typings.
+§4 said this was Paul's decision to make; he took it on 2026-08-01, the alternative being a loop he
+had hit three times. Every access is guarded, so a shape change degrades to a no-op rather than
+throwing inside a navigation path.
+
+## 4. The one unverified assumption — RESOLVED 2026-07-31
+
+**Probe result: PASS.** A same-leaf `setViewState` on a custom `ItemView` does record history
+(`back` went 0 → 1). No fallback was needed for that question. The internal-API decision below was
+still taken later, for the separate problem of *removing* an entry — see §3.6.
+
+The original text follows.
 
 `navigation = true` is the documented mechanism, but it is not confirmed that Obsidian records a
 history entry for a **same-leaf `setViewState`** on a custom `ItemView`, as opposed to only on file
@@ -130,8 +183,17 @@ Overview must still work. Working arrows on mobile are a bonus, not a requiremen
 
 ## 7. Acceptance criteria
 
+**Amended 2026-08-01:** criterion 2 originally required back to retrace *into* the editor. It now
+requires the opposite — the editor is never a destination (§3.6). Criteria 8–10 were added from the
+drill rounds. All ten pass as of v0.1.41.
+
+8. A document opened from the tree has a working back arrow that goes up to its parent container.
+9. A note created from a document's Related Documents tab goes back to that **document**, not to
+   `Notes`. An unparented note goes back to its folder.
+10. An editor round trip (open → Return to Overview) leaves the back stack exactly as it was.
+
 1. The arrows are live on a container page and a document detail page reached by navigation.
-2. Back retraces container → detail → editor in reverse; forward replays it.
+2. Back retraces container → detail; the editor is skipped entirely in both directions.
 3. In-page tab switches, edit-mode toggles and workspace tab switches record nothing.
 4. Each workspace tab keeps an independent stack.
 5. Ctrl/Cmd-click still opens a new tab and leaves the current stack untouched.

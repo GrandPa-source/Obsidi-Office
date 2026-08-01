@@ -2807,7 +2807,7 @@ class OfficeEditorView extends obsidian.FileView {
       const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
       const leaf = existing || this.leaf;   // reuse an open detail tab (Ctrl-click case), else swap THIS editor tab back
       leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: this._returnToDocPath, edit: false, tab: this._returnToDocTab || null } })
-        .then(() => { this.plugin._dropEditorHistory(leaf); this.plugin._navTrace('returnToOverview', leaf, 'AFTER '); });
+        .then(() => { this.plugin._dropEditorHistory(leaf); });
       this.app.workspace.revealLeaf(leaf);
     };
     this._returnBtnEl = b;
@@ -9084,62 +9084,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return this.app.workspace.getLeaf('tab');
   }
 
-  // TEMPORARY (2026-08-01) — REMOVE once the history rule is understood.
-  // Obsidian's push rule for leaf history is not documented and my model of it
-  // disagrees with observed behaviour, so this records the truth at every one of
-  // our navigations instead of reasoning about it: what view we are leaving,
-  // whether it declares itself navigable, and what is actually on the stack.
-  _navTrace(tag, leaf, phase) {
-    try {
-      const h = leaf && leaf.history;
-      const v = leaf && leaf.view;
-      const back = h && Array.isArray(h.backHistory) ? h.backHistory : null;
-      const fwd = h && Array.isArray(h.forwardHistory) ? h.forwardHistory : null;
-      dlog('nav-trace', phase, tag,
-        '| view:', (v && typeof v.getViewType === 'function' && v.getViewType()) || '?',
-        '| navigation:', v ? String(v.navigation) : '?',
-        '| back:', back ? back.length : 'n/a',
-        '| fwd:', fwd ? fwd.length : 'n/a',
-        '| stack:', back ? back.map((e) => (e && e.state && e.state.type) || '?').join(' > ') : 'n/a');
-    } catch (e) { elog('nav-trace failed:', (e && e.message) || e); }
-  }
-
-  // Editors are not navigation destinations (Paul, 2026-08-01). Obsidian pushes
-  // the outgoing state when the incoming view is navigable, so leaving an editor
-  // for a detail or container page records the EDITOR. Nothing in the public API
-  // suppresses that push, so the entry is removed immediately afterwards.
-  //
-  // Second pop: opening an editor legitimately records the page you came from,
-  // so after dropping the editor the top of the stack is often that same page,
-  // now also the current one. Leaving it would cost a wasted back press that
-  // appears to do nothing. Dropping it collapses the whole editor round trip,
-  // which is what "ignore the editor for navigation" means.
-  //
-  // Internal API (leaf.history.backHistory). Fully guarded: if Obsidian changes
-  // the shape this becomes a no-op and the arrows merely get noisier — it can
-  // never throw into a navigation path.
-  _dropEditorHistory(leaf) {
-    try {
-      const h = leaf && leaf.history;
-      const back = h && Array.isArray(h.backHistory) ? h.backHistory : null;
-      if (!back || !back.length) return;
-      const EDITORS = [VIEW_TYPE, VIEW_TYPE_PPTX, VIEW_TYPE_XLSX, VIEW_TYPE_PDF, VIEW_TYPE_NOTE];
-      const typeOf = (e) => (e && e.state && e.state.type) || null;
-      const idOf = (e) => { const s = (e && e.state && e.state.state) || {}; return s.docPath || s.path || s.file || ''; };
-      let dropped = 0;
-      while (back.length && EDITORS.includes(typeOf(back[back.length - 1]))) { back.pop(); dropped++; }
-      if (!dropped) return;
-      // Collapse the duplicate of the page we just landed on.
-      const cur = leaf.view;
-      const curType = cur && typeof cur.getViewType === 'function' ? cur.getViewType() : null;
-      const curId = cur ? ((cur.node && cur.node.path) || cur.path || (cur.file && cur.file.path) || '') : '';
-      if (back.length && typeOf(back[back.length - 1]) === curType && idOf(back[back.length - 1]) === curId) {
-        back.pop(); dropped++;
-      }
-      dlog('nav: dropped', dropped, 'entr(y/ies) leaving an editor | back now:', back.length);
-    } catch (e) { elog('_dropEditorHistory failed:', (e && e.message) || e); }
-  }
-
   // Is the top of the back stack already this page? `id` is matched against
   // whichever key that view type stores its identity under.
   _backTopIs(leaf, type, id) {
@@ -9205,11 +9149,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_DETAIL
       && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
     if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
-    this._navTrace('openDocDetail ' + node.path, leaf, 'BEFORE');
     await this._seedParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this._dropEditorHistory(leaf);
-    this._navTrace('openDocDetail ' + node.path, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
   }
 
@@ -9220,10 +9162,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_CONTAINER
       && v.path === path;
     if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
-    this._navTrace('openContainerOverview ' + path, leaf, 'BEFORE');
     await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path } });
     this._dropEditorHistory(leaf);
-    this._navTrace('openContainerOverview ' + path, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
   }
   async createTaxonomyFolder(parentPath, name) {
@@ -9699,10 +9639,8 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       return;
     }
     const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
-    this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'BEFORE');
     await this._seedNoteParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
-    this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
   }
@@ -10017,9 +9955,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     this._returnContext = { path: filePath, docPath: returnDocPath, tab: returnTab || null };   // consumed by OfficeEditorView.onLoadFile
     // returnDocPath also goes into the view state so setState sets _returnToDocPath
     // synchronously (no race with async onLoadFile) → it persists via getState across restart.
-    this._navTrace('openDocInEditor ' + filePath, leaf, 'BEFORE');
     await leaf.setViewState({ type: viewType, active: true, state: { file: filePath, returnDocPath, returnTab: returnTab || null } });
-    this._navTrace('openDocInEditor ' + filePath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(filePath, 'Opened in editor', 'open');
   }
