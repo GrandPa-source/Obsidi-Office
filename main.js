@@ -8715,18 +8715,50 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   // ── Task 8: Real openDocDetail — reuse existing leaf if open ─────────────────
+  // Leaves this plugin owns. Navigating from one of these stays in the same tab,
+  // which is what makes Obsidian's back/forward retrace the path. Anything else
+  // — a markdown note, canvas, graph — is not ours to hijack.
+  _isOurSurface(leaf) {
+    const t = leaf && leaf.view && typeof leaf.view.getViewType === 'function' && leaf.view.getViewType();
+    return t === VIEW_TYPE_DOC_CONTAINER || t === VIEW_TYPE_DOC_DETAIL || t === VIEW_TYPE_NOTE
+        || t === VIEW_TYPE || t === VIEW_TYPE_PPTX || t === VIEW_TYPE_XLSX || t === VIEW_TYPE_PDF;
+  }
+
+  // The leaf a doc-container page should open in: the active main-area leaf when
+  // it is already one of ours (so the step joins that tab's history), else the
+  // first leaf of each fallback type, else a new tab. getMostRecentLeaf() returns
+  // a main-area leaf, never a sidebar one — so a click in the Document Browser
+  // tree navigates the main area rather than trying to navigate the tree itself.
+  _navLeaf(fallbackTypes) {
+    const active = this.app.workspace.getMostRecentLeaf();
+    if (active && this._isOurSurface(active)) return active;
+    for (const t of (fallbackTypes || [])) {
+      const l = this.app.workspace.getLeavesOfType(t)[0];
+      if (l) return l;
+    }
+    return this.app.workspace.getLeaf('tab');
+  }
+
   async openDocDetail(node, opts) {
-    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0];
-    if (!leaf) leaf = this.app.workspace.getLeaf('tab');
+    const leaf = this._navLeaf([VIEW_TYPE_DOC_DETAIL]);
+    // Core Obsidian does not stack a second entry when the same link is clicked
+    // twice. An explicit edit/fresh intent is not a re-navigation, so it passes.
+    const v = leaf.view;
+    const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_DETAIL
+      && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
+    if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this.app.workspace.revealLeaf(leaf);
   }
 
   async openContainerOverview(node) {
-    let leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER)[0]
-            || this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_DETAIL)[0]
-            || this.app.workspace.getLeaf('tab');
-    await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path: node ? node.path : this.settings.docRoot } });
+    const leaf = this._navLeaf([VIEW_TYPE_DOC_CONTAINER, VIEW_TYPE_DOC_DETAIL]);
+    const path = node ? node.path : this.settings.docRoot;
+    const v = leaf.view;
+    const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_CONTAINER
+      && v.path === path;
+    if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path } });
     this.app.workspace.revealLeaf(leaf);
   }
   async createTaxonomyFolder(parentPath, name) {
