@@ -9140,6 +9140,42 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     } catch (e) { elog('_dropEditorHistory failed:', (e && e.message) || e); }
   }
 
+  // Is the top of the back stack already this container?
+  _backTopIsContainer(leaf, path) {
+    try {
+      const back = leaf && leaf.history && Array.isArray(leaf.history.backHistory) ? leaf.history.backHistory : null;
+      if (!back || !back.length) return false;
+      const top = back[back.length - 1];
+      return !!(top && top.state && top.state.type === VIEW_TYPE_DOC_CONTAINER
+                && top.state.state && top.state.state.path === path);
+    } catch (e) { return false; }
+  }
+
+  // Hierarchy fallback (Paul's ruling, 2026-08-01). A page opened straight from
+  // the sidebar tree lands in an empty tab, so Obsidian records nothing and back
+  // has nowhere to go — the parent container was never visited. Back is expected
+  // to go UP a level here, because this is a document hierarchy rather than a
+  // note graph.
+  //
+  // The entry is created by really navigating to the parent first, so Obsidian
+  // builds it with whatever internal shape it needs. Fabricating one by hand
+  // would mean guessing at that shape.
+  //
+  // Skipped when the parent is already the current page or already the top of
+  // the stack — in those cases the ordinary push does the right thing and
+  // seeding would only duplicate it.
+  async _seedParentHistory(leaf, ownPath) {
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    const parent = ownPath.slice(0, ownPath.lastIndexOf('/'));
+    if (!parent || !(parent === root || parent.startsWith(root + '/'))) return;
+    const v = leaf.view;
+    const curType = v && typeof v.getViewType === 'function' ? v.getViewType() : null;
+    if (curType === VIEW_TYPE_DOC_CONTAINER && v.path === parent) return;
+    if (this._backTopIsContainer(leaf, parent)) return;
+    await leaf.setViewState({ type: VIEW_TYPE_DOC_CONTAINER, active: true, state: { path: parent } });
+    dlog('nav: seeded parent container history:', parent);
+  }
+
   async openDocDetail(node, opts) {
     const leaf = this._navLeaf([VIEW_TYPE_DOC_DETAIL]);
     // Core Obsidian does not stack a second entry when the same link is clicked
@@ -9149,6 +9185,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
     if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
     this._navTrace('openDocDetail ' + node.path, leaf, 'BEFORE');
+    await this._seedParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this._dropEditorHistory(leaf);
     this._navTrace('openDocDetail ' + node.path, leaf, 'AFTER ');
@@ -9642,6 +9679,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     }
     const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
     this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'BEFORE');
+    await this._seedParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this._navTrace('openNoteInEditor ' + bodyPath, leaf, 'AFTER ');
     this.app.workspace.revealLeaf(leaf);
