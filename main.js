@@ -5355,6 +5355,9 @@ class DocumentDetailView extends obsidian.ItemView {
       const nvBtn = docIconLabel(footer, 'file-plus', 'New version', { cls: 'doc-detail-btn' });
       nvBtn.onclick = () => this.plugin.newDocumentVersion(this.node);
       mk('Open in system app', '', () => this.node.current && this.plugin.openInSystemApp(this.node.path + '/' + this.node.current));
+      // TEMPORARY (2026-07-31) — remove with probeShareSheet. Mobile only, and a
+      // real tap: navigator.share needs transient user activation.
+      if (isMobile) mk('Probe share (temp)', '', () => this.node.current && this.plugin.probeShareSheet(this.node.path + '/' + this.node.current));
     }
     footer.createSpan({ cls: 'doc-detail-fspace' });
     if (!filePending) mk('Reveal in file explorer', '', () => this.node.current && this.plugin.revealInExplorer(this.node.path + '/' + this.node.current));
@@ -9522,6 +9525,66 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     try { const { shell } = require('electron'); shell.openPath(full); }
     catch (e) { new obsidian.Notice('System app unavailable on this platform'); }   // mobile/iPad: graceful
     this._appendActivity(path, 'Opened in system app', 'open');
+  }
+
+  // ── TEMPORARY PROBE (2026-07-31) — REMOVE once answered ─────────────────────
+  // Measures whether Obsidian's iOS WKWebView permits the Web Share API with a
+  // file payload. iOS has no public "reveal in Files" API, so the share sheet
+  // ("Open in Word", "Save to Files") is the closest equivalent to the desktop
+  // "Open in system app" action. Runs from a real button tap, not a command,
+  // because navigator.share requires transient user activation and a palette
+  // dispatch may not carry it — a false negative would be worse than no answer.
+  //
+  // Reading the result: an AbortError means the user dismissed a sheet that DID
+  // open. That is a PASS, not a failure.
+  async probeShareSheet(path) {
+    const P = 'share-probe:';
+    try {
+      dlog(P, 'start', path, '| navigator.share:', typeof navigator.share, '| navigator.canShare:', typeof navigator.canShare);
+      if (typeof navigator.share !== 'function') {
+        dlog(P, 'RESULT: no navigator.share — Web Share API absent in this webview');
+        new obsidian.Notice('No share API in this webview — logged'); return;
+      }
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!file) { dlog(P, 'RESULT: file not found', path); new obsidian.Notice('File not found'); return; }
+      const bytes = await this.app.vault.readBinary(file);
+      dlog(P, 'read bytes:', bytes && bytes.byteLength, 'ext:', file.extension);
+      const type = ({
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        pdf:  'application/pdf',
+      })[file.extension] || 'application/octet-stream';
+      let f = null;
+      try { f = new File([bytes], file.name, { type }); dlog(P, 'File constructed:', f.name, f.size, f.type); }
+      catch (e) { dlog(P, 'RESULT: File constructor failed:', (e && e.message) || e); new obsidian.Notice('File construction failed — logged'); return; }
+
+      const canFiles = (typeof navigator.canShare === 'function') ? navigator.canShare({ files: [f] }) : null;
+      dlog(P, 'canShare({files}):', canFiles === null ? 'canShare absent' : canFiles);
+
+      // Files unsupported → probe a text share instead, to separate "no Web Share
+      // at all" from "Web Share works but refuses files". Different outcomes, and
+      // only one sheet is raised either way.
+      if (canFiles === false) {
+        try { await navigator.share({ title: 'Obsidi-Office probe', text: 'probe' });
+              dlog(P, 'RESULT: files REFUSED, text share OK'); new obsidian.Notice('Text share worked, files refused — logged'); }
+        catch (e) { dlog(P, 'RESULT: files REFUSED, text share failed:', (e && e.name) || '', (e && e.message) || e);
+                    new obsidian.Notice('Share unsupported — logged'); }
+        return;
+      }
+      try {
+        await navigator.share({ files: [f], title: file.name });
+        dlog(P, 'RESULT: file share RESOLVED — sheet opened and completed');
+        new obsidian.Notice('Share sheet completed — logged');
+      } catch (e) {
+        dlog(P, 'RESULT: file share threw:', (e && e.name) || '', (e && e.message) || e,
+             '| AbortError here means the sheet DID open and was dismissed = PASS');
+        new obsidian.Notice('Share ended: ' + ((e && e.name) || 'error') + ' — logged');
+      }
+    } catch (e) {
+      elog(P, 'unexpected:', (e && e.stack) || e);
+      new obsidian.Notice('Probe error — logged');
+    }
   }
 
   async revealInExplorer(path) {
