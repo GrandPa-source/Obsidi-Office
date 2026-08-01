@@ -109,6 +109,18 @@ function entityLink(name) {
   return '[[' + String(name || '').trim() + ']]';
 }
 
+// Comma-separated user input to link strings, order preserved, deduped.
+function parseEntityListInput(text) {
+  const out = [];
+  for (const part of String(text == null ? '' : text).split(',')) {
+    const name = entityLinkName(part.trim());
+    if (!name) continue;
+    const link = entityLink(name);
+    if (!out.includes(link)) out.push(link);
+  }
+  return out;
+}
+
 // Accepts '[[Name]]', '[[Name|alias]]', '[[Name#sub]]' or a bare name.
 function entityLinkName(link) {
   const s = String(link == null ? '' : link).trim();
@@ -126,6 +138,8 @@ const DOC_FIELDS = {
     { key:'revision',        label:'Revision',         type:'text' },
     { key:'status',          label:'Status',           type:'select', options: STATUS_VALUES },
     { key:'department',      label:'Department',       type:'text' },
+  { key:'organization',    label:'Organization',     type:'entity' },
+  { key:'sites',           label:'Sites',            type:'entities' },
     { key:'originator',      label:'Originator',       type:'text' },
     { key:'originationDate',      label:'Origination Date',          type:'date' },
     { key:'effectiveDate',        label:'Effective Date',            type:'date' },
@@ -151,6 +165,7 @@ const DOC_LEVEL_KEYS = [
   'docContainer', 'docId',
   'title', 'docNumber', 'docClass', 'revision', 'status', 'department',
   'originator', 'originatorTitle', 'originationDate', 'effectiveDate',
+  'organization', 'sites',
   'reviewFrequencyDays', 'nextReviewDate', 'summary', 'tags',
   'currentVersion', 'files',
   'stakeholders', 'relatedDocuments', 'definitions',
@@ -633,6 +648,7 @@ module.exports = {
   entityNoteName,
   entityLink,
   entityLinkName,
+  parseEntityListInput,
   parseVersion,
   compareVersions,
   groupDocumentFiles,
@@ -3923,6 +3939,37 @@ class ContainerNoteView extends obsidian.FileView {
         this._renderAddParent(plist);
       }
 
+      // (b2) Attribution — organization + sites, typed by NAME and stored as
+      // quoted wikilinks. Human-owned like summary/noteType: the skeleton writer
+      // owns title/tags/links only, so these survive every autosave.
+      const attrRow = left.createDiv('obsidi-note-card-tdrow');
+      const orgField = attrRow.createDiv('obsidi-note-card-field');
+      orgField.createSpan({ text: 'Organization', cls: 'obsidi-note-card-lbl' });
+      const orgInp = orgField.createEl('input', { attr: { list: 'note-org-list', placeholder: 'organization' } });
+      orgInp.spellcheck = false;
+      orgInp.value = docContainer.entityLinkName(fm.organization) || '';
+      const orgDl = orgField.createEl('datalist'); orgDl.id = 'note-org-list';
+      for (const nm of this.plugin.entityNamesByType('organization')) orgDl.createEl('option', { value: nm });
+      orgInp.onchange = async () => {
+        const nm = docContainer.entityLinkName(orgInp.value);
+        const val = nm ? docContainer.entityLink(nm) : null;
+        await this._setNoteField('organization', val);
+        this._renderCard({ organization: val });
+      };
+      const siteField = attrRow.createDiv('obsidi-note-card-field');
+      siteField.createSpan({ text: 'Sites', cls: 'obsidi-note-card-lbl' });
+      const siteInp = siteField.createEl('input', { attr: { list: 'note-sites-list', placeholder: 'comma-separated' } });
+      siteInp.spellcheck = false;
+      siteInp.value = (Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []))
+        .map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', ');
+      const siteDl = siteField.createEl('datalist'); siteDl.id = 'note-sites-list';
+      for (const nm of this.plugin.entityNamesByType('site')) siteDl.createEl('option', { value: nm });
+      siteInp.onchange = async () => {
+        const list = docContainer.parseEntityListInput(siteInp.value);
+        await this._setNoteField('sites', list.length ? list : null);
+        this._renderCard({ sites: list });
+      };
+
       // (c) Tags — read-only pills from fm.tags (machine field, never written here);
       // R4.2 label-above block, same grid as Parent. Quick-add inserts into the
       // OPEN EDITOR BUFFER — the updateListener's own docChanged path marks dirty
@@ -4665,6 +4712,7 @@ class DocumentDetailView extends obsidian.ItemView {
     const groups = [
       ['Identification', ['title', 'docNumber', 'docClass']],
       ['Classification & Status', ['revision', 'status', 'department', 'originator']],
+      ['Attribution', ['organization', 'sites']],
       ['Lifecycle', ['originationDate', 'effectiveDate', 'reviewFrequencyDays', 'nextReviewDate']],
       ['Description', ['summary', 'tags']],
     ];
@@ -4677,10 +4725,29 @@ class DocumentDetailView extends obsidian.ItemView {
 
   _valCell(grid, f, fm) {
     const cell = grid.createDiv('doc-detail-fld');
-    if (f.type === 'textarea' || f.key === 'title' || f.key === 'tags') cell.addClass('span2');
+    if (f.type === 'textarea' || f.key === 'title' || f.key === 'tags' || f.type === 'entities') cell.addClass('span2');
     cell.createDiv({ text: f.label.toUpperCase(), cls: 'doc-detail-lab' });
 
     if (this._editMode) {
+      // Attribution fields are typed by NAME and stored as quoted wikilinks. The
+      // datalist offers existing records without forcing the picker to be modal.
+      if (f.type === 'entity' || f.type === 'entities') {
+        const isMulti = f.type === 'entities';
+        const raw = fm[f.key];
+        const seedE = isMulti
+          ? (Array.isArray(raw) ? raw : (raw ? [raw] : [])).map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', ')
+          : (docContainer.entityLinkName(raw) || '');
+        const inpE = cell.createEl('input', { cls: 'doc-detail-vinput' });
+        inpE.value = seedE;
+        inpE.spellcheck = false;
+        inpE.placeholder = isMulti ? 'comma-separated site names' : 'organization name';
+        const listId = 'doc-ent-list-' + f.key;
+        inpE.setAttr('list', listId);
+        const dl = cell.createEl('datalist'); dl.id = listId;
+        for (const nm of this.plugin.entityNamesByType(isMulti ? 'site' : 'organization')) dl.createEl('option', { value: nm });
+        this._mdInputs[f.key] = { inp: inpE, orig: seedE, field: f };
+        return;
+      }
       const isTags = f.key === 'tags';
       const seed = isTags
         ? (Array.isArray(fm.tags) ? fm.tags.join(', ') : (fm.tags || ''))
@@ -4702,6 +4769,19 @@ class DocumentDetailView extends obsidian.ItemView {
         if (f.key === 'nextReviewDate') inp.placeholder = 'auto from effective + frequency if blank';
       }
       this._mdInputs[f.key] = { inp, orig: seed, field: f };
+      return;
+    }
+
+    if (f.type === 'entity' || f.type === 'entities') {
+      const raw = fm[f.key];
+      const names = (f.type === 'entities' ? (Array.isArray(raw) ? raw : (raw ? [raw] : [])) : [raw])
+        .map((x) => docContainer.entityLinkName(x)).filter(Boolean);
+      if (!names.length) { cell.createDiv({ text: '—', cls: 'doc-detail-val doc-detail-muted' }); return; }
+      const box = cell.createDiv('doc-detail-val');
+      names.forEach((nm) => {
+        const b = box.createEl('button', { text: nm, cls: 'doc-ent-link' });
+        b.onclick = () => this.plugin.openEntityByName(nm);
+      });
       return;
     }
 
@@ -4805,6 +4885,8 @@ class DocumentDetailView extends obsidian.ItemView {
           const v = inp.value;
           if (v === orig) continue;             // never clobber untouched/hand-authored values
           if (k === 'tags') front.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+          else if (field.type === 'entities') { const list = docContainer.parseEntityListInput(v); if (list.length) front[k] = list; else delete front[k]; }
+          else if (field.type === 'entity') { const nm = docContainer.entityLinkName(v); if (nm) front[k] = docContainer.entityLink(nm); else delete front[k]; }
           else if (field.type === 'number') front[k] = v === '' ? null : Number(v);
           else front[k] = v === '' ? null : v;
         }
@@ -5714,8 +5796,11 @@ class ContainerOverviewView extends obsidian.ItemView {
 
     const card = c.createDiv('doc-detail-metacard');
     const groups = isOrg
-      ? [['Identification', ['name', 'orgType', 'status', 'relationship']],
-         ['Contact', ['website', 'address']],
+      // Contact merged into Identification: the 4-column grid puts name(2) +
+      // type + status on row one, then relationship + website + address(2) fills
+      // row two exactly. A separate Contact group cost a heading and a half-empty
+      // row for two fields.
+      ? [['Identification', ['name', 'orgType', 'status', 'relationship', 'website', 'address']],
          ['Description', ['summary', 'tags']]]
       : [['Identification', ['name', 'organization', 'siteType', 'siteCode', 'status']],
          ['Location', ['address', 'city', 'province', 'postalCode']],
@@ -6004,6 +6089,16 @@ class ContainerOverviewView extends obsidian.ItemView {
       let inp;
       if (type === 'select') { inp = cell.createEl('select', { cls: 'doc-detail-vinput' }); inp.createEl('option', { text: '—', value: '' }); (options || []).forEach(o => inp.createEl('option', { text: o, value: o })); inp.value = seed; }
       else if (type === 'textarea') { inp = cell.createEl('textarea', { cls: 'doc-detail-vinput' }); inp.rows = 2; inp.value = seed; }
+      else if (type === 'entity' || type === 'entities') {
+        inp = cell.createEl('input', { cls: 'doc-detail-vinput' });
+        inp.spellcheck = false;
+        inp.placeholder = type === 'entities' ? 'comma-separated site names' : 'organization name';
+        const listId = 'doc-pj-list-' + key;
+        inp.setAttr('list', listId);
+        const dl = cell.createEl('datalist'); dl.id = listId;
+        for (const nm of this.plugin.entityNamesByType(type === 'entities' ? 'site' : 'organization')) dl.createEl('option', { value: nm });
+        inp.value = seed;
+      }
       else { inp = cell.createEl('input', { cls: 'doc-detail-vinput' }); if (type === 'date') inp.type = 'date'; else if (type === 'number') inp.type = 'number'; inp.value = seed; if (key === 'tags') inp.placeholder = 'comma-separated'; }
       this._pjInputs[key] = { inp, type };
     };
@@ -6015,6 +6110,8 @@ class ContainerOverviewView extends obsidian.ItemView {
       fld(grid, 'Name', 'projectName', 'text', null, true);
       fld(grid, 'Code', 'projectCode', 'text');
       fld(grid, 'Department', 'department', 'text');
+      fld(grid, 'Organization', 'organization', 'entity');
+      fld(grid, 'Sites', 'sites', 'entities', null, true);
       fld(grid, 'Lead', 'lead', 'text');
       fld(grid, 'Lead title', 'leadTitle', 'text');
       fld(grid, 'Sponsor', 'sponsor', 'text');
@@ -6026,6 +6123,9 @@ class ContainerOverviewView extends obsidian.ItemView {
       const kv = (k, v, span2) => { const el = compact.createDiv('doc-pv-kv' + (span2 ? ' span2' : '')); el.createSpan({ text: k, cls: 'doc-pv-k' }); el.createSpan({ text: v || '—', cls: 'doc-pv-v' + (v ? '' : ' doc-detail-muted') }); };
       kv('Name', pn.projectName, true); kv('Code', pn.projectCode); kv('Dept', pn.department);
       kv('Lead', pn.lead); kv('Lead title', pn.leadTitle); kv('Sponsor', pn.sponsor); kv('Priority', pn.priority);
+      kv('Organization', docContainer.entityLinkName(pn.organization) || '');
+      kv('Sites', (Array.isArray(pn.sites) ? pn.sites : (pn.sites ? [pn.sites] : []))
+        .map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', '));
     }
 
     // Status & Timeline
@@ -6058,6 +6158,11 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   _pjSeed(pn, key) {
     if (key === 'tags') return Array.isArray(pn.tags) ? pn.tags.join(', ') : '';
+    if (key === 'organization') return docContainer.entityLinkName(pn.organization) || '';
+    if (key === 'sites') {
+      const raw = pn.sites;
+      return (Array.isArray(raw) ? raw : (raw ? [raw] : [])).map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', ');
+    }
     return pn[key] != null ? String(pn[key]) : '';
   }
 
@@ -6076,6 +6181,8 @@ class ContainerOverviewView extends obsidian.ItemView {
         const v = inp.value;
         if (v === this._pjSeed(pn, k)) continue;   // only write changed fields
         if (k === 'tags') fm.tags = v.split(/[,\s]+/).map(s => s.trim().replace(/^#/, '')).filter(Boolean);
+        else if (type === 'entities') { const list = docContainer.parseEntityListInput(v); if (list.length) fm[k] = list; else delete fm[k]; }
+        else if (type === 'entity') { const nm = docContainer.entityLinkName(v); if (nm) fm[k] = docContainer.entityLink(nm); else delete fm[k]; }
         else if (type === 'number') { const n = Number(v); fm[k] = v === '' ? null : (Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : null); }
         else fm[k] = v === '' ? null : v;
       }
@@ -8932,6 +9039,16 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (folder.slice(folder.lastIndexOf('/') + 1) === want) { await this.openContainerOverview({ path: folder }); return; }
     }
     new obsidian.Notice('No record found for “' + want + '”');
+  }
+
+  // Display names of every entity of a type — the datalist source for pickers.
+  entityNamesByType(type) {
+    const out = [];
+    for (const [folder, t] of this.entityFolders()) {
+      if (t !== type) continue;
+      out.push(folder.slice(folder.lastIndexOf('/') + 1));
+    }
+    return out.sort((a, b) => a.localeCompare(b));
   }
 
   // ── Organizations & Sites: rollups (spec §9) ────────────────────────────────
