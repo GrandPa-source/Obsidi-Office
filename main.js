@@ -9233,7 +9233,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.app.workspace.revealLeaf(existing);
       return;
     }
-    const leaf = this.app.workspace.getLeaf('tab');
+    const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
