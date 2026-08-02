@@ -121,6 +121,19 @@ function parseEntityListInput(text) {
   return out;
 }
 
+// True when `path` is an entity category itself or anything beneath it. Guards
+// document creation: entity folders are records, not filing cabinets (spec D5).
+function underEntityCategory(path, root, categories) {
+  const p = String(path || '');
+  if (!p) return false;
+  const base = String(root || '').replace(/\/+$/, '');
+  for (const cat of (categories || [])) {
+    const c = base + '/' + cat;
+    if (p === c || p.startsWith(c + '/')) return true;
+  }
+  return false;
+}
+
 // Accepts '[[Name]]', '[[Name|alias]]', '[[Name#sub]]' or a bare name.
 function entityLinkName(link) {
   const s = String(link == null ? '' : link).trim();
@@ -649,6 +662,7 @@ module.exports = {
   entityLink,
   entityLinkName,
   parseEntityListInput,
+  underEntityCategory,
   parseVersion,
   compareVersions,
   groupDocumentFiles,
@@ -849,9 +863,19 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-crumb { font-size:12px; color: var(--text-faint); }
 .doc-ent-flab { display:block; margin:12px 0 4px; color: var(--text-muted); font-size:0.85em; text-transform:uppercase; letter-spacing:0.02em; }
 .doc-ent-owner { display:flex; align-items:baseline; gap:8px; margin:12px 0 4px; }
-.doc-ent-link { background:none; border:none; box-shadow:none; padding:0 8px 0 0; margin:0; color: var(--text-accent); cursor:pointer; font:inherit; text-align:left; }
-.doc-ent-link:hover { text-decoration:underline; }
-.doc-ent-link:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
+/* Plain clickable text, not a control — same full reset the breadcrumb needed.
+   Resetting background and border alone leaves Obsidian's base button shadow,
+   radius and min-height drawing a box around the name. */
+.doc-detail-val .doc-ent-link, .doc-pv-kv .doc-ent-link {
+  -webkit-appearance:none; appearance:none;
+  background:none; background-color:transparent; border:none; box-shadow:none; border-radius:0;
+  padding:0 8px 0 0; margin:0; height:auto; min-height:0; width:auto;
+  font:inherit; line-height:inherit; color: var(--text-accent); text-align:left; cursor:pointer;
+}
+.doc-detail-val .doc-ent-link:hover, .doc-pv-kv .doc-ent-link:hover {
+  text-decoration:underline; background:none; box-shadow:none; }
+.doc-detail-val .doc-ent-link:focus-visible, .doc-pv-kv .doc-ent-link:focus-visible {
+  outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
 .doc-ov-table tr.row[tabindex]:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
 .doc-ent-overdue td { color: var(--text-error); }
 .doc-ent-note-mention td { color: var(--text-muted); font-style:italic; }
@@ -6439,8 +6463,28 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   renderContainers(c, node) {
     const kindLabel = node.kind === 'root' ? 'Category' : 'Collection';
-    const btn = docIconLabel(c, 'plus', `New ${kindLabel}`, { tag: 'button', cls: 'doc-ov-primary' });
-    btn.onclick = () => this.promptNew(node.path, kindLabel);
+    // Entity categories get their own create action instead of "New Collection":
+    // records are made by createEntity, and nesting collections inside
+    // Organizations or Sites is exactly what the spec forbids (D5/D6).
+    const cats = [this.plugin.settings.docOrgCategory || 'Organizations', this.plugin.settings.docSiteCategory || 'Sites'];
+    if (docContainer.underEntityCategory(node.path, this.plugin.settings.docRoot, cats)) {
+      const isOrgCat = node.path.endsWith('/' + (this.plugin.settings.docOrgCategory || 'Organizations'));
+      if (isOrgCat) {
+        const nb = docIconLabel(c, 'plus', 'New organization', { tag: 'button', cls: 'doc-ov-primary' });
+        nb.onclick = () => new EntityCreateModal(this.app, {
+          type: 'organization',
+          onSubmit: async ({ name, orgType }) => {
+            const folder = await this.plugin.createEntity({ type: 'organization', name, seed: orgType ? { orgType } : null });
+            if (folder) await this.plugin.openContainerOverview({ path: folder });
+          },
+        }).open();
+      } else {
+        c.createDiv({ text: 'Sites are created from an organization’s Sites tab.', cls: 'doc-detail-stub' });
+      }
+    } else {
+      const btn = docIconLabel(c, 'plus', `New ${kindLabel}`, { tag: 'button', cls: 'doc-ov-primary' });
+      btn.onclick = () => this.promptNew(node.path, kindLabel);
+    }
     const grid = c.createDiv('doc-ov-cards');
     for (const child of (node.children||[])) {
       if (child.kind === 'document') continue;
@@ -6455,8 +6499,11 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
 
   renderDocs(c, node, docs, today) {
-    const btn = docIconLabel(c, 'plus', 'New Document', { tag: 'button', cls: 'doc-ov-primary' });
-    btn.onclick = () => this.plugin.openNewDocumentModal(node);
+    const cats = [this.plugin.settings.docOrgCategory || 'Organizations', this.plugin.settings.docSiteCategory || 'Sites'];
+    if (!docContainer.underEntityCategory(node.path, this.plugin.settings.docRoot, cats)) {
+      const btn = docIconLabel(c, 'plus', 'New Document', { tag: 'button', cls: 'doc-ov-primary' });
+      btn.onclick = () => this.plugin.openNewDocumentModal(node);
+    }
     const filter = c.createEl('input', { cls: 'doc-ov-filter', attr: { placeholder: 'Search by title or #tag…' } });
     const table = c.createEl('table', { cls: 'doc-ov-table' });
     const head = table.createEl('tr');
@@ -9041,6 +9088,46 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     new obsidian.Notice('No record found for “' + want + '”');
   }
 
+  // Attribution a new item inherits from where it is created. Walks up to the
+  // nearest ancestor carrying a stamp. STAMPED, not inherited: the value is
+  // copied onto the new item (spec D7), so every item answers for itself and
+  // moving it later never silently changes what it belongs to.
+  containerStamp(containerPath) {
+    const root = (this.settings.docRoot || 'Documents').replace(/\/+$/, '');
+    let p = containerPath;
+    while (p && (p === root || p.startsWith(root + '/'))) {
+      const pn = this.app.vault.getAbstractFileByPath(p + '/_project.md');
+      if (pn) {
+        const fm = (this.app.metadataCache.getFileCache(pn) || {}).frontmatter || {};
+        if (fm.organization || fm.sites) {
+          const out = {};
+          if (fm.organization) out.organization = fm.organization;
+          if (fm.sites) out.sites = Array.isArray(fm.sites) ? fm.sites.slice() : [fm.sites];
+          return out;
+        }
+      }
+      const rec = this.readEntityRecord(p);
+      if (rec && rec.type === 'organization' && rec.name) return { organization: docContainer.entityLink(rec.name) };
+      if (rec && rec.type === 'site' && rec.name) {
+        const out = { sites: [docContainer.entityLink(rec.name)] };
+        if (rec.organization) out.organization = rec.organization;
+        return out;
+      }
+      if (p === root) break;
+      p = p.slice(0, p.lastIndexOf('/'));
+    }
+    return {};
+  }
+
+  // One place answers "may a document be created here?" — every creation path
+  // asks it, so hiding a button is never the only thing standing in the way.
+  _refuseIfEntityScope(containerPath) {
+    const cats = [this.settings.docOrgCategory || 'Organizations', this.settings.docSiteCategory || 'Sites'];
+    if (!docContainer.underEntityCategory(containerPath, this.settings.docRoot, cats)) return false;
+    new obsidian.Notice('Organizations and Sites hold records, not documents. Create this in a Governance, Projects or SOP container instead.');
+    return true;
+  }
+
   // Display names of every entity of a type — the datalist source for pickers.
   entityNamesByType(type) {
     const out = [];
@@ -9689,6 +9776,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // node.path is the folder the new document-folder is created under.
   openNewDocumentModal(node) {
     if (!node || !node.path) { new obsidian.Notice('No container selected'); return; }
+    if (this._refuseIfEntityScope(node.path)) return;
     new NewDocumentModal(this.app, this, node.path, node.name || node.path).open();
   }
 
@@ -9771,6 +9859,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // seeded sidecar. Lands on the detail page (NOT the editor). Returns the
   // document-folder path, or undefined on failure.
   async createDocumentInContainer({ containerPath, title, ext, templatePath }) {
+    if (this._refuseIfEntityScope(containerPath)) return;
     const cleanTitle = (title || '').trim();
     if (!cleanTitle) { new obsidian.Notice('Enter a document title'); return; }
     if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
@@ -9798,8 +9887,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const sc = this.app.vault.getAbstractFileByPath(scPath);
       if (sc) {
         const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        const stamp = this.containerStamp(containerPath);
         await this.app.fileManager.processFrontMatter(sc, (front) => {
           if (!front.title) front.title = cleanTitle;
+          if (stamp.organization && !front.organization) front.organization = stamp.organization;
+          if (stamp.sites && !front.sites) front.sites = stamp.sites;
           if (!front.status) front.status = 'Draft';
           if (!front.originationDate) front.originationDate = today;
         });
@@ -9857,6 +9949,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // <Base>_V1.0.md IS the pending marker buildTaxonomy recognizes; when the file
   // arrives (attachFirstVersion) the sidecar is renamed, never migrated.
   async createPendingDocument({ containerPath, title, openDetail = true }) {
+    if (this._refuseIfEntityScope(containerPath)) return;
     const cleanTitle = (title || '').trim();
     if (!cleanTitle) { new obsidian.Notice('Enter a document title'); return; }
     if (/[\\/:*?"<>|]/.test(cleanTitle)) { new obsidian.Notice('Title cannot contain \\ / : * ? " < > |'); return; }
@@ -9872,11 +9965,14 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       const today = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
       await this.app.vault.create(scPath, '---\ncreated: "' + nowIso + '"\nmodified: "' + nowIso + '"\n---\n');
       const sc = this.app.vault.getAbstractFileByPath(scPath);
+      const stamp = this.containerStamp(containerPath);
       if (sc) {
         await this.app.fileManager.processFrontMatter(sc, (front) => {
           if (!front.title) front.title = cleanTitle;
           if (!front.status) front.status = 'Draft';
           if (!front.originationDate) front.originationDate = today;
+          if (stamp.organization && !front.organization) front.organization = stamp.organization;
+          if (stamp.sites && !front.sites) front.sites = stamp.sites;
         });
       }
       this.appendLog(docFolder, 'created (no file yet)');
@@ -10092,6 +10188,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       await this.app.vault.createFolder(noteFolder);
       await this.writeNoteBody(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');   // seed through the choke point
       const nowIso = new Date().toISOString();
+      const stamp = this.containerStamp(parent);
       const today = new Date().toISOString().slice(0, 10);
       const yaml = '---\n'
         + 'docId: ' + this.generateDocId() + '\n'
@@ -10101,6 +10198,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         + 'modified: "' + nowIso + '"\n'
         + 'noteType: ' + cleanType + '\n'
         + 'noteDate: ' + today + '\n'
+        + (stamp.organization ? 'organization: ' + JSON.stringify(stamp.organization) + '\n' : '')
+        + (stamp.sites && stamp.sites.length
+            ? 'sites:\n' + stamp.sites.map((x) => '  - ' + JSON.stringify(x)).join('\n') + '\n' : '')
         + (parentDocPath ? 'relatedParents:\n  - ' + JSON.stringify(parentDocPath) + '\n' : '')
         + 'tags: []\n'
         + 'links: []\n'
