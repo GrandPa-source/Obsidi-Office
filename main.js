@@ -9119,6 +9119,33 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return {};
   }
 
+  // Attribution for a note created against a parent document. Notes are STORED
+  // in Notes/, which carries no attribution, so walking up from the storage
+  // folder finds nothing — the note's parent document is the right ancestor to
+  // ask. Its own stamp wins; failing that, walk up from the document's folder so
+  // the project (or organization) it sits in supplies the answer.
+  _stampForNoteParent(parentDocPath) {
+    const pick = (fm) => {
+      if (!fm || (!fm.organization && !fm.sites)) return null;
+      const out = {};
+      if (fm.organization) out.organization = fm.organization;
+      if (fm.sites) out.sites = Array.isArray(fm.sites) ? fm.sites.slice() : [fm.sites];
+      return out;
+    };
+    const dm = this.app.vault.getAbstractFileByPath(parentDocPath + '/' + docContainer.DOCUMENT_MD_NAME);
+    let hit = dm ? pick((this.app.metadataCache.getFileCache(dm) || {}).frontmatter) : null;
+    if (!hit) {
+      // Pre-Rung-B shape: the stamp lives on the current version's sidecar.
+      const folder = this.app.vault.getAbstractFileByPath(parentDocPath);
+      for (const ch of ((folder && folder.children) || [])) {
+        if (!(ch instanceof obsidian.TFile) || ch.extension !== 'md') continue;
+        hit = pick((this.app.metadataCache.getFileCache(ch) || {}).frontmatter);
+        if (hit) break;
+      }
+    }
+    return hit || this.containerStamp(parentDocPath);
+  }
+
   // One place answers "may a document be created here?" — every creation path
   // asks it, so hiding a button is never the only thing standing in the way.
   _refuseIfEntityScope(containerPath) {
@@ -9676,6 +9703,39 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     return this.app.workspace.getLeaf('tab');
   }
 
+  // Editors are not navigation destinations. Obsidian pushes the outgoing state
+  // when the incoming view is navigable, so leaving an editor for a detail or
+  // container page records the EDITOR. Nothing in the public API suppresses that
+  // push, so the entry is removed immediately afterwards.
+  //
+  // Second pop: opening an editor legitimately records the page you came from,
+  // so after dropping the editor the top of the stack is often that same page,
+  // now also the current one. Leaving it would cost a wasted back press that
+  // appears to do nothing.
+  //
+  // Internal API (leaf.history.backHistory). Fully guarded: a shape change makes
+  // this a no-op rather than throwing into a navigation path.
+  _dropEditorHistory(leaf) {
+    try {
+      const h = leaf && leaf.history;
+      const back = h && Array.isArray(h.backHistory) ? h.backHistory : null;
+      if (!back || !back.length) return;
+      const EDITORS = [VIEW_TYPE, VIEW_TYPE_PPTX, VIEW_TYPE_XLSX, VIEW_TYPE_PDF, VIEW_TYPE_NOTE];
+      const typeOf = (e) => (e && e.state && e.state.type) || null;
+      const idOf = (e) => { const st = (e && e.state && e.state.state) || {}; return st.docPath || st.path || st.file || ''; };
+      let dropped = 0;
+      while (back.length && EDITORS.includes(typeOf(back[back.length - 1]))) { back.pop(); dropped++; }
+      if (!dropped) return;
+      const cur = leaf.view;
+      const curType = cur && typeof cur.getViewType === 'function' ? cur.getViewType() : null;
+      const curId = cur ? ((cur.node && cur.node.path) || cur.path || (cur.file && cur.file.path) || '') : '';
+      if (back.length && typeOf(back[back.length - 1]) === curType && idOf(back[back.length - 1]) === curId) {
+        back.pop(); dropped++;
+      }
+      dlog('nav: dropped', dropped, 'entr(y/ies) leaving an editor | back now:', back.length);
+    } catch (e) { elog('_dropEditorHistory failed:', (e && e.message) || e); }
+  }
+
   // Is the top of the back stack already this page? `id` is matched against
   // whichever key that view type stores its identity under.
   _backTopIs(leaf, type, id) {
@@ -10188,7 +10248,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       await this.app.vault.createFolder(noteFolder);
       await this.writeNoteBody(noteFolder + '/' + docContainer.NOTE_BODY_NAME, '# ' + cleanTitle + '\n\n');   // seed through the choke point
       const nowIso = new Date().toISOString();
-      const stamp = this.containerStamp(parent);
+      // A note created against a parent document inherits from THAT document,
+      // not from Notes/ where it is stored.
+      const stamp = parentDocPath ? this._stampForNoteParent(parentDocPath) : this.containerStamp(parent);
       const today = new Date().toISOString().slice(0, 10);
       const yaml = '---\n'
         + 'docId: ' + this.generateDocId() + '\n'
