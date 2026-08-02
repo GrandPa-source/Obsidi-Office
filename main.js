@@ -879,6 +879,22 @@ const DOC_CONTAINER_CSS = `
 .doc-ov-table tr.row[tabindex]:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
 .doc-ent-overdue td { color: var(--text-error); }
 .doc-ent-note-mention td { color: var(--text-muted); font-style:italic; }
+/* Note-card attribution: reads as text, edits behind a pencil. The pencil stays
+   in the label row so revealing the input never reflows the card. */
+.obsidi-note-card-attrhead { display:flex; align-items:center; gap:6px; min-height:20px; }
+.obsidi-note-card-attredit { opacity:0; transition: opacity 150ms ease; flex:0 0 auto; }
+.obsidi-note-card-field:hover .obsidi-note-card-attredit,
+.obsidi-note-card-attredit:focus-visible { opacity:1; }
+.obsidi-note-card-attrval { padding:2px 0; cursor:text; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.obsidi-note-card-attrval.is-empty { color: var(--text-faint); }
+.obsidi-note-card-attrval:hover { color: var(--text-accent); }
+/* Touch has no hover, so the pencil is always visible there. */
+@media (pointer: coarse) {
+  .obsidi-note-card-attredit { opacity:1; min-height:44px; min-width:44px; }
+  .obsidi-note-card-attrval { min-height:44px; display:flex; align-items:center; }
+}
+@media (prefers-reduced-motion: reduce) { .obsidi-note-card-attredit { transition:none; } }
+
 /* Placeholder panes: error colour AND an explicit label — colour is never the
    only signal that a row is sample data. */
 .doc-ent-sample-banner { display:flex; align-items:center; gap:8px; margin-bottom:12px; padding:8px 12px;
@@ -3966,33 +3982,59 @@ class ContainerNoteView extends obsidian.FileView {
       // (b2) Attribution — organization + sites, typed by NAME and stored as
       // quoted wikilinks. Human-owned like summary/noteType: the skeleton writer
       // owns title/tags/links only, so these survive every autosave.
+      // Attribution reads as text with a small pencil, not a live input. These are
+      // set-once-and-forget values, usually inherited at creation; an always-open
+      // field invites a stray keystroke into a field nobody meant to touch, and it
+      // made the card look like a form rather than a summary (Paul, 2026-08-02).
       const attrRow = left.createDiv('obsidi-note-card-tdrow');
-      const orgField = attrRow.createDiv('obsidi-note-card-field');
-      orgField.createSpan({ text: 'Organization', cls: 'obsidi-note-card-lbl' });
-      const orgInp = orgField.createEl('input', { attr: { list: 'note-org-list', placeholder: 'organization' } });
-      orgInp.spellcheck = false;
-      orgInp.value = docContainer.entityLinkName(fm.organization) || '';
-      const orgDl = orgField.createEl('datalist'); orgDl.id = 'note-org-list';
-      for (const nm of this.plugin.entityNamesByType('organization')) orgDl.createEl('option', { value: nm });
-      orgInp.onchange = async () => {
-        const nm = docContainer.entityLinkName(orgInp.value);
-        const val = nm ? docContainer.entityLink(nm) : null;
-        await this._setNoteField('organization', val);
-        this._renderCard({ organization: val });
+      const attrField = (parentEl, label, valueText, placeholder, listId, options, onCommit) => {
+        const field = parentEl.createDiv('obsidi-note-card-field');
+        const head = field.createDiv('obsidi-note-card-attrhead');
+        head.createSpan({ text: label, cls: 'obsidi-note-card-lbl' });
+        const pencil = docIconLabel(head, 'pencil', '', { cls: 'doc-detail-hbtn obsidi-note-card-attredit' });
+        pencil.setAttr('aria-label', 'Edit ' + label.toLowerCase());
+        const view = field.createDiv({ cls: 'obsidi-note-card-attrval' + (valueText ? '' : ' is-empty'),
+                                       text: valueText || '—' });
+        const openEditor = () => {
+          view.hide(); pencil.hide();
+          const inp = field.createEl('input', { attr: { list: listId, placeholder } });
+          inp.spellcheck = false;
+          inp.value = valueText;
+          const dl = field.createEl('datalist'); dl.id = listId;
+          for (const nm of options) dl.createEl('option', { value: nm });
+          let committed = false;
+          const commit = async () => { if (committed) return; committed = true; await onCommit(inp.value); };
+          inp.onchange = commit;
+          inp.onblur = commit;
+          inp.onkeydown = (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); commit(); }
+            if (e.key === 'Escape') { e.preventDefault(); committed = true; this._renderCard(); }
+          };
+          inp.focus();
+        };
+        pencil.onclick = openEditor;
+        view.onclick = openEditor;
+        return field;
       };
-      const siteField = attrRow.createDiv('obsidi-note-card-field');
-      siteField.createSpan({ text: 'Sites', cls: 'obsidi-note-card-lbl' });
-      const siteInp = siteField.createEl('input', { attr: { list: 'note-sites-list', placeholder: 'comma-separated' } });
-      siteInp.spellcheck = false;
-      siteInp.value = (Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []))
-        .map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', ');
-      const siteDl = siteField.createEl('datalist'); siteDl.id = 'note-sites-list';
-      for (const nm of this.plugin.entityNamesByType('site')) siteDl.createEl('option', { value: nm });
-      siteInp.onchange = async () => {
-        const list = docContainer.parseEntityListInput(siteInp.value);
-        await this._setNoteField('sites', list.length ? list : null);
-        this._renderCard({ sites: list });
-      };
+
+      attrField(attrRow, 'Organization', docContainer.entityLinkName(fm.organization) || '',
+        'organization', 'note-org-list', this.plugin.entityNamesByType('organization'),
+        async (raw) => {
+          const nm = docContainer.entityLinkName(raw);
+          const val = nm ? docContainer.entityLink(nm) : null;
+          await this._setNoteField('organization', val);
+          this._renderCard({ organization: val });
+        });
+
+      attrField(attrRow, 'Sites',
+        (Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []))
+          .map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', '),
+        'comma-separated', 'note-sites-list', this.plugin.entityNamesByType('site'),
+        async (raw) => {
+          const list = docContainer.parseEntityListInput(raw);
+          await this._setNoteField('sites', list.length ? list : null);
+          this._renderCard({ sites: list });
+        });
 
       // (c) Tags — read-only pills from fm.tags (machine field, never written here);
       // R4.2 label-above block, same grid as Parent. Quick-add inserts into the
@@ -9753,10 +9795,11 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   // the thing it belongs to. Only a note with no parent belongs to its folder
   // (Paul's ruling, 2026-08-01: creating a note from a document's Related
   // Documents tab and pressing back landed on Notes/ rather than the document).
-  async _seedNoteParentHistory(leaf, noteFolder) {
+  async _seedNoteParentHistory(leaf, noteFolder, knownParent) {
     const dm = this.app.vault.getAbstractFileByPath(noteFolder + '/' + docContainer.DOCUMENT_MD_NAME);
     const fm = (dm && (this.app.metadataCache.getFileCache(dm) || {}).frontmatter) || {};
-    const parentDoc = (Array.isArray(fm.relatedParents) && fm.relatedParents.length) ? String(fm.relatedParents[0]) : null;
+    const parentDoc = knownParent
+      || ((Array.isArray(fm.relatedParents) && fm.relatedParents.length) ? String(fm.relatedParents[0]) : null);
     if (!parentDoc) return this._seedParentHistory(leaf, noteFolder);   // unparented → its folder
     const v = leaf.view;
     const curType = v && typeof v.getViewType === 'function' ? v.getViewType() : null;
@@ -10282,7 +10325,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this._expandCardOnce = noteFolder;   // the view expands the card once on first open
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach(l => l.view.render && l.view.render());
       dlog('note container created:', noteFolder);
-      await this.openNoteInEditor({ path: noteFolder });
+      await this.openNoteInEditor({ path: noteFolder }, { parentDoc: parentDocPath || null });
       new obsidian.Notice('Created note "' + cleanTitle + '"');
       return noteFolder;
     } catch (e) {
@@ -10292,7 +10335,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
   }
 
   // Open a note container's body in our editor view (notes skip the detail page).
-  async openNoteInEditor(node) {
+  async openNoteInEditor(node, opts) {
     const bodyPath = node.path + '/' + (node.noteBody || docContainer.NOTE_BODY_NAME);
     const file = this.app.vault.getAbstractFileByPath(bodyPath);
     if (!(file instanceof obsidian.TFile)) { new obsidian.Notice('Note body not found: ' + bodyPath); return; }
@@ -10306,8 +10349,23 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       return;
     }
     const leaf = this._navLeaf([]);   // active doc-container leaf, else a new tab
-    await this._seedNoteParentHistory(leaf, node.path);
+    // A freshly created note's _document.md may not be in metadataCache yet, so
+    // the caller passes the parent it already knows rather than making history
+    // depend on indexing timing.
+    const knownParent = (opts && opts.parentDoc) || null;
+    await this._seedNoteParentHistory(leaf, node.path, knownParent);
     await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
+    // Observed after creating a note from a document's Related Documents tab:
+    // the back arrow came up disabled, i.e. nothing was recorded. Rather than
+    // keep guessing at why the push does not land in that path, repair it — put
+    // the parent behind us explicitly. Costs two extra setViewState calls, and
+    // only in the case that is already broken.
+    const backLen = (leaf.history && Array.isArray(leaf.history.backHistory)) ? leaf.history.backHistory.length : -1;
+    if (knownParent && backLen === 0) {
+      await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: knownParent } });
+      await leaf.setViewState({ type: VIEW_TYPE_NOTE, active: true, state: { file: bodyPath } });
+      dlog('nav: repaired empty back stack for new note ->', knownParent);
+    }
     this.app.workspace.revealLeaf(leaf);
     this._appendActivity(bodyPath, 'Opened in editor', 'open');
   }
