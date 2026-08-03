@@ -9312,6 +9312,9 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         if (address) seed.address = address;
         const folder = await this.createEntity({ type: 'site', name, seed });
         if (folder) {
+          // The org page's Sites pane is a backlink query, so the record being indexed
+          // is not enough — its link to this organization has to be resolved too.
+          await this._awaitBacklink(this.entityNotePath(folder), this.entityNotePath(orgNode.path));
           this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_CONTAINER)
             .forEach((l) => l.view && l.view.render && l.view.render());
         }
@@ -10664,6 +10667,32 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       if (isCached()) return resolve();
       const ref = this.app.metadataCache.on('changed', (f) => {
         if (f && f.path === scPath && isCached()) { this.app.metadataCache.offref(ref); resolve(); }
+      });
+      setTimeout(() => { this.app.metadataCache.offref(ref); resolve(); }, 1500);
+    });
+  }
+
+  // Wait until srcPath's links are in resolvedLinks AND point at targetPath.
+  //
+  // The Sites / Work / Notes rollups are backlink queries — _backlinkSources reads
+  // metadataCache.resolvedLinks — and link resolution is a SEPARATE async pass from
+  // frontmatter parsing. So _awaitSidecarCache (which waits on getFileCache) is
+  // necessary for the taxonomy's kind stamping but NOT sufficient for a rollup: a
+  // repaint between the two passes finds the record indexed but not yet linked, and
+  // paints a list without it. That is smoke 21c A5.
+  //
+  // obsidian.d.ts: on('resolve', file) is "called when a file has been resolved for
+  // resolvedLinks and unresolvedLinks" — per file, which is what we want here.
+  // Self-resolves after 1.5s so a missed event degrades to the old behaviour.
+  _awaitBacklink(srcPath, targetPath) {
+    return new Promise((resolve) => {
+      const linked = () => {
+        const rl = this.app.metadataCache.resolvedLinks || {};
+        return !!(rl[srcPath] && rl[srcPath][targetPath]);
+      };
+      if (linked()) return resolve();
+      const ref = this.app.metadataCache.on('resolve', (f) => {
+        if (f && f.path === srcPath && linked()) { this.app.metadataCache.offref(ref); resolve(); }
       });
       setTimeout(() => { this.app.metadataCache.offref(ref); resolve(); }, 1500);
     });
