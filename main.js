@@ -9356,6 +9356,13 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     try {
       await this.app.vault.createFolder(folder);
       await this.app.vault.create(this.entityNotePath(folder), lines.join('\n'));
+      // A21c-A5: the write is not enough. entityFolders() identifies an entity by its
+      // frontmatter `type`, not by its path, and metadataCache parses asynchronously —
+      // so a caller that re-renders the moment this resolves paints a list that does not
+      // yet contain the new record (the Sites tab did exactly that). Wait for `type` to
+      // land before anyone repaints. (_awaitSidecarCache is generic despite its name:
+      // it waits for a frontmatter key at a path, and self-resolves after 1.5s.)
+      await this._awaitSidecarCache(this.entityNotePath(folder), 'type');
       dlog('entity created:', type, folder);
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach((l) => l.view.render && l.view.render());
       new obsidian.Notice('Created ' + type + ' “' + clean + '”');
