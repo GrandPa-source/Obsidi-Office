@@ -5898,7 +5898,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     // Mirrors DocDetailView — a manual render() right after processFrontMatter would
     // read stale metadataCache; the 'changed' event fires after the re-parse.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
-      if (this._projComposerDirty || this._projEditMode) return;   // don't wipe an in-progress draft or metadata edit
+      if (this._projComposerDirty || this._entComposerDirty || this._projEditMode) return;   // don't wipe an in-progress draft or metadata edit
       if (!f || !this.path) return;
       if (f.path === this.path + '/_project.md' || f.path.startsWith(this.path + '/')) this.render();
     }));
@@ -5937,6 +5937,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     this._wantScrollTop = false;
     c.empty(); c.addClass('doc-ov');
     this._projComposerDirty = false;   // a fresh render means the project composer is empty again
+    this._entComposerDirty = false;    // a fresh render means the entity composer is empty again
     const node = this.node();
     if (!node) { c.createDiv({ text: 'Container not found.', cls: 'doc-ov-empty' }); return; }
     // T31: project-type collections get the Project view; everything else is grouping
@@ -6328,6 +6329,73 @@ class ContainerOverviewView extends obsidian.ItemView {
        ['B. Sample', 'Service Lead', 'Escalation', '000-000-0000', 'sample@example.com']]);
   }
 
+  // Recent Notes (spec §5.1): a composer identical in shape to _projNotesPane,
+  // writing through the entity seam, plus a merged feed of this record's own
+  // notes, its sites' notes and notes on work attributed to it. Not wired to a
+  // tab yet — that lands in Task 6.
+  _entRecentNotesPane(p, node, type, refs) {
+    let stagedTags = [], stagedFiles = [];
+    const comp = p.createDiv('doc-detail-composer');
+    const top = comp.createDiv('doc-detail-composer-top');
+    const input = top.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Add a note…  (type #tag to add a tag)' } });
+    const addBtn = top.createEl('button', { text: 'Add note', cls: 'doc-detail-addnote' });
+    const stagedTagsEl = comp.createDiv('doc-detail-staged');
+    const drop = comp.createDiv('doc-detail-notedrop disabled'); drop.setText('Enter note text first to attach files');
+    const stagedFilesEl = comp.createDiv('doc-detail-staged');
+    const renderStaged = () => {
+      stagedTagsEl.empty();
+      stagedTags.forEach((t, i) => { const s = stagedTagsEl.createSpan({ cls: 'doc-detail-schip schip-tag' }); s.createSpan({ text: '#' + t }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedTags.splice(i, 1); renderStaged(); }; });
+      stagedFilesEl.empty();
+      stagedFiles.forEach((f, i) => { const s = stagedFilesEl.createSpan({ cls: 'doc-detail-schip schip-file' }); docIcon(s, 'paperclip', 'doc-chip-ico'); s.createSpan({ text: f.name }); const x = s.createSpan({ cls: 'doc-detail-schipx' }); obsidian.setIcon(x, 'x'); x.onclick = () => { stagedFiles.splice(i, 1); renderStaged(); }; });
+    };
+    const updateDropState = () => {
+      const has = input.value.trim().length > 0;
+      drop.toggleClass('disabled', !has);
+      if (!drop.hasClass('drag')) drop.setText(has ? 'Drag files to attach to this note' : 'Enter note text first to attach files');
+    };
+    input.oninput = () => { this._entComposerDirty = input.value.trim().length > 0 || stagedTags.length > 0 || stagedFiles.length > 0; const r = docContainer.extractInlineTags(input.value, false); if (r.tags.length) { stagedTags.push(...r.tags); input.value = r.body; renderStaged(); } updateDropState(); };
+    input.onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); add(); } };
+    drop.ondragover = (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.addClass('drag'); drop.setText('Drop to attach'); };
+    drop.ondragleave = () => { drop.removeClass('drag'); updateDropState(); };
+    drop.ondrop = async (e) => { if (drop.hasClass('disabled')) return; e.preventDefault(); drop.removeClass('drag'); const fs = [...((e.dataTransfer && e.dataTransfer.files) || [])]; for (const f of fs) { try { stagedFiles.push({ name: f.name, data: await f.arrayBuffer() }); } catch (err) { /* skip */ } } this._entComposerDirty = true; renderStaged(); updateDropState(); };
+    const add = async () => {
+      const r = docContainer.extractInlineTags(input.value, true);
+      const tags = stagedTags.concat(r.tags); const body = r.body;
+      if (!body && !tags.length && !stagedFiles.length) return;
+      const attachments = [];
+      for (const f of stagedFiles) {
+        try {
+          const dir = node.path + '/_notes';
+          if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
+          let dest = dir + '/' + f.name;
+          if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
+          await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
+        } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+      }
+      const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+      const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
+      this._entComposerDirty = false;   // committing — allow the listener re-render
+      await this.plugin.writeEntityRecord(node.path, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); });
+      // metadataCache has not re-parsed the file yet right when processFrontMatter
+      // resolves (stale-read bug class, recurred 3x in this codebase already) — so
+      // repaint the feed ourselves with `entry` layered on top, rather than
+      // re-reading. _entNoteSources already normalises dates for us; we only need
+      // to append the entry this call just wrote onto the self source.
+      input.value = '';
+      stagedTags.length = 0; stagedFiles.length = 0;
+      renderStaged(); updateDropState();
+      const sources = this._entNoteSources(node, type, refs);
+      const self = sources.find((s) => s.originKind === 'self');
+      if (self) self.entries = self.entries.concat([entry]);
+      this._renderFeedInto(listEl, docContainer.mergeNoteFeed(sources), 'No notes yet.');
+    };
+    addBtn.onclick = add;
+    p.createDiv({ cls: 'doc-detail-noteshint', text: "Notes from this record, its sites and its attributed work. Note tags (green) & attachments are scoped to the note. Newest first." });
+    const listEl = p.createDiv('doc-detail-notelist');
+    this._renderFeedInto(listEl, docContainer.mergeNoteFeed(this._entNoteSources(node, type, refs)), 'No notes yet.');
+    renderStaged(); updateDropState();
+  }
+
   // ── T32: Project view — progress, compact identification, description, tabs ─
   _projChipCls(status) {
     const s = String(status).toLowerCase();
@@ -6538,6 +6606,38 @@ class ContainerOverviewView extends obsidian.ItemView {
         tags.forEach(t => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
         files.forEach(f => { const ch = foot.createSpan({ cls: 'doc-detail-nfile' }); docIcon(ch, 'paperclip', 'doc-chip-ico'); ch.createSpan({ text: f }); });
       }
+    }
+  }
+  // Same note markup as _renderNoteListInto, plus the origin chip that makes the
+  // feed legible — a note reading "confirmed Monday" is useless without its source.
+  _renderFeedInto(listEl, rows, emptyText) {
+    listEl.empty();
+    if (!rows.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: emptyText || 'No notes yet.' }); return; }
+    const CAP = 50;
+    for (const n of rows.slice(0, CAP)) {
+      const note = listEl.createDiv('doc-detail-note');
+      const meta = note.createDiv('doc-detail-nmeta');
+      const chip = meta.createSpan({ cls: 'doc-ent-origin ok-' + (n.originKind || 'self'), text: n.origin || '—' });
+      if (n.originKind !== 'self' && n.originPath) {
+        chip.addClass('is-link');
+        chip.setAttr('role', 'button'); chip.setAttr('tabindex', '0');
+        chip.setAttr('aria-label', 'Open ' + n.origin);
+        const go = () => this.plugin.openContainerOverview({ path: n.originPath });
+        chip.onclick = go;
+        chip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
+      }
+      meta.createSpan({ text: n.author || '' });
+      meta.createSpan({ text: n.date || '' });
+      note.createDiv({ text: n.body || '', cls: 'doc-detail-nbody' });
+      const tags = n.noteTags || [], files = n.attachments || [];
+      if (tags.length || files.length) {
+        const foot = note.createDiv('doc-detail-nfoot');
+        tags.forEach((t) => foot.createSpan({ text: '#' + t, cls: 'doc-detail-ntag' }));
+        files.forEach((f) => { const ch = foot.createSpan({ cls: 'doc-detail-nfile' }); docIcon(ch, 'paperclip', 'doc-chip-ico'); ch.createSpan({ text: f }); });
+      }
+    }
+    if (rows.length > CAP) {
+      listEl.createDiv({ cls: 'doc-detail-noteshint', text: 'Showing ' + CAP + ' of ' + rows.length + ' — use Search Notes to narrow.' });
     }
   }
   // Read each project document's current-version stakeholders for the rollup
