@@ -92,6 +92,10 @@ const SITE_FIELDS = [
   { key: 'city',         label: 'City',         type: 'text' },
   { key: 'province',     label: 'Province',     type: 'text' },
   { key: 'postalCode',   label: 'Postal Code',  type: 'text' },
+  { key: 'lat',           label: 'Latitude',      type: 'text' },
+  { key: 'lon',           label: 'Longitude',     type: 'text' },
+  { key: 'geocodedAt',    label: 'Geocoded',      type: 'text' },
+  { key: 'geocodeSource', label: 'Coord Source',  type: 'text' },
   { key: 'status',       label: 'Status',       type: 'select', options: SITE_STATUS },
   { key: 'summary',      label: 'Summary',      type: 'textarea' },
   { key: 'tags',         label: 'Tags',         type: 'tags' },
@@ -643,6 +647,41 @@ function editGateDecision(g) {
   return { editable: false, state: 'unlocked' };
 }
 
+// ── Site geolocation (spec 2026-08-03) ──────────────────────────────────────
+// WGS84 decimal degrees at 6 dp, matching P22_CampusMap's AssetPos.wgs84 so a
+// site can feed that project without conversion.
+
+function formatCoord(n) {
+  const v = parseCoord(n);
+  return v == null ? null : v.toFixed(6);
+}
+
+function parseCoord(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function siteCoord(rec) {
+  const lat = parseCoord(rec && rec.lat);
+  const lon = parseCoord(rec && rec.lon);
+  if (lat == null || lon == null) return null;
+  return { lat, lon };
+}
+
+// Great-circle distance in km. Pure maths — no service, no network.
+function haversineKm(a, b) {
+  const R = 6371;                       // mean Earth radius, km
+  const rad = (d) => (d * Math.PI) / 180;
+  const dLat = rad(b.lat - a.lat);
+  const dLon = rad(b.lon - a.lon);
+  const s = Math.sin(dLat / 2) ** 2
+          + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(s)));
+}
+
 // ── Exports ───────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -702,6 +741,10 @@ module.exports = {
   editGateDecision,
   forkFileName,
   isPendingFork,
+  formatCoord,
+  parseCoord,
+  siteCoord,
+  haversineKm,
 };
 
 return module.exports; })();
