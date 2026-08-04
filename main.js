@@ -6139,14 +6139,15 @@ class ContainerOverviewView extends obsidian.ItemView {
   // Obsidian's YAML parser turns an unquoted date-like scalar into a Date object.
   // mergeNoteFeed orders with localeCompare, which needs ISO strings — a Date
   // stringifies weekday-first ("Sat Aug 01 2026"), so it would sort wrongly with
-  // no error anywhere. Normalise at the boundary, once.
+  // no error anywhere. Read dates in UTC via toISOString to stay timezone-neutral,
+  // following the convention in computeNextReview (lib/doc-container.js:338-345).
   _entNoteEntries(v) {
     if (!Array.isArray(v)) return [];
     return v.map((e) => {
       if (!e || typeof e !== 'object') return e;
       const d = e.date;
       if (d instanceof Date) {
-        return Object.assign({}, e, { date: window.moment ? window.moment(d).format('YYYY-MM-DD') : d.toISOString().slice(0, 10) });
+        return Object.assign({}, e, { date: d.toISOString().slice(0, 10) });
       }
       return e;
     });
@@ -6184,11 +6185,9 @@ class ContainerOverviewView extends obsidian.ItemView {
     // A note page has no noteLog — it IS the note. One synthetic entry each so it
     // takes its place in the same chronology.
     for (const n of (refs.notes || [])) {
-      const d = n.noteDate;
-      const dateStr = d instanceof Date ? (window.moment ? window.moment(d).format('YYYY-MM-DD') : d.toISOString().slice(0, 10)) : (d || '');
       out.push({ origin: n.title || n.name, originKind: 'page', originPath: n.path,
-                 entries: [{ date: dateStr, author: '', body: n.noteType || 'Note page',
-                             noteTags: [], attachments: [] }] });
+                 entries: this._entNoteEntries([{ date: n.noteDate || '', author: '', body: n.noteType || 'Note page',
+                                                 noteTags: [], attachments: [] }]) });
     }
     return out;
   }
