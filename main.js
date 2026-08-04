@@ -6787,7 +6787,7 @@ class SettingsTab extends obsidian.PluginSettingTab {
         .setPlaceholder('https://nominatim.openstreetmap.org/search')
         .setValue(this.plugin.settings.geocodingEndpoint || '')
         .onChange(async v => {
-          this.plugin.settings.geocodingEndpoint = v.trim();
+          this.plugin.settings.geocodingEndpoint = v.trim() || DEFAULT_SETTINGS.geocodingEndpoint;
           await this.plugin.saveSettings();
         }));
 
