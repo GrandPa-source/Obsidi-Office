@@ -10824,6 +10824,51 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     });
   }
 
+  // The ONLY function that performs a geocoding request. Callers must invoke it
+  // from an explicit user gesture — never from render, input, focus or save
+  // (spec §4). Returns a discriminated result rather than throwing, so every
+  // caller is forced to handle failure.
+  async geocodeAddress(query) {
+    if (!this.settings.geocodingEnabled) return { ok: false, reason: 'disabled' };
+    const q = String(query || '').trim();
+    if (!q) return { ok: false, reason: 'empty' };
+
+    const base = (this.settings.geocodingEndpoint || DEFAULT_SETTINGS.geocodingEndpoint).trim();
+    const cc = (this.settings.geocodingCountryCodes || '').trim();
+    const params = [
+      'q=' + encodeURIComponent(q),
+      'format=jsonv2',
+      'addressdetails=1',
+      'limit=5',
+    ];
+    if (cc) params.push('countrycodes=' + encodeURIComponent(cc));
+    const url = base + (base.includes('?') ? '&' : '?') + params.join('&');
+
+    try {
+      const version = (this.manifest && this.manifest.version) || '0.0.0';
+      const res = await obsidian.requestUrl({
+        url,
+        method: 'GET',
+        headers: {
+          // Nominatim's policy rejects stock library user-agents outright.
+          'User-Agent': 'obsidi-office/' + version + ' (Obsidian plugin)',
+          'Accept': 'application/json',
+        },
+        throw: false,
+      });
+      if (!res || res.status < 200 || res.status >= 300) {
+        elog('[geo] lookup HTTP', res && res.status);
+        return { ok: false, reason: 'network' };
+      }
+      let body = res.json;
+      if (body == null) { try { body = JSON.parse(res.text); } catch (e) { body = null; } }
+      return { ok: true, results: docContainer.parseGeocodeResults(body) };
+    } catch (e) {
+      elog('[geo] lookup failed:', (e && e.stack) || e);
+      return { ok: false, reason: 'network' };
+    }
+  }
+
   // ── Task 9: Detail action handlers ───────────────────────────────────────────
   // Open an office file FROM the doc-container detail page. sameLeaf = swap into the
   // detail's own tab; newPane (Ctrl/Cmd-click) = a new tab. Either way the editor gets
