@@ -6396,6 +6396,29 @@ class ContainerOverviewView extends obsidian.ItemView {
     renderStaged(); updateDropState();
   }
 
+  // ── T40: Search Notes pane (over merged feed) ────────────────────────────────
+  _entSearchNotesPane(p, node, type, refs) {
+    const rows = docContainer.mergeNoteFeed(this._entNoteSources(node, type, refs));
+    const bar = p.createDiv('doc-detail-searchbar');
+    const input = bar.createEl('input', { cls: 'doc-detail-ninput', attr: { placeholder: 'Search notes by text or #note-tag…' } });
+    const fbtn = bar.createSpan({ cls: 'doc-detail-filterbtn', text: '▤ Dates' });
+    const dateRow = p.createDiv('doc-detail-datefilter');
+    dateRow.style.display = 'none';
+    dateRow.createSpan({ text: 'From', cls: 'doc-detail-dfl' });
+    const from = dateRow.createEl('input', { attr: { type: 'date' }, cls: 'doc-detail-dinput' });
+    dateRow.createSpan({ text: 'To', cls: 'doc-detail-dfl' });
+    const to = dateRow.createEl('input', { attr: { type: 'date' }, cls: 'doc-detail-dinput' });
+    const clear = dateRow.createSpan({ text: 'Clear', cls: 'doc-detail-dclear' });
+    fbtn.onclick = () => { const show = dateRow.style.display === 'none'; dateRow.style.display = show ? 'flex' : 'none'; fbtn.toggleClass('is-active', show); };
+    clear.onclick = () => { from.value = ''; to.value = ''; run(); };
+    const results = p.createDiv('doc-detail-notelist');
+    const run = () => {
+      const hits = docContainer.filterNoteFeed(rows, { text: input.value, from: from.value, to: to.value });
+      this._renderFeedInto(results, hits, 'No matching notes.');
+    };
+    input.oninput = run; from.onchange = run; to.onchange = run; run();
+  }
+
   // ── T32: Project view — progress, compact identification, description, tabs ─
   _projChipCls(status) {
     const s = String(status).toLowerCase();
