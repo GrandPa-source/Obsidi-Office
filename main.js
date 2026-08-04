@@ -6419,6 +6419,20 @@ class ContainerOverviewView extends obsidian.ItemView {
     input.oninput = run; from.onchange = run; to.onchange = run; run();
   }
 
+  // ── T41: Log pane (read-only activity feed for entity) ───────────────────────
+  async _entLogPane(p, node) {
+    p.createDiv({ cls: 'doc-detail-noteshint', text: 'System activity — read-only. Notes are your commentary; the Log records actions on the record.' });
+    const list = p.createDiv('doc-detail-loglist');
+    let entries = [];
+    const lf = this.app.vault.getAbstractFileByPath(node.path + '/' + docContainer.LOG_MD_NAME);
+    if (lf instanceof obsidian.TFile) {
+      const body = await this.app.vault.cachedRead(lf);
+      entries = docContainer.parseLogBody(body); entries.reverse();   // newest-first
+    }
+    if (!entries.length) { list.createDiv({ cls: 'doc-detail-stub', text: 'No activity recorded yet.' }); return; }
+    for (const l of entries) renderLogRow(this, list, node, l);
+  }
+
   // ── T32: Project view — progress, compact identification, description, tabs ─
   _projChipCls(status) {
     const s = String(status).toLowerCase();
