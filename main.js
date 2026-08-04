@@ -1445,6 +1445,15 @@ const DEFAULT_SETTINGS = {
   enableMobilePrint: false,
   docBrowserEnabled: false,
   docRoot: 'Documents',
+  // ── Site geolocation (spec 2026-08-03) ──────────────────────────────────
+  // OFF by default and deliberately so: this plugin is otherwise
+  // network-silent apart from the user-triggered asset download. While this
+  // is false the Look up control is NOT RENDERED, so no request is reachable.
+  geocodingEnabled: false,
+  // Point this at a self-hosted Nominatim for zero third-party egress.
+  geocodingEndpoint: 'https://nominatim.openstreetmap.org/search',
+  // Comma-separated ISO country codes; blank means unrestricted.
+  geocodingCountryCodes: 'ca',
   docCategories: ['Governance', 'Projects', 'SOPs'],
   docGlossaryEnabled: false,
   docGlossaryRoot: 'Definitions',
@@ -6750,6 +6759,48 @@ class SettingsTab extends obsidian.PluginSettingTab {
         }
         await this.plugin._downloadAssetsViaZip(src);
       }));
+
+    containerEl.createEl('h3', { text: 'Site geolocation' });
+
+    new obsidian.Setting(containerEl)
+      .setName('Enable address lookup')
+      .setDesc(
+        'Adds a "Look up" button to the address field on Site and Organization records. ' +
+        'When you press it, the address you typed is sent to the endpoint below so it can be ' +
+        'resolved to coordinates. Nothing is sent while you type, and nothing else in the ' +
+        'record is ever transmitted. Off by default.'
+      )
+      .addToggle(t => t
+        .setValue(!!this.plugin.settings.geocodingEnabled)
+        .onChange(async v => {
+          this.plugin.settings.geocodingEnabled = v;
+          await this.plugin.saveSettings();
+        }));
+
+    new obsidian.Setting(containerEl)
+      .setName('Geocoding endpoint')
+      .setDesc(
+        'Nominatim-compatible search endpoint. Point this at a self-hosted Nominatim if you ' +
+        'do not want addresses leaving your network.'
+      )
+      .addText(t => t
+        .setPlaceholder('https://nominatim.openstreetmap.org/search')
+        .setValue(this.plugin.settings.geocodingEndpoint || '')
+        .onChange(async v => {
+          this.plugin.settings.geocodingEndpoint = v.trim();
+          await this.plugin.saveSettings();
+        }));
+
+    new obsidian.Setting(containerEl)
+      .setName('Limit results to countries')
+      .setDesc('Comma-separated ISO country codes, e.g. "ca". Leave blank to search worldwide.')
+      .addText(t => t
+        .setPlaceholder('ca')
+        .setValue(this.plugin.settings.geocodingCountryCodes || '')
+        .onChange(async v => {
+          this.plugin.settings.geocodingCountryCodes = v.trim();
+          await this.plugin.saveSettings();
+        }));
 
     new obsidian.Setting(containerEl)
       .setName("Enable Print on mobile")
