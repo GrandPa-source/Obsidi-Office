@@ -6136,6 +6136,63 @@ class ContainerOverviewView extends obsidian.ItemView {
     this.render();
   }
 
+  // Obsidian's YAML parser turns an unquoted date-like scalar into a Date object.
+  // mergeNoteFeed orders with localeCompare, which needs ISO strings — a Date
+  // stringifies weekday-first ("Sat Aug 01 2026"), so it would sort wrongly with
+  // no error anywhere. Normalise at the boundary, once.
+  _entNoteEntries(v) {
+    if (!Array.isArray(v)) return [];
+    return v.map((e) => {
+      if (!e || typeof e !== 'object') return e;
+      const d = e.date;
+      if (d instanceof Date) {
+        return Object.assign({}, e, { date: window.moment ? window.moment(d).format('YYYY-MM-DD') : d.toISOString().slice(0, 10) });
+      }
+      return e;
+    });
+  }
+
+  // Assemble the Recent Notes feed's sources (spec §5.1). Adds no traversal —
+  // sites and work are already discovered by entityReferences; this only reads
+  // each one's noteLog. Note pages contribute one row each, since a page has a
+  // date and a title but no note body in frontmatter.
+  _entNoteSources(node, type, refs) {
+    const out = [];
+    const selfLabel = type === 'organization' ? 'This organization' : 'This site';
+    const rec = this.plugin.readEntityRecord(node.path);
+    out.push({ origin: selfLabel, originKind: 'self', originPath: node.path,
+               entries: this._entNoteEntries(rec.noteLog) });
+
+    for (const s of (refs.sites || [])) {
+      const r = this.plugin.readEntityRecord(s.path);
+      const entries = this._entNoteEntries(r.noteLog);
+      if (entries.length) {
+        out.push({ origin: s.name, originKind: 'site', originPath: s.path, entries });
+      }
+    }
+
+    for (const w of (refs.work || [])) {
+      const file = w.path + '/' + (w.kind === 'project' ? '_project.md' : docContainer.DOCUMENT_MD_NAME);
+      const f = this.app.vault.getAbstractFileByPath(file);
+      const fm = (f && (this.app.metadataCache.getFileCache(f) || {}).frontmatter) || {};
+      const entries = this._entNoteEntries(fm.noteLog);
+      if (entries.length) {
+        out.push({ origin: w.title || w.name, originKind: 'work', originPath: w.path, entries });
+      }
+    }
+
+    // A note page has no noteLog — it IS the note. One synthetic entry each so it
+    // takes its place in the same chronology.
+    for (const n of (refs.notes || [])) {
+      const d = n.noteDate;
+      const dateStr = d instanceof Date ? (window.moment ? window.moment(d).format('YYYY-MM-DD') : d.toISOString().slice(0, 10)) : (d || '');
+      out.push({ origin: n.title || n.name, originKind: 'page', originPath: n.path,
+                 entries: [{ date: dateStr, author: '', body: n.noteType || 'Note page',
+                             noteTags: [], attachments: [] }] });
+    }
+    return out;
+  }
+
   _entTabs(parent, node, type) {
     const bar = parent.createDiv('doc-detail-tabs');
     const panes = parent.createDiv('doc-detail-panes');
