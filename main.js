@@ -4451,6 +4451,14 @@ function docToday() {
   return window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
 }
 
+// Lucide ids for the entity taxonomy. Both verified present in the bundled icon
+// registry of Obsidian 1.13.x; the intuitive names `building` and `network` are
+// NOT bundled, and setIcon draws nothing for an unknown id (no throw, no warning).
+// Verify any replacement before using it.
+//   building-2 — office block with windows and a door
+//   share-2    — one node joined to two others: an org chart drawn horizontally
+const ENTITY_ICONS = { site: 'building-2', organization: 'share-2' };
+
 function docIcon(parent, name, cls) {
   const s = parent.createSpan({ cls: cls || 'doc-ico' });
   obsidian.setIcon(s, name);
@@ -4594,11 +4602,28 @@ class DocumentBrowserView extends obsidian.ItemView {
     const tw = row.createSpan({ cls: 'doc-container-tw' });
     obsidian.setIcon(tw, isCollapsed ? 'chevron-right' : 'chevron-down');
     tw.onclick = (e) => { e.stopPropagation(); if (this.collapsed.has(node.path)) this.collapsed.delete(node.path); else this.collapsed.add(node.path); this.render(); };
-    docIcon(row, node.kind === 'category' ? 'folder' : 'folder-open', 'doc-container-ico');
+    docIcon(row, this._containerIcon(node), 'doc-container-ico');
     row.createSpan({ text: node.name });
     row.onclick = () => { this.plugin.openContainerOverview(node); this.markSelected(row); };
     if (!isCollapsed) for (const ch of (node.children || [])) this.renderNode(parent, ch, depth + 1, terms);
     return true;
+  }
+
+  // Tree icon for a container row. Entity rows read as what they are rather
+  // than as generic folders: a site is a place, an organization is a party.
+  // Icon ids are verified present in Obsidian's bundled Lucide set — `building`
+  // and `network` are NOT in it, and setIcon renders an empty span for an
+  // unknown id without throwing, so a wrong name here fails silently.
+  _containerIcon(node) {
+    if (node.kind === 'site') return ENTITY_ICONS.site;
+    if (node.kind === 'organization') return ENTITY_ICONS.organization;
+    if (node.kind === 'category') {
+      const s = this.plugin.settings;
+      if (node.name === (s.docSiteCategory || 'Sites')) return ENTITY_ICONS.site;
+      if (node.name === (s.docOrgCategory || 'Organizations')) return ENTITY_ICONS.organization;
+      return 'folder';
+    }
+    return 'folder-open';
   }
 
   readStatus(node) {
