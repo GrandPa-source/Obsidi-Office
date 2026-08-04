@@ -322,7 +322,7 @@ Render the feed with a new `_renderFeedInto(listEl, rows, emptyText)` placed nex
         chip.addClass('is-link');
         chip.setAttr('role', 'button'); chip.setAttr('tabindex', '0');
         chip.setAttr('aria-label', 'Open ' + n.origin);
-        const go = () => this.plugin.openContainerOverviewByPath(n.originPath);
+        const go = () => this.plugin.openContainerOverview({ path: n.originPath });
         chip.onclick = go;
         chip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
       }
@@ -342,7 +342,7 @@ Render the feed with a new `_renderFeedInto(listEl, rows, emptyText)` placed nex
   }
 ```
 
-If `openContainerOverviewByPath` does not exist, resolve the node from `this.plugin.taxonomy()` by path and call the existing `openContainerOverview(node)`. **Check first; do not assume.** If neither is available, report BLOCKED rather than inventing a navigation path.
+`openContainerOverview({ path })` accepting a bare path object is the established idiom in this file — verified at five call sites (main.js:4515, 4811, 5824, 5915). Use it; do not resolve the node from the taxonomy first, and do not invent a new navigation helper.
 
 Hint line beneath the composer: `Notes from this record, its sites and its attributed work. Note tags (green) & attachments are scoped to the note. Newest first.`
 
