@@ -977,6 +977,16 @@ const DOC_CONTAINER_CSS = `
 .doc-ent-sample-tag { color: var(--text-error); font-weight:600; letter-spacing:0.02em; white-space:nowrap; }
 .doc-ent-sample td { color: var(--text-error); font-style:italic; }
 .doc-ent-sample th { color: var(--text-muted); }
+.doc-ent-geolist { display:flex; flex-direction:column; gap:6px; margin:12px 0; }
+.doc-ent-georow.doc-ent-georow {
+  display:block; width:100%; text-align:left; height:auto; min-height:0;
+  white-space:normal; padding:8px 10px; cursor:pointer;
+  background-color: var(--background-secondary); box-shadow:none;
+  border:1px solid var(--background-modifier-border); border-radius:6px;
+}
+.doc-ent-georow.doc-ent-georow:hover { background-color: var(--background-modifier-hover); }
+.doc-ent-geoname  { color: var(--text-normal); }
+.doc-ent-geocoord { color: var(--text-muted); font-size:0.85em; margin-top:2px; }
 @media (pointer: coarse) {
   .doc-ov-table td, .doc-ov-table th { padding-top:12px; padding-bottom:12px; }
   .doc-detail-tabb { min-height:44px; display:flex; align-items:center; }
@@ -11494,6 +11504,34 @@ class FileNameModal extends obsidian.Modal {
 // - Create-from-parent ("＋ New note"): type only, restricted type list,
 //   no title input — createNoteContainer auto-generates "<Type> - <Parent>".
 // everything else is set on the card after the editor opens.
+// Candidate list for an address lookup. Selection is ALWAYS explicit — there is
+// deliberately no auto-pick when results.length === 1, because a single
+// confident-looking wrong answer is the failure most likely to go unnoticed
+// (spec §6).
+class GeocodePickerModal extends obsidian.Modal {
+  constructor(app, results, onPick) { super(app); this.results = results || []; this.onPick = onPick; }
+  onOpen() {
+    this.titleEl.setText('Select the matching address');
+    const c = this.contentEl;
+    c.createDiv({
+      cls: 'doc-detail-stub',
+      text: this.results.length + (this.results.length === 1 ? ' match found.' : ' matches found.')
+        + ' Nothing is changed until you choose one.',
+    });
+    const list = c.createDiv('doc-ent-geolist');
+    this.results.forEach((r) => {
+      const row = list.createEl('button', { cls: 'doc-ent-georow' });
+      row.createDiv({ text: r.display, cls: 'doc-ent-geoname' });
+      row.createDiv({ text: r.lat + ', ' + r.lon, cls: 'doc-ent-geocoord' });
+      row.setAttr('aria-label', 'Use ' + r.display);
+      row.onclick = () => { this.close(); if (this.onPick) this.onPick(r); };
+    });
+    const bar = c.createDiv('doc-detail-sh-bar');
+    bar.createEl('button', { text: 'Cancel' }).onclick = () => this.close();
+  }
+  onClose() { this.contentEl.empty(); }
+}
+
 // Create an organization, or a site from an organization page. In site mode the
 // owning organization is shown read-only — it is the page you started from.
 class EntityCreateModal extends obsidian.Modal {
