@@ -1040,6 +1040,10 @@ const DOC_CONTAINER_CSS = `
 .doc-ent-georow.doc-ent-georow:hover { background-color: var(--background-modifier-hover); }
 .doc-ent-geoname  { color: var(--text-normal); }
 .doc-ent-geocoord { color: var(--text-muted); font-size:0.85em; margin-top:2px; }
+.doc-ent-origin { font-weight:600; color: var(--text-normal); margin-right:6px; }
+.doc-ent-origin.is-link { cursor:pointer; text-decoration:underline dotted; }
+.doc-ent-origin.is-link:hover { color: var(--text-accent); }
+.doc-ent-origin.ok-self { font-weight:500; color: var(--text-muted); }
 @media (pointer: coarse) {
   .doc-ov-table td, .doc-ov-table th { padding-top:12px; padding-bottom:12px; }
   .doc-detail-tabb { min-height:44px; display:flex; align-items:center; }
@@ -6195,6 +6199,7 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   _entTabs(parent, node, type) {
     const bar = parent.createDiv('doc-detail-tabs');
+    bar.addClass('has-right');   // Log tab is pinned top-right
     const panes = parent.createDiv('doc-detail-panes');
     const refs = this.plugin.entityReferences(node.path);
     const isOrg = type === 'organization';
@@ -6203,13 +6208,16 @@ class ContainerOverviewView extends obsidian.ItemView {
     const specs = [];
     if (isOrg) specs.push({ id: 'esites', label: 'Sites', count: refs.sites.length, fill: (p) => this._entSitesPane(p, node, refs.sites) });
     specs.push({ id: 'ework', label: 'Work', count: refs.work.length, fill: (p) => this._entWorkPane(p, refs.work, today) });
-    specs.push({ id: 'enotes', label: 'Notes', count: refs.notes.length, fill: (p) => this._entNotesPane(p, node, isOrg, refs.notes) });
+    const feed = docContainer.mergeNoteFeed(this._entNoteSources(node, type, refs));
+    specs.push({ id: 'erecent', label: 'Recent Notes', count: feed.length, fill: (p) => this._entRecentNotesPane(p, node, type, refs) });
+    specs.push({ id: 'esearch', label: 'Search Notes', fill: (p) => this._entSearchNotesPane(p, node, type, refs) });
     if (isOrg) specs.push({ id: 'eagree', label: 'Agreements & Procurements', fill: (p) => this._entAgreementsPane(p) });
     specs.push({ id: 'econtacts', label: 'Contacts', fill: (p) => this._entContactsPane(p) });
+    specs.push({ id: 'elog', label: 'Log', right: true, fill: (p) => this._entLogPane(p, node) });
 
     const hasActive = specs.some((s) => s.id === this._entActiveTab);
     specs.forEach((spec, i) => {
-      const tab = bar.createDiv('doc-detail-tabb');
+      const tab = bar.createDiv('doc-detail-tabb' + (spec.right ? ' right' : ''));
       tab.setAttr('role', 'tab'); tab.setAttr('tabindex', '0');
       tab.createSpan({ text: spec.label });
       if (spec.count != null) tab.createSpan({ text: String(spec.count), cls: 'doc-detail-tabcnt' });
@@ -6276,27 +6284,6 @@ class ContainerOverviewView extends obsidian.ItemView {
         () => (w.kind === 'project' ? this.plugin.openContainerOverview({ path: w.path }) : this.plugin.openDocDetail({ path: w.path })),
         'Open ' + w.title);
       if (docContainer.isOverdue(w.nextReviewDate, today)) tr.addClass('doc-ent-overdue');
-    }
-  }
-
-  _entNotesPane(p, node, isOrg, notes) {
-    if (isOrg) {
-      const acts = p.createDiv('doc-detail-paneacts');
-      const add = docIconLabel(acts, 'plus', 'New organizational note', { tag: 'button', cls: 'doc-ov-primary' });
-      add.style.marginBottom = '0';
-      add.onclick = () => this.plugin.createOrganizationalNote(node);
-    }
-    if (!notes.length) {
-      p.createDiv({ text: 'No notes yet. Notes written on documents and projects appear here when they name this record.', cls: 'doc-detail-stub' });
-      return;
-    }
-    const table = p.createEl('table', { cls: 'doc-ov-table' });
-    const head = table.createEl('tr'); ['Note', 'Type', 'Date', 'Source', 'Kind'].forEach((h) => head.createEl('th', { text: h }));
-    const kindWord = { organizational: 'This record', stamped: 'Attributed', mention: 'Mention' };
-    for (const n of notes) {
-      const tr = this._entRow(table, [n.title, n.noteType, n.noteDate, n.parentTitle || '—', kindWord[n.rowType]],
-        () => this.plugin.openNoteInEditor({ path: n.path }), 'Open note ' + n.title);
-      tr.addClass('doc-ent-note-' + n.rowType);
     }
   }
 
