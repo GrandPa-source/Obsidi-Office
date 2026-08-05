@@ -758,7 +758,8 @@ function filterNoteFeed(rows, criteria) {
   return rows.filter((n) => {
     if (!n || typeof n !== 'object') return false;
     const hay = ((n.date || '') + ' ' + (n.author || '') + ' ' + (n.body || '') + ' '
-      + (n.origin || '') + ' ' + (n.noteTags || []).join(' ')).toLowerCase();
+      + (n.origin || '') + ' ' + (n.noteKind || '') + ' ' + (n.noteSource || '') + ' '
+      + (n.noteTags || []).join(' ')).toLowerCase();
     if (!terms.every((t) => hay.includes(t))) return false;
     if (c.from && String(n.date) < c.from) return false;
     if (c.to && String(n.date) > c.to) return false;
@@ -836,6 +837,10 @@ module.exports = {
 
 return module.exports; })();
 // </doc-container-core>
+
+// Entity Recent Notes feed empty state (spec §5): explanatory, not bare, in the
+// same spirit as the deleted _entNotesPane's stub text.
+const ENT_FEED_EMPTY_TEXT = 'No notes yet. Notes written on this record, its sites, and documents that name it all appear here.';
 
 // Mobile (Capacitor / iOS) gating. On mobile, Node-only modules are unavailable
 // or unsafe â€” fs/path/crypto would throw at module load. Detect once at top
@@ -1008,7 +1013,6 @@ const DOC_CONTAINER_CSS = `
   outline:2px solid var(--interactive-accent); outline-offset:2px; border-radius:3px; }
 .doc-ov-table tr.row[tabindex]:focus-visible { outline:2px solid var(--interactive-accent); outline-offset:-2px; }
 .doc-ent-overdue td { color: var(--text-error); }
-.doc-ent-note-mention td { color: var(--text-muted); font-style:italic; }
 /* Note-card attribution: reads as text, edits behind a pencil. The pencil stays
    in the label row so revealing the input never reflows the card. */
 .obsidi-note-card-attrhead { display:flex; align-items:center; gap:6px; min-height:20px; }
@@ -1260,6 +1264,11 @@ const DOC_CONTAINER_CSS = `
 .doc-detail-notelist { display:flex; flex-direction:column; gap:8px; max-height:360px; overflow:auto; }
 .doc-detail-note { background: var(--background-primary); border:1px solid var(--background-modifier-border); border-radius:8px; padding:9px 11px; }
 .doc-detail-nmeta { font-size:10px; color: var(--text-faint); margin-bottom:3px; display:flex; justify-content:space-between; }
+/* Feed rows carry 3-5 parts (origin, author, date, Kind, Source) where the shared
+   rule above was written for 2 (author, date) — space-between would spread them
+   across the full row width with large gaps. Left-align with a small gap instead,
+   without touching the shared rule the document/project note lists still use. */
+.doc-ent-feedmeta { justify-content:flex-start; gap:8px; flex-wrap:wrap; }
 .doc-detail-nbody { font-size:12.5px; line-height:1.45; color: var(--text-normal); }
 .doc-detail-nfoot { margin-top:8px; display:flex; flex-wrap:wrap; gap:5px; }
 .doc-detail-ntag { font-size:9.5px; background: rgba(72,184,132,.16); color:#48b884; padding:2px 8px; border-radius:9px; }
@@ -6142,6 +6151,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       this._entEditMode = true;
       return;
     }
+    this.plugin.appendLog(node.path, 'Metadata edited');   // fire-and-forget, must never abort the save
     this.render();
   }
 
@@ -6187,7 +6197,10 @@ class ContainerOverviewView extends obsidian.ItemView {
       const fm = (f && (this.app.metadataCache.getFileCache(f) || {}).frontmatter) || {};
       const entries = this._entNoteEntries(fm.noteLog);
       if (entries.length) {
-        out.push({ origin: w.title || w.name, originKind: 'work', originPath: w.path, entries });
+        // A document's origin needs to open via openDocDetail, not openContainerOverview
+        // (which would render a grouping-container view, ＋ New Collection button and
+        // all, inside a document folder). Projects are containers and stay 'work'.
+        out.push({ origin: w.title || w.name, originKind: w.kind === 'document' ? 'work-doc' : 'work', originPath: w.path, entries });
       }
     }
 
@@ -6215,7 +6228,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     if (isOrg) specs.push({ id: 'esites', label: 'Sites', count: refs.sites.length, fill: (p) => this._entSitesPane(p, node, refs.sites) });
     specs.push({ id: 'ework', label: 'Work', count: refs.work.length, fill: (p) => this._entWorkPane(p, refs.work, today) });
     const feed = docContainer.mergeNoteFeed(this._entNoteSources(node, type, refs));
-    specs.push({ id: 'erecent', label: 'Recent Notes', count: feed.length, fill: (p) => this._entRecentNotesPane(p, node, type, refs) });
+    specs.push({ id: 'erecent', label: 'Recent Notes', count: feed.length, fill: (p) => this._entRecentNotesPane(p, node, type, refs, feed) });
     specs.push({ id: 'esearch', label: 'Search Notes', fill: (p) => this._entSearchNotesPane(p, node, type, refs) });
     if (isOrg) specs.push({ id: 'eagree', label: 'Agreements & Procurements', fill: (p) => this._entAgreementsPane(p) });
     specs.push({ id: 'econtacts', label: 'Contacts', fill: (p) => this._entContactsPane(p) });
@@ -6324,9 +6337,10 @@ class ContainerOverviewView extends obsidian.ItemView {
 
   // Recent Notes (spec §5.1): a composer identical in shape to _projNotesPane,
   // writing through the entity seam, plus a merged feed of this record's own
-  // notes, its sites' notes and notes on work attributed to it. Not wired to a
-  // tab yet — that lands in Task 6.
-  _entRecentNotesPane(p, node, type, refs) {
+  // notes, its sites' notes and notes on work attributed to it. `feed` is the
+  // merge _entTabs already computed to get the tab's count — reuse it rather
+  // than rebuilding on first paint; the composer still rebuilds after a write.
+  _entRecentNotesPane(p, node, type, refs, feed) {
     if (type === 'organization') {
       const acts = p.createDiv('doc-detail-paneacts');
       const add = docIconLabel(acts, 'plus', 'New organizational note', { tag: 'button', cls: 'doc-ov-primary' });
@@ -6375,6 +6389,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
       this._entComposerDirty = false;   // committing — allow the listener re-render
       await this.plugin.writeEntityRecord(node.path, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); });
+      this.plugin.appendLog(node.path, 'Note added');   // fire-and-forget, must never abort the note write
       // metadataCache has not re-parsed the file yet right when processFrontMatter
       // resolves (stale-read bug class, recurred 3x in this codebase already) — so
       // repaint the feed ourselves with `entry` layered on top, rather than
@@ -6386,12 +6401,12 @@ class ContainerOverviewView extends obsidian.ItemView {
       const sources = this._entNoteSources(node, type, refs);
       const self = sources.find((s) => s.originKind === 'self');
       if (self) self.entries = self.entries.concat([entry]);
-      this._renderFeedInto(listEl, docContainer.mergeNoteFeed(sources), 'No notes yet.');
+      this._renderFeedInto(listEl, docContainer.mergeNoteFeed(sources), ENT_FEED_EMPTY_TEXT);
     };
     addBtn.onclick = add;
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Notes from this record, its sites and its attributed work. Note tags (green) & attachments are scoped to the note. Newest first." });
     const listEl = p.createDiv('doc-detail-notelist');
-    this._renderFeedInto(listEl, docContainer.mergeNoteFeed(this._entNoteSources(node, type, refs)), 'No notes yet.');
+    this._renderFeedInto(listEl, feed, ENT_FEED_EMPTY_TEXT);
     renderStaged(); updateDropState();
   }
 
@@ -6413,7 +6428,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     const results = p.createDiv('doc-detail-notelist');
     const run = () => {
       const hits = docContainer.filterNoteFeed(rows, { text: input.value, from: from.value, to: to.value });
-      this._renderFeedInto(results, hits, 'No matching notes.');
+      this._renderFeedInto(results, hits, 'No matching notes.', ' — narrow your search to see more.');
     };
     input.oninput = run; from.onchange = run; to.onchange = run; run();
   }
@@ -6646,19 +6661,37 @@ class ContainerOverviewView extends obsidian.ItemView {
   }
   // Same note markup as _renderNoteListInto, plus the origin chip that makes the
   // feed legible — a note reading "confirmed Monday" is useless without its source.
-  _renderFeedInto(listEl, rows, emptyText) {
+  // overCapHint is a parameter (not hard-coded) because Search Notes shares this
+  // renderer — the Recent Notes cap hint says "use Search Notes to narrow", which
+  // would be nonsense advice rendered inside Search Notes itself.
+  _renderFeedInto(listEl, rows, emptyText, overCapHint) {
     listEl.empty();
     if (!rows.length) { listEl.createDiv({ cls: 'doc-detail-stub', text: emptyText || 'No notes yet.' }); return; }
     const CAP = 50;
     for (const n of rows.slice(0, CAP)) {
       const note = listEl.createDiv('doc-detail-note');
-      const meta = note.createDiv('doc-detail-nmeta');
+      const meta = note.createDiv('doc-detail-nmeta doc-ent-feedmeta');
       const chip = meta.createSpan({ cls: 'doc-ent-origin ok-' + (n.originKind || 'self'), text: n.origin || '—' });
       if (n.originKind !== 'self' && n.originPath) {
         chip.addClass('is-link');
         chip.setAttr('role', 'button'); chip.setAttr('tabindex', '0');
-        chip.setAttr('aria-label', 'Open ' + n.origin);
-        const go = () => this.plugin.openContainerOverview({ path: n.originPath });
+        // Three openers for four originKinds: 'site' and 'work' (projects) are
+        // containers -> openContainerOverview; 'work-doc' is a document folder ->
+        // openDocDetail; 'page' is a note folder -> openNoteInEditor. Getting this
+        // wrong lands a document/note row on a grouping-container view that renders
+        // a ＋ New Collection button inside a document/note folder.
+        let go, label;
+        if (n.originKind === 'page') {
+          go = () => this.plugin.openNoteInEditor({ path: n.originPath });
+          label = 'Open note ' + n.origin;
+        } else if (n.originKind === 'work-doc') {
+          go = () => this.plugin.openDocDetail({ path: n.originPath });
+          label = 'Open document ' + n.origin;
+        } else {
+          go = () => this.plugin.openContainerOverview({ path: n.originPath });
+          label = 'Open ' + n.origin;
+        }
+        chip.setAttr('aria-label', label);
         chip.onclick = go;
         chip.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); } };
       }
@@ -6675,7 +6708,7 @@ class ContainerOverviewView extends obsidian.ItemView {
       }
     }
     if (rows.length > CAP) {
-      listEl.createDiv({ cls: 'doc-detail-noteshint', text: 'Showing ' + CAP + ' of ' + rows.length + ' — use Search Notes to narrow.' });
+      listEl.createDiv({ cls: 'doc-detail-noteshint', text: 'Showing ' + CAP + ' of ' + rows.length + (overCapHint || ' — use Search Notes to narrow.') });
     }
   }
   // Read each project document's current-version stakeholders for the rollup
@@ -9777,6 +9810,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       dlog('entity created:', type, folder);
       this.app.workspace.getLeavesOfType(VIEW_TYPE_DOC_BROWSER).forEach((l) => l.view.render && l.view.render());
       new obsidian.Notice('Created ' + type + ' “' + clean + '”');
+      this.appendLog(folder, 'Record created');   // fire-and-forget, must never abort creation
       return folder;
     } catch (e) {
       elog('createEntity failed:', e && e.stack || e);
