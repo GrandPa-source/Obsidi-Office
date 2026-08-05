@@ -5934,7 +5934,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     // Mirrors DocDetailView — a manual render() right after processFrontMatter would
     // read stale metadataCache; the 'changed' event fires after the re-parse.
     this.registerEvent(this.app.metadataCache.on('changed', (f) => {
-      if (this._projComposerDirty || this._entComposerDirty || this._projEditMode) return;   // don't wipe an in-progress draft or metadata edit
+      if (this._projComposerDirty || this._entComposerDirty || this._projEditMode || this._entEditMode) return;   // don't wipe an in-progress draft or metadata edit (project or entity)
       if (!f || !this.path) return;
       if (f.path === this.path + '/_project.md' || f.path.startsWith(this.path + '/')) this.render();
     }));
@@ -6445,33 +6445,38 @@ class ContainerOverviewView extends obsidian.ItemView {
       const r = docContainer.extractInlineTags(input.value, true);
       const tags = stagedTags.concat(r.tags); const body = r.body;
       if (!body && !tags.length && !stagedFiles.length) return;
-      const attachments = [];
-      for (const f of stagedFiles) {
-        try {
-          const dir = node.path + '/_notes';
-          if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
-          let dest = dir + '/' + f.name;
-          if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
-          await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
-        } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+      addBtn.disabled = true;   // guard against a double-click starting two overlapping writes
+      try {
+        const attachments = [];
+        for (const f of stagedFiles) {
+          try {
+            const dir = node.path + '/_notes';
+            if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
+            let dest = dir + '/' + f.name;
+            if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
+            await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
+          } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+        }
+        const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
+        this._entComposerDirty = false;   // committing — allow the listener re-render
+        await this.plugin.writeEntityRecord(node.path, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); });
+        this.plugin.appendLog(node.path, 'Note added');   // fire-and-forget, must never abort the note write
+        // metadataCache has not re-parsed the file yet right when processFrontMatter
+        // resolves (stale-read bug class, recurred 3x in this codebase already) — so
+        // repaint the feed ourselves with `entry` layered on top, rather than
+        // re-reading. _entNoteSources already normalises dates for us; we only need
+        // to append the entry this call just wrote onto the self source.
+        input.value = '';
+        stagedTags.length = 0; stagedFiles.length = 0;
+        renderStaged(); updateDropState();
+        const sources = this._entNoteSources(node, type, refs);
+        const self = sources.find((s) => s.originKind === 'self');
+        if (self) self.entries = self.entries.concat([entry]);
+        this._renderFeedInto(listEl, docContainer.mergeNoteFeed(sources), ENT_FEED_EMPTY_TEXT);
+      } finally {
+        addBtn.disabled = false;
       }
-      const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
-      const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
-      this._entComposerDirty = false;   // committing — allow the listener re-render
-      await this.plugin.writeEntityRecord(node.path, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); });
-      this.plugin.appendLog(node.path, 'Note added');   // fire-and-forget, must never abort the note write
-      // metadataCache has not re-parsed the file yet right when processFrontMatter
-      // resolves (stale-read bug class, recurred 3x in this codebase already) — so
-      // repaint the feed ourselves with `entry` layered on top, rather than
-      // re-reading. _entNoteSources already normalises dates for us; we only need
-      // to append the entry this call just wrote onto the self source.
-      input.value = '';
-      stagedTags.length = 0; stagedFiles.length = 0;
-      renderStaged(); updateDropState();
-      const sources = this._entNoteSources(node, type, refs);
-      const self = sources.find((s) => s.originKind === 'self');
-      if (self) self.entries = self.entries.concat([entry]);
-      this._renderFeedInto(listEl, docContainer.mergeNoteFeed(sources), ENT_FEED_EMPTY_TEXT);
     };
     addBtn.onclick = add;
     p.createDiv({ cls: 'doc-detail-noteshint', text: "Notes from this record, its sites and its attributed work. Note tags (green) & attachments are scoped to the note. Newest first." });
@@ -6926,29 +6931,34 @@ class ContainerOverviewView extends obsidian.ItemView {
       const r = docContainer.extractInlineTags(input.value, true);
       const tags = stagedTags.concat(r.tags); const body = r.body;
       if (!body && !tags.length && !stagedFiles.length) return;
-      const attachments = [];
-      for (const f of stagedFiles) {
-        try {
-          const dir = node.path + '/_notes';
-          if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
-          let dest = dir + '/' + f.name;
-          if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
-          await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
-        } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
-      }
-      const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
-      const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
-      this._projComposerDirty = false;   // committing — allow the listener re-render
-      await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
-      // listener re-renders (Notes tab persists via _projActiveTab) with the fresh note
-      // — except while the project metadata edit is open, where the listener
-      // returns early to protect those inputs. Same defect class as the document
-      // detail pane (iPad smoke B8): repaint the list and composer only.
-      if (this._projEditMode) {
-        input.value = '';
-        stagedTags.length = 0; stagedFiles.length = 0;
-        renderStaged(); updateDropState();
-        this._renderNoteListInto(listEl, notes.concat([entry]), 'No notes yet.');
+      addBtn.disabled = true;   // guard against a double-click starting two overlapping writes
+      try {
+        const attachments = [];
+        for (const f of stagedFiles) {
+          try {
+            const dir = node.path + '/_notes';
+            if (!this.app.vault.getAbstractFileByPath(dir)) { try { await this.app.vault.createFolder(dir); } catch (e) { /* race */ } }
+            let dest = dir + '/' + f.name;
+            if (this.app.vault.getAbstractFileByPath(dest)) dest = dir + '/' + Date.now() + '-' + f.name;
+            await this.app.vault.createBinary(dest, f.data); attachments.push(f.name);
+          } catch (err) { new obsidian.Notice('Could not attach ' + f.name); }
+        }
+        const date = window.moment ? window.moment().format('YYYY-MM-DD') : new Date().toISOString().slice(0, 10);
+        const entry = { date, author: getUsername(), body: body || '(tag / attachment only)', noteTags: tags, attachments };
+        this._projComposerDirty = false;   // committing — allow the listener re-render
+        await this.plugin.writeProjectNote(node, (fm) => { if (!Array.isArray(fm.noteLog)) fm.noteLog = []; fm.noteLog.push(entry); this._pushProjLog(fm, 'Note added', 'note'); });
+        // listener re-renders (Notes tab persists via _projActiveTab) with the fresh note
+        // — except while the project metadata edit is open, where the listener
+        // returns early to protect those inputs. Same defect class as the document
+        // detail pane (iPad smoke B8): repaint the list and composer only.
+        if (this._projEditMode) {
+          input.value = '';
+          stagedTags.length = 0; stagedFiles.length = 0;
+          renderStaged(); updateDropState();
+          this._renderNoteListInto(listEl, notes.concat([entry]), 'No notes yet.');
+        }
+      } finally {
+        addBtn.disabled = false;
       }
     };
     addBtn.onclick = add;
