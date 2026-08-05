@@ -8126,11 +8126,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.addRibbonIcon('folder-tree', 'Document Browser', () => this.activateDocBrowser());
       this.addCommand({ id: 'open-document-browser', name: 'Open Document Browser',
         callback: () => this.activateDocBrowser() });
-      // _document.md metadata migration — DRY RUN (Rung A). Reports what the
-      // migration would do; mutates no document data. See spec/plan 2026-06-17.
-      this.addCommand({ id: 'doc-container-migrate-dryrun',
-        name: 'Doc-Container: migrate metadata to _document.md (dry run)',
-        callback: () => this.dryRunMetadataMigration() });
       // Container-notes: create a plugin-owned note (folder + skeleton + body).
       this.addCommand({ id: 'create-container-note', name: 'Create container note',
         callback: () => new NoteCreateModal(this.app, { defaultType: 'General', askTitle: true },
@@ -8147,16 +8142,6 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
         }).open() });
     }
 
-    this.addCommand({
-      id: "pdf-poc-open",
-      name: "PDF PoC: open active/last .pdf in editor",
-      callback: async () => {
-        const f = this.app.workspace.getActiveFile()
-          || this.app.vault.getFiles().find((x) => x.extension === "pdf");
-        if (!f || f.extension !== "pdf") { new obsidian.Notice("No .pdf found"); return; }
-        await this._openInView(f);
-      },
-    });
     // After fork consolidation there is only one docx plugin.
     try { this.registerExtensions(["docx"], VIEW_TYPE); } catch (e) {
       elog("registerExtensions failed:", e.message);
