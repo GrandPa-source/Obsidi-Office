@@ -1046,6 +1046,13 @@ const DOC_CONTAINER_CSS = `
 .doc-ent-georow.doc-ent-georow:hover { background-color: var(--background-modifier-hover); }
 .doc-ent-geoname  { color: var(--text-normal); }
 .doc-ent-geocoord { color: var(--text-muted); font-size:0.85em; margin-top:2px; }
+.doc-ent-geobtn.doc-ent-geobtn {
+  margin-top:6px; height:auto; min-height:0; padding:4px 10px;
+  background-color: var(--interactive-normal); box-shadow:none;
+  border:1px solid var(--background-modifier-border); border-radius:4px;
+  cursor:pointer; font-size:0.9em;
+}
+.doc-ent-geobtn.doc-ent-geobtn:hover { background-color: var(--interactive-hover); }
 .doc-ent-origin { font-weight:600; color: var(--text-normal); margin-right:6px; }
 .doc-ent-origin.is-link { cursor:pointer; text-decoration:underline dotted; }
 .doc-ent-origin.is-link:hover { color: var(--text-accent); }
@@ -6109,6 +6116,30 @@ class ContainerOverviewView extends obsidian.ItemView {
         if (f.key === 'website') { inp.type = 'url'; inp.spellcheck = false; inp.placeholder = 'https://…'; }
         if (f.type === 'entity') inp.placeholder = 'Organization name';
       }
+      // Look up: only for the address field, only while editing, and only when the
+      // setting is on. When off the control is ABSENT, not disabled (spec §4).
+      if (f.key === 'address' && this.plugin.settings.geocodingEnabled) {
+        const btn = cell.createEl('button', { text: 'Look up', cls: 'doc-ent-geobtn' });
+        btn.type = 'button';
+        btn.onclick = async () => {
+          const q = inp.value.trim();
+          if (!q) { new obsidian.Notice('Type an address first.'); return; }
+          btn.disabled = true; btn.setText('Looking up…');
+          const res = await this.plugin.geocodeAddress(q);
+          btn.disabled = false; btn.setText('Look up');
+          if (!res.ok) {
+            new obsidian.Notice(res.reason === 'network'
+              ? 'Address lookup failed. Check your connection, or enter coordinates manually.'
+              : 'Address lookup is unavailable.');
+            return;
+          }
+          if (!res.results.length) {
+            new obsidian.Notice('No match found. Try a simpler address, or enter coordinates manually.');
+            return;
+          }
+          new GeocodePickerModal(this.app, res.results, (pick) => this._applyGeocode(pick)).open();
+        };
+      }
       this._entInputs[f.key] = { inp, orig: seed, field: f };
       return;
     }
@@ -6134,6 +6165,27 @@ class ContainerOverviewView extends obsidian.ItemView {
       return;
     }
     cell.createDiv({ text: seed || '—', cls: 'doc-detail-val' + (seed ? '' : ' doc-detail-muted') });
+  }
+
+  // Write a picked result into the open edit form. Only fields the response
+  // actually carries are touched — a partial match must never blank data the
+  // user already typed (spec §6). _saveEntityEdits persists from these inputs.
+  _applyGeocode(pick) {
+    const inputs = this._entInputs || {};
+    const set = (key, val) => {
+      if (!val) return;                       // absent component -> leave as-is
+      if (!inputs[key] || !inputs[key].inp) return;   // field not on this record type
+      inputs[key].inp.value = val;
+    };
+    set('address', pick.address);
+    set('city', pick.city);
+    set('province', pick.province);
+    set('postalCode', pick.postalCode);
+    set('lat', pick.lat);
+    set('lon', pick.lon);
+    set('geocodedAt', new Date().toISOString().slice(0, 10));
+    set('geocodeSource', 'nominatim');
+    new obsidian.Notice('Address filled. Review it, then Save changes.');
   }
 
   async _saveEntityEdits(node, type) {
