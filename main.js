@@ -1537,7 +1537,7 @@ const DEFAULT_SETTINGS = {
   docCategories: ['Governance', 'Projects', 'SOPs'],
   docGlossaryEnabled: false,
   docGlossaryRoot: 'Definitions',
-  authorLabel: '',          // mobile author display name (no system user on mobile)
+  authorLabel: '',          // identity override on ALL platforms; empty = OS user (see getUsername)
   checkoutTimeoutHours: 0,  // 0 = no stale-lock timeout
   docCategoryTypeMap: { Projects: 'project', Organizations: 'organization', Sites: 'site' },   // category → container type (else 'grouping')
   docOrgCategory: 'Organizations',    // category under docRoot holding organization records
@@ -2539,11 +2539,19 @@ function randomHex(bytes) {
 // presence indicator and uses it for the local editing session.
 let DC_SETTINGS = null;   // set in loadSettings so free fns can read authorLabel on mobile
 function getUsername() {
+  // An explicit Author label overrides the OS identity on EVERY platform, not just
+  // mobile. That is deliberate and load-bearing: the check-out gate's second-author
+  // drill (smoke steps 5/5b/6) works by setting the label, taking the lock as
+  // someone else, then clearing it to become yourself again. While this was
+  // consulted on mobile only, desktop always reported the OS user, so those steps
+  // could not be run at all and stalled from 2026-06-22.
   // P01_WhiteList seam (plugin not yet built): when present, prefer its identity here.
+  const label = DC_SETTINGS && DC_SETTINGS.authorLabel;
+  if (label) return label;
   if (!isMobile) {
     try { return require("os").userInfo().username; } catch (e) {}
   }
-  return (DC_SETTINGS && DC_SETTINGS.authorLabel) || "Mobile User";
+  return "Mobile User";
 }
 function resolveAuthor() { const display = getUsername(); return { id: docContainer.slugifyAuthor(display), display: display }; }
 function resolveAuthorId() { return docContainer.slugifyAuthor(getUsername()); }
@@ -6911,7 +6919,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     if (docContainer.underEntityCategory(node.path, this.plugin.settings.docRoot, cats)) {
       const isOrgCat = node.path.endsWith('/' + (this.plugin.settings.docOrgCategory || 'Organizations'));
       if (isOrgCat) {
-        const nb = docIconLabel(c, 'plus', 'New organization', { tag: 'button', cls: 'doc-ov-primary' });
+        const nb = docIconLabel(c, 'plus', 'New Organization', { tag: 'button', cls: 'doc-ov-primary' });
         nb.onclick = () => new EntityCreateModal(this.app, {
           type: 'organization',
           onSubmit: async ({ name, orgType }) => {
@@ -7185,8 +7193,10 @@ class SettingsTab extends obsidian.PluginSettingTab {
       .addText(t => t.setValue(this.plugin.settings.docCategories.join(', '))
         .onChange(async v => { this.plugin.settings.docCategories = v.split(',').map(s => s.trim()).filter(Boolean); await this.plugin.saveSettings(); }));
     new obsidian.Setting(containerEl)
-      .setName('Author label (mobile)')
-      .setDesc('Display name used for authorship on mobile, where there is no system user.')
+      .setName('Author label')
+      .setDesc('Overrides your identity for authorship and check-out on every platform. '
+        + 'Leave it empty to use your system user (on mobile, where there is none, "Mobile User"). '
+        + 'Setting it temporarily is how you rehearse a second author against your own vault.')
       .addText(t => t.setValue(this.plugin.settings.authorLabel || '')
         .onChange(async v => { this.plugin.settings.authorLabel = v.trim(); await this.plugin.saveSettings(); }));
     new obsidian.Setting(containerEl)
