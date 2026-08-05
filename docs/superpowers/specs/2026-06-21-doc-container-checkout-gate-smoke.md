@@ -13,6 +13,13 @@
 
 ## Second-author simulation (for the "held by other" + kick rows)
 
+> **2026-08-04 — this section now works on desktop. It did not before, which is why steps 5, 5b
+> and 6 were deferred on 2026-06-22 as "need a 2nd user identity".** The method below was always
+> correct in intent, but `getUsername()` consulted the Author label **only on mobile**, so on
+> desktop the OS username won and setting the label changed nothing. Fixed in `83e8045` — the label
+> is now an explicit override on every platform. **No second machine or second account is required.**
+> Run steps 5, 5b and 6 exactly as written below.
+
 You hold the lock as your real username. To make a doc appear **checked out by someone else**:
 1. Settings → set **Author label = `Other Person`** → check out Fan-Out Policy from its Overview (lock is now stamped `other-person`).
 2. Settings → set **Author label back to empty** (you are your real self again).
