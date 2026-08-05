@@ -6183,7 +6183,7 @@ class ContainerOverviewView extends obsidian.ItemView {
     set('postalCode', pick.postalCode);
     set('lat', pick.lat);
     set('lon', pick.lon);
-    set('geocodedAt', new Date().toISOString().slice(0, 10));
+    set('geocodedAt', docToday());
     set('geocodeSource', 'nominatim');
     new obsidian.Notice('Address filled. Review it, then Save changes.');
   }
@@ -6974,6 +6974,7 @@ class ContainerOverviewView extends obsidian.ItemView {
         const nb = docIconLabel(c, 'plus', 'New Organization', { tag: 'button', cls: 'doc-ov-primary' });
         nb.onclick = () => new EntityCreateModal(this.app, {
           type: 'organization',
+          plugin: this.plugin,
           onSubmit: async ({ name, orgType }) => {
             const folder = await this.plugin.createEntity({ type: 'organization', name, seed: orgType ? { orgType } : null });
             if (folder) await this.plugin.openContainerOverview({ path: folder });
@@ -9809,10 +9810,20 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     new EntityCreateModal(this.app, {
       type: 'site',
       orgName,
-      onSubmit: async ({ name, siteType, address }) => {
+      plugin: this,
+      onSubmit: async ({ name, siteType, address, geo }) => {
         const seed = { organization: docContainer.entityLink(orgName) };
         if (siteType) seed.siteType = siteType;
         if (address) seed.address = address;
+        if (geo) {
+          if (geo.city) seed.city = geo.city;
+          if (geo.province) seed.province = geo.province;
+          if (geo.postalCode) seed.postalCode = geo.postalCode;
+          seed.lat = geo.lat;
+          seed.lon = geo.lon;
+          seed.geocodedAt = docToday();
+          seed.geocodeSource = 'nominatim';
+        }
         const folder = await this.createEntity({ type: 'site', name, seed });
         if (folder) {
           // The org page's Sites pane is a backlink query, so the record being indexed
@@ -11927,6 +11938,33 @@ class EntityCreateModal extends obsidian.Modal {
       const aLab = c.createEl('label', { text: 'Address (optional)', cls: 'doc-ent-flab' });
       aLab.htmlFor = 'doc-ent-addr';
       addr = c.createEl('input', { cls: 'doc-ov-newinput', attr: { id: 'doc-ent-addr' } });
+      // Absent unless geocoding is enabled (spec §4).
+      const plugin = this.opts.plugin;
+      if (plugin && plugin.settings.geocodingEnabled) {
+        const gbtn = c.createEl('button', { text: 'Look up', cls: 'doc-ent-geobtn' });
+        gbtn.type = 'button';
+        gbtn.onclick = async () => {
+          const q = addr.value.trim();
+          if (!q) { new obsidian.Notice('Type an address first.'); return; }
+          gbtn.disabled = true; gbtn.setText('Looking up…');
+          const res = await plugin.geocodeAddress(q);
+          gbtn.disabled = false; gbtn.setText('Look up');
+          if (!res.ok) {
+            new obsidian.Notice(res.reason === 'network'
+              ? 'Address lookup failed. Check your connection, or enter coordinates manually.'
+              : 'Address lookup is unavailable.');
+            return;
+          }
+          if (!res.results.length) {
+            new obsidian.Notice('No match found. Try a simpler address.');
+            return;
+          }
+          new GeocodePickerModal(this.app, res.results, (pick) => {
+            addr.value = pick.address || addr.value;
+            this._geo = pick;                 // carried into onSubmit below
+          }).open();
+        };
+      }
     } else {
       const tLab = c.createEl('label', { text: 'Type', cls: 'doc-ent-flab' });
       tLab.htmlFor = 'doc-ent-type';
@@ -11947,6 +11985,7 @@ class EntityCreateModal extends obsidian.Modal {
         orgType: (!isSite && typeSel) ? typeSel.value : '',
         siteType: (isSite && typeSel) ? typeSel.value : '',
         address: addr ? addr.value.trim() : '',
+        geo: this._geo || null,
       });
       this.close();
     };
