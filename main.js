@@ -4589,6 +4589,37 @@ function docTabsWrapGuard(bar) {
   ro.observe(bar);
 }
 
+// Wire a multi-value ("entities") datalist field, e.g. a comma-separated Sites
+// input. A native <datalist> filters its options against the ENTIRE input
+// value, so once one name is committed and a comma typed, no option matches
+// the whole string anymore and suggestions (and therefore arrow-key
+// navigation, which has nothing to navigate) stop dead. Rebuild the option
+// list on every keystroke so each option carries the already-typed prefix —
+// "Apotex Centre, " + "Baycrest" — and drop names already chosen so the next
+// segment doesn't re-suggest a duplicate. The prefix is copied verbatim from
+// what the user typed (not reformatted), so "A,B" and "A, B" both keep working.
+function wireEntitiesDatalist(inputEl, datalistEl, names) {
+  const rebuild = () => {
+    const val = inputEl.value;
+    const lastComma = val.lastIndexOf(',');
+    const prefix = lastComma === -1
+      ? ''
+      : val.slice(0, lastComma + 1) + (val.slice(lastComma + 1).match(/^\s*/)[0]);
+    const used = new Set(
+      (lastComma === -1 ? [] : val.slice(0, lastComma).split(','))
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean)
+    );
+    datalistEl.empty();
+    for (const nm of names) {
+      if (used.has(nm.trim().toLowerCase())) continue;
+      datalistEl.createEl('option', { value: prefix + nm });
+    }
+  };
+  rebuild();
+  inputEl.oninput = rebuild;
+}
+
 // Clickable breadcrumb. Each ancestor segment navigates to that container.
 // History is per-tab, so it cannot answer "take me up a level" when you arrived
 // in this tab from somewhere else — the trail always can. `path` is the current
@@ -5018,7 +5049,9 @@ class DocumentDetailView extends obsidian.ItemView {
         const listId = 'doc-ent-list-' + f.key;
         inpE.setAttr('list', listId);
         const dl = cell.createEl('datalist'); dl.id = listId;
-        for (const nm of this.plugin.entityNamesByType(isMulti ? 'site' : 'organization')) dl.createEl('option', { value: nm });
+        const entNames = this.plugin.entityNamesByType(isMulti ? 'site' : 'organization');
+        if (isMulti) wireEntitiesDatalist(inpE, dl, entNames);
+        else for (const nm of entNames) dl.createEl('option', { value: nm });
         this._mdInputs[f.key] = { inp: inpE, orig: seedE, field: f };
         return;
       }
@@ -6581,11 +6614,13 @@ class ContainerOverviewView extends obsidian.ItemView {
         inp = cell.createEl('input', { cls: 'doc-detail-vinput' });
         inp.spellcheck = false;
         inp.placeholder = type === 'entities' ? 'comma-separated site names' : 'organization name';
+        inp.value = seed;
         const listId = 'doc-pj-list-' + key;
         inp.setAttr('list', listId);
         const dl = cell.createEl('datalist'); dl.id = listId;
-        for (const nm of this.plugin.entityNamesByType(type === 'entities' ? 'site' : 'organization')) dl.createEl('option', { value: nm });
-        inp.value = seed;
+        const entNames = this.plugin.entityNamesByType(type === 'entities' ? 'site' : 'organization');
+        if (type === 'entities') wireEntitiesDatalist(inp, dl, entNames);
+        else for (const nm of entNames) dl.createEl('option', { value: nm });
       }
       else { inp = cell.createEl('input', { cls: 'doc-detail-vinput' }); if (type === 'date') inp.type = 'date'; else if (type === 'number') inp.type = 'number'; inp.value = seed; if (key === 'tags') inp.placeholder = 'comma-separated'; }
       this._pjInputs[key] = { inp, type };
