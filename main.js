@@ -1274,7 +1274,11 @@ const DOC_CONTAINER_CSS = `
 /* Feed rows carry 3-5 parts (origin, author, date, Kind, Source) where the shared
    rule above was written for 2 (author, date) — space-between would spread them
    across the full row width with large gaps. Left-align with a small gap instead,
-   without touching the shared rule the document/project note lists still use. */
+   without touching the shared rule the document/project note lists still use.
+   NOTE: this has the same specificity as .doc-detail-nmeta above (both 0,1,0 —
+   this rule wins only because it appears LATER in the stylesheet. Reordering
+   these two rules, or splitting them into different blocks, would silently
+   restore the space-between layout on elements carrying both classes. */
 .doc-ent-feedmeta { justify-content:flex-start; gap:8px; flex-wrap:wrap; }
 .doc-detail-nbody { font-size:12.5px; line-height:1.45; color: var(--text-normal); }
 .doc-detail-nfoot { margin-top:8px; display:flex; flex-wrap:wrap; gap:5px; }
@@ -6172,6 +6176,7 @@ class ContainerOverviewView extends obsidian.ItemView {
   // user already typed (spec §6). _saveEntityEdits persists from these inputs.
   _applyGeocode(pick) {
     const inputs = this._entInputs || {};
+    let coordsSet = false;
     const set = (key, val) => {
       if (!val) return;                       // absent component -> leave as-is
       if (!inputs[key] || !inputs[key].inp) return;   // field not on this record type
@@ -6181,11 +6186,16 @@ class ContainerOverviewView extends obsidian.ItemView {
     set('city', pick.city);
     set('province', pick.province);
     set('postalCode', pick.postalCode);
+    // 'lat' only exists on the Site field set (spec §5), so its presence here
+    // doubles as the record-kind check for the Notice below.
+    if (pick.lat && inputs.lat && inputs.lat.inp) coordsSet = true;
     set('lat', pick.lat);
     set('lon', pick.lon);
     set('geocodedAt', docToday());
     set('geocodeSource', 'nominatim');
-    new obsidian.Notice('Address filled. Review it, then Save changes.');
+    new obsidian.Notice(coordsSet
+      ? 'Address and coordinates filled. Review them, then Save changes.'
+      : 'Address filled. Review it, then Save changes.');
   }
 
   async _saveEntityEdits(node, type) {
@@ -7141,10 +7151,10 @@ class SettingsTab extends obsidian.PluginSettingTab {
     new obsidian.Setting(containerEl)
       .setName('Enable address lookup')
       .setDesc(
-        'Adds a "Look up" button to the address field on Site and Organization records. ' +
-        'When you press it, the address you typed is sent to the endpoint below so it can be ' +
-        'resolved to coordinates. Nothing is sent while you type, and nothing else in the ' +
-        'record is ever transmitted. Off by default.'
+        'Adds a "Look up" button next to the address field when editing a Site or Organization ' +
+        'record, and in the New Site dialog. When you press it, the address you typed is sent ' +
+        'to the endpoint below so it can be resolved to coordinates. Nothing is sent while you ' +
+        'type, and nothing else in the record is ever transmitted. Off by default.'
       )
       .addToggle(t => t
         .setValue(!!this.plugin.settings.geocodingEnabled)
@@ -8068,6 +8078,7 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
       this.addCommand({ id: 'create-organization', name: 'Create organization',
         callback: () => new EntityCreateModal(this.app, {
           type: 'organization',
+          plugin: this,
           onSubmit: async ({ name, orgType }) => {
             const folder = await this.createEntity({ type: 'organization', name, seed: orgType ? { orgType } : null });
             if (folder) await this.openContainerOverview({ path: folder });
@@ -11938,6 +11949,13 @@ class EntityCreateModal extends obsidian.Modal {
       const aLab = c.createEl('label', { text: 'Address (optional)', cls: 'doc-ent-flab' });
       aLab.htmlFor = 'doc-ent-addr';
       addr = c.createEl('input', { cls: 'doc-ov-newinput', attr: { id: 'doc-ent-addr' } });
+      addr.oninput = () => {
+        // A picked result describes the address that was picked. Once the user
+        // edits the box, the coordinates and the provenance stamp no longer
+        // describe what is in it — and this modal never shows them, so a
+        // contradiction here would be invisible. Drop the pick.
+        if (this._geo && addr.value.trim() !== (this._geo.address || '')) this._geo = null;
+      };
       // Absent unless geocoding is enabled (spec §4).
       const plugin = this.opts.plugin;
       if (plugin && plugin.settings.geocodingEnabled) {
