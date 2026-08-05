@@ -4174,7 +4174,10 @@ class ContainerNoteView extends obsidian.FileView {
       // field invites a stray keystroke into a field nobody meant to touch, and it
       // made the card look like a form rather than a summary (Paul, 2026-08-02).
       const attrRow = left.createDiv('obsidi-note-card-tdrow');
-      const attrField = (parentEl, label, valueText, placeholder, listId, options, onCommit) => {
+      // `multi` (explicit, not label-sniffed — a label is display text and
+      // could be reworded) selects the comma-separated-list datalist wiring
+      // for the Sites field; Organization stays single-value/unwired.
+      const attrField = (parentEl, label, valueText, placeholder, listId, options, multi, onCommit) => {
         const field = parentEl.createDiv('obsidi-note-card-field');
         const head = field.createDiv('obsidi-note-card-attrhead');
         head.createSpan({ text: label, cls: 'obsidi-note-card-lbl' });
@@ -4188,7 +4191,11 @@ class ContainerNoteView extends obsidian.FileView {
           inp.spellcheck = false;
           inp.value = valueText;
           const dl = field.createEl('datalist'); dl.id = listId;
-          for (const nm of options) dl.createEl('option', { value: nm });
+          // Fresh inp/dl every open (openEditor tears the field down and
+          // rebuilds it on each pencil click) — wire fresh each time too,
+          // so there's nothing to leak or bind stale across open/close.
+          if (multi) wireEntitiesDatalist(inp, dl, options);
+          else for (const nm of options) dl.createEl('option', { value: nm });
           let committed = false;
           const commit = async () => { if (committed) return; committed = true; await onCommit(inp.value); };
           inp.onchange = commit;
@@ -4205,7 +4212,7 @@ class ContainerNoteView extends obsidian.FileView {
       };
 
       attrField(attrRow, 'Organization', docContainer.entityLinkName(fm.organization) || '',
-        'organization', 'note-org-list', this.plugin.entityNamesByType('organization'),
+        'organization', 'note-org-list', this.plugin.entityNamesByType('organization'), false,
         async (raw) => {
           const nm = docContainer.entityLinkName(raw);
           const val = nm ? docContainer.entityLink(nm) : null;
@@ -4216,7 +4223,7 @@ class ContainerNoteView extends obsidian.FileView {
       attrField(attrRow, 'Sites',
         (Array.isArray(fm.sites) ? fm.sites : (fm.sites ? [fm.sites] : []))
           .map((x) => docContainer.entityLinkName(x)).filter(Boolean).join(', '),
-        'comma-separated', 'note-sites-list', this.plugin.entityNamesByType('site'),
+        'comma-separated', 'note-sites-list', this.plugin.entityNamesByType('site'), true,
         async (raw) => {
           const list = docContainer.parseEntityListInput(raw);
           await this._setNoteField('sites', list.length ? list : null);
