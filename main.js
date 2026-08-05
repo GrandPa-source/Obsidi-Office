@@ -1352,6 +1352,10 @@ textarea.doc-detail-vinput { resize:vertical; line-height:1.45; min-height:34px;
 .doc-detail-logico .svg-icon { width:15px; height:15px; }
 .doc-detail-fico { display:inline-flex; align-items:center; color: var(--text-muted); }
 .doc-detail-fico .svg-icon { width:15px; height:15px; }
+/* File-type chip (Related Documents row): a <span>, so a single-class selector
+   is correct here — no need to double it the way button:not(.clickable-icon)
+   forces us to for buttons. */
+.doc-detail-extchip { flex:0 0 auto; font-size:9px; font-weight:600; line-height:1; padding:3px 6px; border-radius:4px; background: var(--background-modifier-border); color: var(--text-muted); }
 .doc-ov-cardname { display:flex; align-items:center; gap:7px; }
 .doc-ov-cardico { display:inline-flex; align-items:center; color: var(--text-muted); flex:0 0 auto; }
 .doc-ov-cardico .svg-icon { width:16px; height:16px; }
@@ -4620,6 +4624,14 @@ function wireEntitiesDatalist(inputEl, datalistEl, names) {
   inputEl.oninput = rebuild;
 }
 
+// Extension of a vault path's filename, lowercase, or '' when the filename
+// carries no dot (e.g. an extensionless drop, or a bare folder path).
+function fileExtOf(pth) {
+  const base = String(pth || '').split('/').pop() || '';
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.slice(dot + 1).toLowerCase() : '';
+}
+
 // Clickable breadcrumb. Each ancestor segment navigates to that container.
 // History is per-tab, so it cannot answer "take me up a level" when you arrived
 // in this tab from somewhere else — the trail always can. `path` is the current
@@ -5424,7 +5436,11 @@ class DocumentDetailView extends obsidian.ItemView {
           const dmf = this.app.vault.getAbstractFileByPath(r.target);
           liveTitle = dmf ? (((this.app.metadataCache.getFileCache(dmf) || {}).frontmatter || {}).title || null) : null;
         }
-        docIcon(fl, noteBody ? 'notebook-pen' : (r.kind === 'link' ? 'link' : 'paperclip'), 'doc-detail-fico');
+        // File-type chip (the row's own extension) in place of the generic icon;
+        // fall back to the icon when no extension can be read off the target.
+        const rowExt = fileExtOf(r.target);
+        if (rowExt) fl.createSpan({ text: rowExt, cls: 'doc-detail-extchip' });
+        else docIcon(fl, noteBody ? 'notebook-pen' : (r.kind === 'link' ? 'link' : 'paperclip'), 'doc-detail-fico');
         fl.createSpan({ text: liveTitle || r.label || r.target });
         fl.setAttr('title', 'Open ' + (r.label || r.target));
         // Click to open the linked file (Ctrl/Cmd-click → new tab). A managed target that
