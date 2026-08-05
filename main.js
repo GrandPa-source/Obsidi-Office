@@ -737,6 +737,8 @@ function mergeNoteFeed(sources) {
         body: e.body || '',
         noteTags: Array.isArray(e.noteTags) ? e.noteTags : [],
         attachments: Array.isArray(e.attachments) ? e.attachments : [],
+        noteKind: e.noteKind || '',
+        noteSource: e.noteSource || '',
       });
     }
   }
@@ -1044,6 +1046,8 @@ const DOC_CONTAINER_CSS = `
 .doc-ent-origin.is-link { cursor:pointer; text-decoration:underline dotted; }
 .doc-ent-origin.is-link:hover { color: var(--text-accent); }
 .doc-ent-origin.ok-self { font-weight:500; color: var(--text-muted); }
+.doc-ent-kind { font-size:10px; text-transform:uppercase; letter-spacing:.03em; color: var(--text-faint); background: var(--background-modifier-border); padding:1px 6px; border-radius:8px; }
+.doc-ent-source { font-size:11px; color: var(--text-faint); }
 @media (pointer: coarse) {
   .doc-ov-table td, .doc-ov-table th { padding-top:12px; padding-bottom:12px; }
   .doc-detail-tabb { min-height:44px; display:flex; align-items:center; }
@@ -6189,10 +6193,12 @@ class ContainerOverviewView extends obsidian.ItemView {
 
     // A note page has no noteLog — it IS the note. One synthetic entry each so it
     // takes its place in the same chronology.
+    const kindWord = { organizational: 'This record', stamped: 'Attributed', mention: 'Mention' };
     for (const n of (refs.notes || [])) {
       out.push({ origin: n.title || n.name, originKind: 'page', originPath: n.path,
                  entries: this._entNoteEntries([{ date: n.noteDate || '', author: '', body: n.noteType || 'Note page',
-                                                 noteTags: [], attachments: [] }]) });
+                                                 noteTags: [], attachments: [],
+                                                 noteKind: kindWord[n.rowType] || '', noteSource: n.parentTitle || '' }]) });
     }
     return out;
   }
@@ -6321,6 +6327,12 @@ class ContainerOverviewView extends obsidian.ItemView {
   // notes, its sites' notes and notes on work attributed to it. Not wired to a
   // tab yet — that lands in Task 6.
   _entRecentNotesPane(p, node, type, refs) {
+    if (type === 'organization') {
+      const acts = p.createDiv('doc-detail-paneacts');
+      const add = docIconLabel(acts, 'plus', 'New organizational note', { tag: 'button', cls: 'doc-ov-primary' });
+      add.style.marginBottom = '0';
+      add.onclick = () => this.plugin.createOrganizationalNote(node);
+    }
     let stagedTags = [], stagedFiles = [];
     const comp = p.createDiv('doc-detail-composer');
     const top = comp.createDiv('doc-detail-composer-top');
@@ -6652,6 +6664,8 @@ class ContainerOverviewView extends obsidian.ItemView {
       }
       meta.createSpan({ text: n.author || '' });
       meta.createSpan({ text: n.date || '' });
+      if (n.noteKind) meta.createSpan({ cls: 'doc-ent-kind', text: n.noteKind });
+      if (n.noteSource) meta.createSpan({ cls: 'doc-ent-source', text: 'from ' + n.noteSource });
       note.createDiv({ text: n.body || '', cls: 'doc-detail-nbody' });
       const tags = n.noteTags || [], files = n.attachments || [];
       if (tags.length || files.length) {
