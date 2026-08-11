@@ -630,10 +630,18 @@ function forkFileName(currentVersionName, authorSlug, dateStr) {
   const v = parseVersion(currentVersionName);
   return v.base + '_fork_' + authorSlug + '_' + dateStr + '.' + v.ext;
 }
-// A fork sidecar is pending reconciliation when it has forkOf and is not reconciled
-// (missing reconciled counts as pending).
+// A fork sidecar is pending reconciliation when it identifies what it diverged
+// from and is not reconciled (missing reconciled counts as pending).
+//
+// forkOf carries the parent's docId, which only exists once a container has a
+// _document.md — Rung B, not built. Gating on it alone made EVERY fork written
+// today invisible to the reconciliation pane (forkOf lands as ''), which is the
+// whole point of saving one. forkBaseVersion is written unconditionally by
+// saveForkCopy, so it is the durable marker; forkOf still counts once Rung B
+// lands. Deliberately NOT falling back to the folder path — stable docId is the
+// identity rule here (see the OKF note), and a path fallback would undo it.
 function isPendingFork(front) {
-  return !!(front && front.forkOf) && front.reconciled !== true;
+  return !!(front && (front.forkOf || front.forkBaseVersion)) && front.reconciled !== true;
 }
 
 // Pure edit-gate decision for a doc-container document. Inputs are booleans the
@@ -10432,7 +10440,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const v = leaf.view;
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_DETAIL
       && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
-    if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
+    // Already standing here: skipping setViewState is what keeps the back stack
+    // clean, but callers also use this to bring the page up to date after
+    // changing the document underneath it (newDocumentVersion is the one that
+    // matters — the new file lands and nothing repaints, because render() never
+    // recomputes the node). Refresh in place instead of returning a no-op.
+    // Same guards as the active-leaf-change refresh below: an in-DOM row edit is
+    // not draft-preserved, so a repaint would discard it.
+    if (samePage) {
+      if (!(v._editMode || v._stakeEdit) && typeof v._refreshNode === 'function') {
+        v._refreshNode(); v.render();
+      }
+      this.app.workspace.revealLeaf(leaf); return;
+    }
     await this._seedParentHistory(leaf, node.path);
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this._dropEditorHistory(leaf);
