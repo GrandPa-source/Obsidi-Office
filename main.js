@@ -8805,7 +8805,19 @@ class OnlyObsidianTestPlugin extends obsidian.Plugin {
     const v = leaf.view;
     const samePage = v && typeof v.getViewType === 'function' && v.getViewType() === VIEW_TYPE_DOC_DETAIL
       && v.node && v.node.path === node.path && !(opts && (opts.edit || opts.fresh));
-    if (samePage) { this.app.workspace.revealLeaf(leaf); return; }
+    // Already standing here: skipping setViewState is what keeps the back stack
+    // clean, but callers also use this to bring the page up to date after
+    // changing the document underneath it (newDocumentVersion is the one that
+    // matters — the new file lands and nothing repaints, because render() never
+    // recomputes the node). Refresh in place instead of returning a no-op.
+    // Same guards as the active-leaf-change refresh below: an in-DOM row edit is
+    // not draft-preserved, so a repaint would discard it.
+    if (samePage) {
+      if (!(v._editMode || v._stakeEdit) && typeof v._refreshNode === 'function') {
+        v._refreshNode(); v.render();
+      }
+      this.app.workspace.revealLeaf(leaf); return;
+    }
     await leaf.setViewState({ type: VIEW_TYPE_DOC_DETAIL, active: true, state: { docPath: node.path, edit: !!(opts && opts.edit), fresh: !!(opts && opts.fresh) } });
     this.app.workspace.revealLeaf(leaf);
   }
